@@ -1386,9 +1386,10 @@
       async function markupLeg(doc, win, label) {
         const canvas = doc.querySelector("canvas");
         if (!canvas) throw new Error("the document drew no canvas");
-        const line = [...doc.querySelectorAll(".selis-editor-line")].find((candidate) =>
-          (candidate.textContent || "").trim() !== "",
-        );
+        const line = [...doc.querySelectorAll(".selis-editor-line")].find((candidate) => {
+          if ((candidate.textContent || "").trim() === "") return false;
+          return candidate.getBoundingClientRect().width > 4;
+        });
         if (!line) throw new Error("the document drew no clickable text");
         const box = line.getBoundingClientRect();
         const at = (x, y, buttons, type) =>
@@ -1460,10 +1461,65 @@
         );
         const comments = doc.getElementById("selis-editor-comments").textContent.trim();
 
+        // The mark can be picked up and put down: a drag that starts on
+        // it moves it. The HIGHLIGHT is armed again first: the note left
+        // the note kind armed, and a drag with that kind makes a note.
+        doc.querySelector('button[data-markup="highlight"]').click();
+        const page = doc.querySelector("canvas");
+        // The drag starts ON the mark: the highlight was placed over the
+        // line, so the line's own box is where the mark is.
+        const movedLine = [...doc.querySelectorAll(".selis-editor-line")].find((candidate) => {
+          if ((candidate.textContent || "").trim() === "") return false;
+          return candidate.getBoundingClientRect().width > 4;
+        });
+        const movedBox = movedLine.getBoundingClientRect();
+        page.dispatchEvent(at(movedBox.left + 4, movedBox.top + 4, 1, "pointerdown"));
+        page.dispatchEvent(at(movedBox.left + 4, movedBox.top + 160, 1, "pointermove"));
+        page.dispatchEvent(at(movedBox.left + 4, movedBox.top + 160, 0, "pointerup"));
+        let moved = "";
+        try {
+          await waitFor(
+            () => {
+              const status = statusText(doc);
+              return !status.endsWith("…") && status.includes("Moved");
+            },
+            30_000,
+            "the mark to be moved (" + label + ")",
+          );
+          moved = statusText(doc);
+        } catch (error) {
+          moved = String(error);
+        }
+
+        // And it can be taken off from the panel.
+        doc.getElementById("selis-editor-comments-read").click();
+        await waitFor(
+          () => {
+            const status = statusText(doc);
+            return !status.endsWith("…") && status.includes("comment");
+          },
+          30_000,
+          "the comments to be read again (" + label + ")",
+        );
+        const remove = doc.querySelector("#selis-editor-comments button");
+        if (!remove) throw new Error("the comments panel offers no way to remove a mark");
+        remove.click();
+        await waitFor(
+          () => {
+            const status = statusText(doc);
+            return !status.endsWith("…") && status.includes("Removed");
+          },
+          30_000,
+          "the mark to be removed (" + label + ")",
+        );
+        const removed = statusText(doc);
+
         return {
           marked: marked,
           noted: noted,
           comments: comments,
+          moved: moved,
+          removed: removed,
           bytes: produced.bytes,
           // The annotation is IN the file, and it is a standard one.
           carriesTheAnnotation: produced.carriesText.indexOf("/Subtype /Highlight") >= 0,

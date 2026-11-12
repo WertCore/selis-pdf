@@ -207,7 +207,7 @@ The verdicts:
 | Measure a distance or an angle | The editor's "Measure" tool: the distance and the angle, in the page's own points and millimetres. A reading, not an edit — it is not put in the document. | **SHIPPED** |
 | Measure an area | Nowhere. It needs the page's vector art, which the engine does not expose. | **BLOCKED** |
 | Compare two documents | Nowhere. The engine has no compare operation. | **BLOCKED** |
-| Comment, highlight, underline, strikeout | The editor's **Markup** group: a mark is a drag over the words, a note is a click. Standard PDF annotations with generated appearances, so every other reader sees them too. | **SHIPPED** — for the four; a reply is not |
+| Comment, highlight, underline, strikeout | The editor's **Markup** group: a mark is a drag over the words, a note is a click. Standard PDF annotations with generated appearances, so every other reader sees them too. A mark can be picked up and put down, and taken off. | **SHIPPED** — for the four; a reply is not |
 | Reduce the file size | The editor's "Reduce the file size" panel, and the tools page's "Optimise & repair". | **SHIPPED** |
 | Bates numbering | The editor's "Bates numbers" panel, and the tools page's. | **SHIPPED** |
 | Attach a file, detach a file | The editor's "Attachments" panel, and the tools page's. | **SHIPPED** |
@@ -447,10 +447,14 @@ a list of panels and not a list of engine work.
       an annotation left the **redacted text in the file**, because the
       annotation's `/P` dragged the old page along. The redaction now drops
       the annotations' `/P` (it is optional) and the proof has a test.
-- [ ] **I1c — Moving and editing an annotation.** Addressing one ("the
-      third highlight on page 2") and moving it, with the selection the
-      editor needs. `SL-5.ANNOT.07`.
-- [ ] **I1d — Replies and review state.** `SL-5.ANNOT.04`.
+- [x] **I1c — Moving and removing an annotation.** The reader picks a
+      mark up by clicking it and dragging it, with the markup tool armed, and
+      the comments panel takes a mark off. The annotation is addressed by its
+      position in the page's `/Annots` order — an annotation has no name of
+      its own that a reader could use, and a name we invented would be a name
+      the reader never sees.
+- [ ] **I1d — Replies and review state.** `SL-5.ANNOT.04`. A reply to
+      a mark, and the review state (resolved, reopened) that goes with it.
 - [ ] **I1e — Flattening through the model, and XFDF.** `SL-5.ANNOT.05`,
       `SL-5.ANNOT.06`.
 

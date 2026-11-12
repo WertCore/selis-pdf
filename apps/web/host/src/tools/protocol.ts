@@ -67,7 +67,8 @@ export type ToolOp =
 	| "edit_text"
 	| "redact"
 	| "annotate"
-	| "annotations";
+	| "annotations"
+	| "annotate_update";
 
 /** The wire operation number for each operation. */
 const OP_CODE: Record<ToolOp, number> = {
@@ -107,6 +108,7 @@ const OP_CODE: Record<ToolOp, number> = {
 	redact: 34,
 	annotate: 35,
 	annotations: 36,
+	annotate_update: 37,
 };
 
 /** One input file on the wire. */

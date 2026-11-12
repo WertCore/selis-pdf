@@ -216,6 +216,41 @@ export function userRect(geometry: PageGeometry, canvas: Rect): Rect {
 }
 
 /**
+ * The canvas rectangle a user-space rectangle covers.
+ *
+ * The inverse of [`userRect`]: the annotation's rectangle comes back from
+ * the engine in the page's own points, and the editor needs to know where it
+ * is ON THE SCREEN to let the reader pick it up.
+ */
+export function canvasRect(geometry: PageGeometry, user: Rect): Rect {
+	const corners = [
+		applyMatrix(geometry.ctm, user.x, user.y),
+		applyMatrix(geometry.ctm, user.x + user.width, user.y),
+		applyMatrix(geometry.ctm, user.x + user.width, user.y + user.height),
+		applyMatrix(geometry.ctm, user.x, user.y + user.height),
+	];
+	let minX = Number.POSITIVE_INFINITY;
+	let minY = Number.POSITIVE_INFINITY;
+	let maxX = Number.NEGATIVE_INFINITY;
+	let maxY = Number.NEGATIVE_INFINITY;
+	for (const corner of corners) {
+		minX = Math.min(minX, corner.x);
+		minY = Math.min(minY, corner.y);
+		maxX = Math.max(maxX, corner.x);
+		maxY = Math.max(maxY, corner.y);
+	}
+	// The device pixels back to the canvas's CSS pixels.
+	const perX = geometry.rasterWidth / Math.max(1, geometry.cssWidth);
+	const perY = geometry.rasterHeight / Math.max(1, geometry.cssHeight);
+	return {
+		x: minX / perX,
+		y: minY / perY,
+		width: (maxX - minX) / perX,
+		height: (maxY - minY) / perY,
+	};
+}
+
+/**
  * The display-space rectangle the overlay writers want.
  *
  * The overlay writers take a rectangle in *their* display convention and

@@ -7346,6 +7346,15 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
     if !comments.contains("Highlight") {
         return Err(format!("the document's own report does not list the mark: {comments:?}"));
     }
+    // A mark can be picked up and put down, and taken off.
+    let moved = markup.get("moved").and_then(Json::as_str).unwrap_or("");
+    if !moved.contains("Moved") {
+        return Err(format!("the mark was not moved: {moved:?}"));
+    }
+    let removed = markup.get("removed").and_then(Json::as_str).unwrap_or("");
+    if !removed.contains("Removed") {
+        return Err(format!("the mark was not removed: {removed:?}"));
+    }
 
     // The inline editor must BE the line it is over.
     let inline = report

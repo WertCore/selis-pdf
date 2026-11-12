@@ -103,6 +103,7 @@ enum Op {
     Redact,
     Annotate,
     Annotations,
+    AnnotateUpdate,
 }
 
 impl Op {
@@ -144,6 +145,7 @@ impl Op {
             34 => Some(Self::Redact),
             35 => Some(Self::Annotate),
             36 => Some(Self::Annotations),
+            37 => Some(Self::AnnotateUpdate),
             _ => None,
         }
     }
@@ -570,6 +572,19 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
             }]
         }
         Op::Attachments => return run_attachments(&stem, first_input_len),
+        Op::AnnotateUpdate => {
+            let update_options: selis_pdf_tools::UpdateAnnotationOptions = parse_options(&options)?;
+            vec![Produced {
+                output: "out.pdf".to_string(),
+                name: format!("{stem}-annotated.pdf"),
+                verification: selis_pdf_tools::update_annotation(
+                    "in/0",
+                    &update_options,
+                    "out.pdf",
+                )?,
+                over_target: false,
+            }]
+        }
         Op::Annotate => {
             let annotate_options: selis_pdf_tools::AnnotateOptions = parse_options(&options)?;
             vec![Produced {
@@ -1916,8 +1931,8 @@ mod tests {
             "the XMP stream is removed"
         );
 
-        // Op 36 is the annotations report, so the probe moves past it.
-        let response = run_request(&request(37, b"", &[("doc.pdf", &pdf)]));
+        // Op 37 is the annotation update, so the probe moves past it.
+        let response = run_request(&request(38, b"", &[("doc.pdf", &pdf)]));
         assert!(error_text(&response).contains("unknown tool operation"));
     }
 

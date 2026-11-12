@@ -514,6 +514,148 @@ pub fn remove_annotation(
 	))
 }
 
+/**
+ * Move an annotation, or change what it says.
+ *
+ * The annotation is addressed by its position in the page's `/Annots` order,
+ * exactly as `list_annotations` reports it: an annotation has no name of its
+ * own that a reader could use, and a name we invented would be a name the
+ * reader never sees.
+ *
+ * # Budget
+ *
+ * The caller's budget bounds the parse, the walk and the bytes written.
+ *
+ * # Malformed Input
+ *
+ * A document that cannot be parsed is refused with `OBJ_UNEXPECTED`. A page
+ * that does not exist, or an index the page does not carry, is refused with
+ * `OBJ_UNEXPECTED`. A rectangle that is not a rectangle is refused with
+ * `MUTATION_INVALID`.
+ */
+pub fn update_annotation(
+	src: &[u8],
+	page: u32,
+	index: usize,
+	rect: Option<[f64; 4]>,
+	contents: Option<String>,
+	budget: &Budget,
+	g: &mut BudgetGuard<'_>,
+) -> Result<(Vec<u8>, AnnotReport)> {
+	let (doc, pages) = open(src, budget, g)?;
+	let page_ref = page_reference(&pages, page)?;
+	let page_obj = resolve_ref(src, &doc, page_ref, budget, g).map_err(|e| {
+		err!(
+			Code::ObjUnexpected,
+			during = "annot-update",
+			detail = format!("the page cannot be read: {e}")
+		)
+	})?;
+	let Obj::Dict(page_dict) = page_obj else {
+		return Err(err!(
+			Code::ObjUnexpected,
+			during = "annot-update",
+			detail = "the page is not a dictionary"
+		));
+	};
+	let refs = annotation_refs(src, &doc, &page_dict, budget, g)?;
+	let Some(annot_ref) = refs.get(index).copied() else {
+		return Err(err!(
+			Code::ObjUnexpected,
+			during = "annot-update",
+			detail = format!(
+				"the page carries {} annotation(s); there is no #{index}",
+				refs.len()
+			)
+		));
+	};
+	let annot_obj = resolve_ref(src, &doc, annot_ref, budget, g).map_err(|e| {
+		err!(
+			Code::ObjUnexpected,
+			during = "annot-update",
+			detail = format!("the annotation cannot be read: {e}")
+		)
+	})?;
+	let Obj::Dict(mut annot) = annot_obj else {
+		return Err(err!(
+			Code::ObjUnexpected,
+			during = "annot-update",
+			detail = "the annotation is not a dictionary"
+		));
+	};
+
+	if let Some(rect) = rect {
+		for value in rect {
+			if !value.is_finite() {
+				return Err(err!(
+					Code::MutationInvalid,
+					during = "annot-update",
+					detail = "the rectangle is not a finite rectangle"
+				));
+			}
+		}
+		if rect[2] < rect[0] || rect[3] < rect[1] {
+			return Err(err!(
+				Code::MutationInvalid,
+				during = "annot-update",
+				detail = "the rectangle is the wrong way round"
+			));
+		}
+		set_entry(&mut annot, b"Rect", rect_array(rect));
+		// The quads follow the rectangle: a mark that stayed where it was
+		// would cover the wrong words.
+		if let Some(quads) = Some(quads_of(&annot)) {
+			if !quads.is_empty() {
+				let moved: Vec<[f64; 4]> = quads
+					.iter()
+					.map(|quad| {
+						let dx = rect[0] - quad[0];
+						let dy = rect[1] - quad[1];
+						[quad[0] + dx, quad[1] + dy, quad[2] + dx, quad[3] + dy]
+					})
+					.collect();
+				set_entry(&mut annot, b"QuadPoints", quad_points(&moved));
+			}
+		}
+	}
+	if let Some(contents) = contents {
+		if contents.chars().count() > MAX_COMMENT_CHARS {
+			return Err(err!(
+				Code::MutationInvalid,
+				during = "annot-update",
+				detail = "the comment is too long"
+			));
+		}
+		if contents.is_empty() {
+			annot.retain(|(key, _)| key.as_slice() != b"Contents");
+		} else {
+			set_entry(&mut annot, b"Contents", text_string(&contents));
+		}
+	}
+
+	let objects = vec![(annot_ref.num, Obj::Dict(annot))];
+	let trailer = carried_trailer(&doc)?;
+	let out = write_incremental_update(src, &objects, &trailer, budget, g).map_err(|e| {
+		err!(
+			Code::ObjUnexpected,
+			during = "annot-update",
+			detail = format!("the incremental revision failed: {e}")
+		)
+	})?;
+	let bytes_in = u64::try_from(src.len()).unwrap_or(u64::MAX);
+	let bytes_out = u64::try_from(out.len()).unwrap_or(u64::MAX);
+	Ok((
+		out,
+		AnnotReport {
+			page,
+			kind: "updated",
+			annots: refs.len(),
+			bytes_in,
+			bytes_out,
+		},
+	))
+}
+
 /// The appearance stream for a markup, and the resources it draws with.
 fn appearance_stream(spec: &AnnotSpec) -> Result<(Vec<u8>, Obj)> {
 	let rect = spec.rect;

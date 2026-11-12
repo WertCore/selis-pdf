@@ -55,6 +55,7 @@ import {
 } from "../tools/security-protocol.js";
 import { type SignWasm, loadSign, runSign } from "../tools/sign-protocol.js";
 import { type AccessibilityReport, reportStructure } from "./accessibility.js";
+import { type EditorAnnotation, annotationAt } from "./annotations.js";
 import { EngineClient, EngineError, type RenderedPage } from "./engine.js";
 import { type LinePlacement, placeLine } from "./geometry.js";
 import { DocumentHistory } from "./history.js";
@@ -103,6 +104,7 @@ import {
 	filterCommands,
 	readCommands,
 } from "./palette.js";
+import { canvasRect } from "./placement.js";
 import {
 	type PageGeometry,
 	type Rect,
@@ -230,6 +232,8 @@ interface EditorState {
 	boxColor: readonly [number, number, number];
 	/** The kind of markup the markup tool leaves. */
 	markupKind: MarkupKind;
+	/** The annotations on the page the editor is showing. */
+	annotations: readonly EditorAnnotation[];
 	/** Each page's geometry, for the placements. */
 	geometry: Map<number, PageGeometry>;
 	/** Whether a long operation is running. */
@@ -265,6 +269,7 @@ const state: EditorState = {
 	boxSize: TEXT_BOX_FONT_SIZE,
 	boxColor: BOX_COLOR_BLACK,
 	markupKind: "highlight",
+	annotations: [],
 	geometry: new Map(),
 	busy: false,
 	zoom: 1,
@@ -2344,6 +2349,8 @@ interface Drag {
 	readonly band: HTMLElement | null;
 	/** The points the pointer has made, for the signature's own path. */
 	readonly path: { x: number; y: number }[];
+	/** The annotation the drag is moving, when it is moving one. */
+	readonly moving: EditorAnnotation | null;
 }
 
 let drag: Drag | null = null;
@@ -2402,6 +2409,13 @@ function startDrag(event: PointerEvent): void {
 					wrap.appendChild(made);
 					return made;
 				})();
+	// A drag that starts ON an existing mark MOVES it, when the markup
+	// tool is armed: the reader picks a mark up the way they pick up
+	// anything else on the page.
+	const moving =
+		state.tool === "markup" && state.markupKind !== "note"
+			? annotationAt(state.annotations, hit.x, hit.y)
+			: null;
 	drag = {
 		page: hit.page,
 		startX: hit.x,
@@ -2410,6 +2424,7 @@ function startDrag(event: PointerEvent): void {
 		y: hit.y,
 		band,
 		path: [{ x: hit.x, y: hit.y }],
+		moving,
 	};
 	try {
 		hit.canvas.setPointerCapture(event.pointerId);
@@ -2463,6 +2478,19 @@ function endDrag(event: PointerEvent): void {
 	const geometry = state.geometry.get(current.page);
 	if (geometry === undefined) {
 		setStatus("That page could not be drawn, so nothing was placed on it.", "error");
+		return;
+	}
+	if (state.tool === "markup" && current.moving !== null) {
+		// The mark goes where the pointer let go of it.
+		const dx = hit === null ? 0 : hit.x - current.startX;
+		const dy = hit === null ? 0 : hit.y - current.startY;
+		const from = current.moving.rect;
+		void moveAnnotation(
+			current.page,
+			current.moving.index,
+			{ x: from.x + dx, y: from.y + dy, width: from.width, height: from.height },
+			geometry,
+		);
 		return;
 	}
 	if (state.tool === "markup") {
@@ -3416,9 +3444,7 @@ async function placeMarkup(
 		}
 		await commit(
 			output.bytes,
-			kind === "note"
-				? `Added a note on page ${page + 1}`
-				: `Added a mark on page ${page + 1}`,
+			kind === "note" ? `Added a note on page ${page + 1}` : `Added a mark on page ${page + 1}`,
 		);
 	} catch (error) {
 		setStatus(`The mark could not be added: ${messageOf(error)}`, "error");
@@ -3456,6 +3482,7 @@ async function readComments(): Promise<void> {
 		}
 		const parsed = readAnnotationsReport(new TextDecoder().decode(report.bytes));
 		renderComments(parsed.annotations);
+		state.annotations = editorAnnotations(parsed.annotations, state.page);
 		setStatus(
 			parsed.annotations.length === 0
 				? "This page carries no comments."
@@ -3481,7 +3508,7 @@ function renderComments(annotations: readonly PageAnnotation[]): void {
 	}
 	const list = document.createElement("ul");
 	list.className = "selis-editor-list";
-	for (const annotation of annotations) {
+	annotations.forEach((annotation, index) => {
 		const item = document.createElement("li");
 		const kind = document.createElement("strong");
 		kind.textContent = markupLabel(annotation.subtype);
@@ -3498,9 +3525,132 @@ function renderComments(annotations: readonly PageAnnotation[]): void {
 			who.textContent = ` (${annotation.author})`;
 			item.appendChild(who);
 		}
+		// The mark can be taken off. A comment the reader cannot remove is
+		// a comment they have to live with.
+		const remove = document.createElement("button");
+		remove.type = "button";
+		remove.className = "selis-editor-iconbtn selis-editor-iconbtn--tiny";
+		remove.title = "Remove this mark";
+		remove.setAttribute("aria-label", "Remove this mark");
+		remove.dataset.icon = "close";
+		remove.addEventListener("click", () => {
+			void removeAnnotation(state.page, index);
+		});
+		item.appendChild(remove);
 		list.appendChild(item);
-	}
+	});
 	dom.comments.appendChild(list);
+}
+
+/**
+ * The annotations of a page, in the editor's own terms.
+ *
+ * The engine reports them in the page's own points; the editor needs to know
+ * where they are ON THE SCREEN, so that a reader can pick one up.
+ */
+function editorAnnotations(
+	annotations: readonly PageAnnotation[],
+	page: number,
+): readonly EditorAnnotation[] {
+	const geometry = state.geometry.get(page);
+	if (geometry === undefined) {
+		return [];
+	}
+	return annotations.map((annotation, index) => ({
+		index,
+		rect: canvasRect(geometry, {
+			x: annotation.rect[0],
+			y: annotation.rect[1],
+			width: annotation.rect[2] - annotation.rect[0],
+			height: annotation.rect[3] - annotation.rect[1],
+		}),
+		contents: annotation.contents,
+		subtype: annotation.subtype,
+	}));
+}
+
+/**
+ * Moving and removing an annotation.
+ *
+ * The reader picks a mark up by clicking it and dragging it, with the markup
+ * tool armed: the mark follows the pointer and is written back where it was
+ * let go. A mark can also be taken off from the comments panel.
+ */
+
+/**
+ * Move an annotation to a new rectangle.
+ *
+ * The rectangle is in the canvas's CSS pixels, and it is turned into the
+ * page's own space by the editor's geometry - the same conversion every other
+ * placement uses.
+ */
+async function moveAnnotation(
+	page: number,
+	index: number,
+	rect: Rect,
+	geometry: PageGeometry,
+): Promise<void> {
+	const bytes = state.bytes;
+	if (bytes === null) {
+		setStatus("Open a PDF first.", "error");
+		return;
+	}
+	const user = userRect(geometry, rect);
+	state.busy = true;
+	dom.download.disabled = true;
+	setStatus("Moving the mark…");
+	try {
+		const chunk = await tools();
+		const result = runTool(chunk, {
+			op: "annotate_update",
+			options: {
+				page,
+				index,
+				rect: [user.x, user.y, user.x + user.width, user.y + user.height],
+			},
+			files: [{ name: state.name, bytes }],
+		});
+		const output = result.outputs[0];
+		if (output === undefined) {
+			throw new Error("the engine produced no document");
+		}
+		await commit(output.bytes, "Moved the mark");
+	} catch (error) {
+		setStatus(`The mark could not be moved: ${messageOf(error)}`, "error");
+	} finally {
+		state.busy = false;
+		dom.download.disabled = state.bytes === null;
+	}
+}
+
+/** Take an annotation off the page. */
+async function removeAnnotation(page: number, index: number): Promise<void> {
+	const bytes = state.bytes;
+	if (bytes === null) {
+		setStatus("Open a PDF first.", "error");
+		return;
+	}
+	state.busy = true;
+	dom.download.disabled = true;
+	setStatus("Removing the mark…");
+	try {
+		const chunk = await tools();
+		const result = runTool(chunk, {
+			op: "annotate_update",
+			options: { page, index, remove: true },
+			files: [{ name: state.name, bytes }],
+		});
+		const output = result.outputs[0];
+		if (output === undefined) {
+			throw new Error("the engine produced no document");
+		}
+		await commit(output.bytes, "Removed the mark");
+	} catch (error) {
+		setStatus(`The mark could not be removed: ${messageOf(error)}`, "error");
+	} finally {
+		state.busy = false;
+		dom.download.disabled = state.bytes === null;
+	}
 }
 
 // ── the document's own properties ────────────────────────────────────────────

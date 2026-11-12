@@ -19,6 +19,7 @@
 import { describe, expect, it } from "vitest";
 import type { Matrix } from "./geometry.js";
 import {
+	canvasRect,
 	type PageGeometry,
 	displayRect,
 	displayToUser,
@@ -120,6 +121,33 @@ describe("the display rectangle the overlay writers want", () => {
 		expect(rect.x1).toBeCloseTo(75, 9);
 		expect(rect.y0).toBeCloseTo(612 - 37.5, 9);
 		expect(rect.y1).toBeCloseTo(612, 9);
+	});
+});
+
+describe("the canvas rectangle a user rectangle covers", () => {
+	it("round-trips through the user rectangle", () => {
+		// The annotation's rectangle comes back from the engine in the
+		// page's own points, and the editor has to know where it is on the
+		// screen to let the reader pick it up.
+		const geometry = upright();
+		const canvas = { x: 100, y: 200, width: 300, height: 40 };
+		const user = userRect(geometry, canvas);
+		const back = canvasRect(geometry, user);
+		expect(back.x).toBeCloseTo(canvas.x, 6);
+		expect(back.y).toBeCloseTo(canvas.y, 6);
+		expect(back.width).toBeCloseTo(canvas.width, 6);
+		expect(back.height).toBeCloseTo(canvas.height, 6);
+	});
+
+	it("round-trips on a turned page too", () => {
+		const geometry = turned();
+		const canvas = { x: 100, y: 200, width: 300, height: 40 };
+		const user = userRect(geometry, canvas);
+		const back = canvasRect(geometry, user);
+		expect(back.x).toBeCloseTo(canvas.x, 6);
+		expect(back.y).toBeCloseTo(canvas.y, 6);
+		expect(back.width).toBeCloseTo(canvas.width, 6);
+		expect(back.height).toBeCloseTo(canvas.height, 6);
 	});
 });
 

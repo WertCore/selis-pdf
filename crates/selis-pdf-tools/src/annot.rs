@@ -143,6 +143,85 @@ pub fn annotate(
 	Ok(verification)
 }
 
+/// Options for the browser/CLI update-annotation tool.
+///
+/// The annotation is addressed by its position in the page's `/Annots` order,
+/// exactly as the report lists them.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct UpdateAnnotationOptions {
+	/// 0-based index of the page the annotation is on.
+	pub page: u32,
+	/// The annotation's position in the page's `/Annots` order.
+	pub index: usize,
+	/// Where the annotation goes, in the page's own user space.
+	#[serde(default)]
+	pub rect: Option<[f64; 4]>,
+	/// What the annotation says now.
+	#[serde(default)]
+	pub contents: Option<String>,
+	/// Whether the annotation is taken off the page instead of changed.
+	#[serde(default)]
+	pub remove: bool,
+}
+
+/// Move an annotation, or change what it says, and write the verified result
+/// to `output`.
+///
+/// # Errors
+///
+/// A [`crate::ToolError`] whose message names the refusal — an unreadable
+/// document, a page that does not exist, or an annotation the page does not
+/// carry. On any error no file is committed.
+pub fn update_annotation(
+	path: &str,
+	options: &UpdateAnnotationOptions,
+	output: &str,
+) -> ToolResult<Verification> {
+	let src = read_file(path)?;
+	let in_bytes = u64::try_from(src.len()).unwrap_or(u64::MAX);
+	let budget = Budget::unlimited();
+	let clock = crate::shell_clock();
+	let mut g = crate::runtime::cli_guard(&budget, &clock);
+	let (bytes, report) = if options.remove {
+		selis_pdf_annot::remove_annotation(
+			&src,
+			options.page.saturating_add(1),
+			options.index,
+			&budget,
+			&mut g,
+		)
+	} else {
+		selis_pdf_annot::update_annotation(
+			&src,
+			options.page.saturating_add(1),
+			options.index,
+			options.rect,
+			options.contents.clone(),
+			&budget,
+			&mut g,
+		)
+	}
+	.map_err(|e| CliError(format!("{path}: {e}")))?;
+	let observed = selis_pdf_cos::verify::survey(&src, &budget, &mut g)
+		.map_err(|e| CliError(format!("{path}: input survey failed: {e}")))?;
+	let expected = write_gate::expectations_from(&observed, &PRESERVE_ON_APPEND);
+	let verdict = write_gate::write_verified(&bytes, output, &expected, &budget, &mut g)?;
+	let verification = Verification::from_gate(
+		Some(&observed),
+		&verdict,
+		&expected,
+		in_bytes,
+		u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+	);
+	eprintln!(
+		"updated an annotation on page {}: original bytes preserved -> {output}",
+		report.page
+	);
+	verification.emit_line();
+	Ok(verification)
+}
+
+
 /// The annotations a page carries, as a JSON report.
 ///
 /// The report is a READ-ONLY view: it changes nothing and writes nothing.

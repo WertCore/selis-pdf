@@ -226,6 +226,47 @@ fn a_document_that_is_not_a_pdf_is_refused() {
 }
 
 #[test]
+fn an_annotation_can_be_moved_and_reworded() {
+	let src = build_pdf();
+	let (written, _) = run(&src, &highlight()).expect("the highlight");
+	let budget = Budget::unlimited();
+	let mut g = budget.guard();
+	let (out, report) = update_annotation(
+		&written,
+		1,
+		0,
+		Some([100.0, 40.0, 210.0, 62.0]),
+		Some("Moved and reworded".to_string()),
+		&budget,
+		&mut g,
+	)
+	.expect("the update");
+	assert_eq!(report.page, 1);
+	let annotations = read(&out, 1).expect("the annotations");
+	assert_eq!(annotations.len(), 1);
+	// The mark moved with the rectangle.
+	assert!((annotations[0].rect[0] - 100.0).abs() < 0.01);
+	assert!((annotations[0].rect[1] - 40.0).abs() < 0.01);
+	// And it says what it says now.
+	assert_eq!(annotations[0].contents, "Moved and reworded");
+	// The quads followed the rectangle: a mark that stayed would cover the
+	// wrong words.
+	assert!((annotations[0].quads[0][0] - 100.0).abs() < 0.01);
+}
+
+#[test]
+fn an_annotation_that_is_not_there_is_refused() {
+	let src = build_pdf();
+	let (written, _) = run(&src, &highlight()).expect("the highlight");
+	let budget = Budget::unlimited();
+	let mut g = budget.guard();
+	assert!(
+		update_annotation(&written, 1, 7, None, None, &budget, &mut g).is_err(),
+		"there is no seventh annotation"
+	);
+}
+
+#[test]
 fn a_page_with_no_annotations_carries_none() {
 	let src = build_pdf();
 	let annotations = read(&src, 1).expect("the annotations");

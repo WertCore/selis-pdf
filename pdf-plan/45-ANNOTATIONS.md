@@ -104,6 +104,41 @@ a proof obligation without a test is a hope.
 
 ---
 
+## 3b. The finding the markup work turned up
+
+Writing the markup leg found a defect that has nothing to do with
+annotations:
+
+> **After a text box is added, the OTHER text on the page loses its measured
+> width.**
+
+The text layer reports each line's glyph box, and the editor draws its
+clickable overlay from that box. On a page whose text was measured before the
+text box was added, the same line comes back with a box a fraction of its
+real width — a few pixels instead of hundreds. The line's overlay is scaled
+to that width, so the line becomes **invisible and unclickable**: the reader
+cannot click a line they could click a moment earlier.
+
+The text itself is still in the document, and the page still draws it (the
+raster comes from the engine's renderer, not from the text layer). It is the
+MEASUREMENT that is wrong.
+
+This is in the sign chunk's page rewrite — the text box is a **visual stamp**,
+and the stamp rewrites the page — or in the text layer's reading of the
+rewritten page. **The cause is not yet known, and the fix is not yet made.**
+What is known:
+
+- it happens when the page carries **more than one content stream** after the
+  stamp (the stamp appends its own);
+- it does not happen on its own: the edit, the undo, the redo, the split, the
+  attach and the signature were each tried on their own, and none of them
+  did it.
+
+Until it is fixed, the editor's own check picks a line whose measured width
+is real, because a line whose width has collapsed cannot be clicked at all.
+
+---
+
 ## 4. The evidence
 
 The browser check's `markup` leg:
