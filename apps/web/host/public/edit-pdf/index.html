@@ -33,7 +33,7 @@
 		<link
 			rel="stylesheet"
 			href="/assets/editor.css"
-			integrity="sha384-RjyhW3w23LC6oaojwTCGtOFHKQxLhpjbY6U8kDV6nDVvag+MHyJ4cKJ9b4GBNFD/"
+			integrity="sha384-A0jLD4c2Ks1Y0uVKZN2ru+ZuIjiDQkFit2BBGB/sg0tU4GdEDeoZQ+MhsmjiNoeE"
 			crossorigin="anonymous"
 		/>
 	</head>
@@ -928,122 +928,35 @@
 						data-icon="chevron-left"
 					></button>
 				</div>
-				<div class="selis-editor-inspector__body">
-					<section class="selis-editor-panel" id="selis-editor-panel-tool">
+				<section class="selis-editor-panel" id="selis-editor-panel-tool">
 						<h3 class="selis-editor-panel__title">Tool</h3>
 						<p id="selis-editor-tool-hint" class="selis-editor-hint"></p>
 					</section>
 
-					<details class="selis-editor-details" id="selis-editor-section-export" open>
-						<summary>Last export</summary>
-						<p class="selis-editor-hint">
-							The file the last export produced. The download starts as soon as
-							you press the button, and this link takes it again. To put it
-							somewhere you choose, right-click the link and use your browser's
-							own <em>Save as...</em>.
-						</p>
-						<div id="selis-editor-export-result"></div>
-					</details>
-
-					<details class="selis-editor-details" id="selis-editor-section-fields"
-						open
-					>
-						<summary>Form fields</summary>
-						<p class="selis-editor-hint">
-							Read the form's fields and fill them in. The values are written
-							into the document on this device; viewers rebuild the field
-							appearances when they open it.
-						</p>
-						<div id="selis-editor-fields" class="selis-editor-fields">
-							<p class="selis-editor-hint">Read the fields to fill them in.</p>
-						</div>
-						<div class="selis-editor-actions">
-							<button type="button" id="selis-editor-fields-read">Read the fields</button>
-							<button type="button" id="selis-editor-fields-apply" disabled>
-								Fill them in
-							</button>
-						</div>
-					</details>
-
-					<details
+<details
 						class="selis-editor-details"
-						id="selis-editor-section-outline"
+						id="selis-editor-section-comments"
 					>
-						<summary>Bookmarks</summary>
+						<summary>Comments</summary>
 						<p class="selis-editor-hint">
-							The document's bookmarks — what a reader sees in their sidebar. A
-							bookmark that points at a named destination is shown, but it
-							cannot be edited here.
-						</p>
-						<div id="selis-editor-outline" class="selis-editor-outline">
-							<p class="selis-editor-hint">Read the bookmarks to edit them.</p>
+							The notes and marks in the document — standard PDF annotations.</p>
+						<div id="selis-editor-comments" class="selis-editor-report">
+							<p class="selis-editor-hint">Read the comments to see what is there.</p>
 						</div>
 						<div class="selis-editor-actions">
-							<button type="button" id="selis-editor-outline-read">
-								Read the bookmarks
-							</button>
-							<button type="button" id="selis-editor-outline-add" disabled>
-								Add a bookmark
-							</button>
-							<button type="button" id="selis-editor-outline-apply" disabled>
-								Save them
+							<button type="button" id="selis-editor-comments-read">
+								Read them
 							</button>
 						</div>
 					</details>
 
-					<details
-						class="selis-editor-details"
-						id="selis-editor-section-split"
-					>
-						<summary>Keep these pages</summary>
-						<p class="selis-editor-hint">
-							Take a run of pages out of the document and leave the rest
-							behind. The pages you keep become the document; the ones you
-							drop are gone from it.
-						</p>
-						<div class="selis-editor-grid">
-							<label for="selis-editor-split-from">From page</label>
-							<input id="selis-editor-split-from" type="number" min="1" step="1" value="1" />
-							<label for="selis-editor-split-to">To page</label>
-							<input id="selis-editor-split-to" type="number" min="1" step="1" value="1" />
-						</div>
-						<div class="selis-editor-actions">
-							<button type="button" id="selis-editor-split-apply">
-								Keep those pages
-							</button>
-						</div>
-					</details>
-
-					<details
-						class="selis-editor-details"
-						id="selis-editor-section-accessibility"
-					>
-						<summary>Accessibility</summary>
-						<p class="selis-editor-hint">
-							What the document says about itself: whether it is tagged,
-							and what a screen reader would find in it. The engine can read
-							a document's structure but it cannot write one, so this is a
-							report and not a repair.
-						</p>
-						<div id="selis-editor-accessibility" class="selis-editor-report">
-							<p class="selis-editor-hint">Check the document to see how it reads.</p>
-						</div>
-						<div class="selis-editor-actions">
-							<button type="button" id="selis-editor-accessibility-check">
-								Check it
-							</button>
-						</div>
-					</details>
-
-					<details
+<details
 						class="selis-editor-details"
 						id="selis-editor-section-attachments"
 					>
 						<summary>Attachments</summary>
 						<p class="selis-editor-hint">
-							Files carried inside the document. They travel with it, and
-							they are read on this device like everything else.
-						</p>
+							Files carried inside the document.</p>
 						<div id="selis-editor-attachments" class="selis-editor-report">
 							<p class="selis-editor-hint">Read the attachments to see what is there.</p>
 						</div>
@@ -1061,80 +974,47 @@
 						<input type="file" id="selis-editor-attachment-input" hidden />
 					</details>
 
-					<details
+<details
 						class="selis-editor-details"
-						id="selis-editor-section-protect"
+						id="selis-editor-section-accessibility"
 					>
-						<summary>Password</summary>
+						<summary>Accessibility</summary>
 						<p class="selis-editor-hint">
-							Put a password on the document, or take one off. The password
-							is never sent anywhere: it is used here, on this device, and
-							the browser holds it in memory only while this tab is open.
-						</p>
+							What the document says about itself. A report, not a repair: the engine reads structure but cannot write it.</p>
+						<div id="selis-editor-accessibility" class="selis-editor-report">
+							<p class="selis-editor-hint">Check the document to see how it reads.</p>
+						</div>
+						<div class="selis-editor-actions">
+							<button type="button" id="selis-editor-accessibility-check">
+								Check it
+							</button>
+						</div>
+					</details>
+
+<details
+						class="selis-editor-details"
+						id="selis-editor-section-split"
+					>
+						<summary>Keep these pages</summary>
+						<p class="selis-editor-hint">
+							Keep a run of pages and drop the rest.</p>
 						<div class="selis-editor-grid">
-							<label for="selis-editor-password">Open password</label>
-							<input
-								id="selis-editor-password"
-								type="password"
-								autocomplete="new-password"
-								spellcheck="false"
-							/>
-							<label for="selis-editor-owner-password">Owner password</label>
-							<input
-								id="selis-editor-owner-password"
-								type="password"
-								autocomplete="new-password"
-								spellcheck="false"
-							/>
+							<label for="selis-editor-split-from">From page</label>
+							<input id="selis-editor-split-from" type="number" min="1" step="1" value="1" />
+							<label for="selis-editor-split-to">To page</label>
+							<input id="selis-editor-split-to" type="number" min="1" step="1" value="1" />
 						</div>
 						<div class="selis-editor-actions">
-							<button type="button" id="selis-editor-protect-apply">
-								Protect it
-							</button>
-							<button type="button" id="selis-editor-unlock-apply" disabled>
-								Take the password off
+							<button type="button" id="selis-editor-split-apply">
+								Keep those pages
 							</button>
 						</div>
 					</details>
 
-					<details
-						class="selis-editor-details"
-						id="selis-editor-section-sign"
-					>
-						<summary>Signature</summary>
-						<p class="selis-editor-hint">
-							Draw your signature on the page, where you want it to be. It
-							is stamped onto the page as part of the document's own
-							drawing — it is not a cryptographic signature, and it does not
-							prove who drew it.
-						</p>
-					</details>
-
-					<details
-						class="selis-editor-details"
-						id="selis-editor-section-comments"
-					>
-						<summary>Comments</summary>
-						<p class="selis-editor-hint">
-							The notes and marks in the document. A mark is a standard PDF
-							annotation, so every other reader sees it too.
-						</p>
-						<div id="selis-editor-comments" class="selis-editor-report">
-							<p class="selis-editor-hint">Read the comments to see what is there.</p>
-						</div>
-						<div class="selis-editor-actions">
-							<button type="button" id="selis-editor-comments-read">
-								Read them
-							</button>
-						</div>
-					</details>
-
-					<details class="selis-editor-details" id="selis-editor-section-size">
+<details class="selis-editor-details" id="selis-editor-section-size">
 						<summary>Page size</summary>
 						<p class="selis-editor-hint">
-							Crop the selected page by removing margins, in points, or resize it
-							to a named size.
-						</p>
+							Crop the page by its margins, or resize it to a named size.</p>
 						<div class="selis-editor-grid">
 							<label for="selis-editor-crop-left">Left</label>
 							<input id="selis-editor-crop-left" type="number" min="0" step="1" value="0" />
@@ -1165,12 +1045,10 @@
 						</div>
 					</details>
 
-					<details class="selis-editor-details" id="selis-editor-section-labels">
+<details class="selis-editor-details" id="selis-editor-section-labels">
 						<summary>Page labels</summary>
 						<p class="selis-editor-hint">
-							The number a reader sees in the page box — the roman numeral of a
-							front matter, the figure of a chapter.
-						</p>
+							The number a reader sees in the page box: the roman numeral of a front matter, the figure of a chapter.</p>
 						<div class="selis-editor-grid">
 							<label for="selis-editor-label-style">Style</label>
 							<select id="selis-editor-label-style">
@@ -1193,7 +1071,27 @@
 						</div>
 					</details>
 
-					<details class="selis-editor-details" id="selis-editor-section-numbers">
+<details class="selis-editor-details" id="selis-editor-section-nup">
+						<summary>Several pages per sheet</summary>
+						<p class="selis-editor-hint">
+							Put two, four, six or nine pages on one sheet.</p>
+						<div class="selis-editor-grid">
+							<label for="selis-editor-nup-count">Per sheet</label>
+							<select id="selis-editor-nup-count">
+								<option value="2">2</option>
+								<option value="4">4</option>
+								<option value="6">6</option>
+								<option value="9">9</option>
+							</select>
+						</div>
+						<div class="selis-editor-actions">
+							<button type="button" id="selis-editor-nup-apply">
+								Put them together
+							</button>
+						</div>
+					</details>
+
+<details class="selis-editor-details" id="selis-editor-section-numbers">
 						<summary>Page numbers</summary>
 						<p class="selis-editor-hint">
 							A number on every page, where the reader expects it.
@@ -1215,34 +1113,55 @@
 						</div>
 						<div class="selis-editor-actions">
 							<button type="button" id="selis-editor-numbers-apply">
-								Number the pages
+								Number the pages, and choose where the number sits.</p>
+						<div class="selis-editor-grid">
+							<label for="selis-editor-header-left">Header left</label>
+							<input id="selis-editor-header-left" type="text" />
+							<label for="selis-editor-header-center">Header centre</label>
+							<input id="selis-editor-header-center" type="text" />
+							<label for="selis-editor-header-right">Header right</label>
+							<input id="selis-editor-header-right" type="text" />
+							<label for="selis-editor-footer-left">Footer left</label>
+							<input id="selis-editor-footer-left" type="text" />
+							<label for="selis-editor-footer-center">Footer centre</label>
+							<input id="selis-editor-footer-center" type="text" />
+							<label for="selis-editor-footer-right">Footer right</label>
+							<input id="selis-editor-footer-right" type="text" />
+						</div>
+						<div class="selis-editor-actions">
+							<button type="button" id="selis-editor-header-apply">
+								Write the header and footer
 							</button>
 						</div>
 					</details>
 
-					<details class="selis-editor-details" id="selis-editor-section-nup">
-						<summary>Several pages per sheet</summary>
+<details class="selis-editor-details" id="selis-editor-section-watermark">
+						<summary>Watermark</summary>
 						<p class="selis-editor-hint">
-							Put the pages side by side on a bigger sheet — two on one, four, six
-							or nine. A document that was read becomes one that is printed.
+							A line of text across every page — a draft mark, a confidential
+							stamp.
 						</p>
 						<div class="selis-editor-grid">
-							<label for="selis-editor-nup-count">Per sheet</label>
-							<select id="selis-editor-nup-count">
-								<option value="2">2</option>
-								<option value="4">4</option>
-								<option value="6">6</option>
-								<option value="9">9</option>
+							<label for="selis-editor-watermark-text">Text</label>
+							<input id="selis-editor-watermark-text" type="text" placeholder="DRAFT" />
+							<label for="selis-editor-watermark-size">Size</label>
+							<input id="selis-editor-watermark-size" type="number" min="6" max="200" step="1" value="48" />
+							<label for="selis-editor-watermark-opacity">Opacity</label>
+							<input id="selis-editor-watermark-opacity" type="number" min="0.05" max="1" step="0.05" value="0.2" />
+							<label for="selis-editor-watermark-angle">Angle</label>
+							<select id="selis-editor-watermark-angle">
+								<option value="diagonal">Diagonal</option>
+								<option value="horizontal">Horizontal</option>
 							</select>
 						</div>
 						<div class="selis-editor-actions">
-							<button type="button" id="selis-editor-nup-apply">
-								Put them together
+							<button type="button" id="selis-editor-watermark-apply">
+								Apply the watermark
 							</button>
 						</div>
 					</details>
 
-					<details class="selis-editor-details" id="selis-editor-section-bates">
+<details class="selis-editor-details" id="selis-editor-section-bates">
 						<summary>Bates numbers</summary>
 						<p class="selis-editor-hint">
 							A number on every page, padded and prefixed — the legal way to
@@ -1272,7 +1191,7 @@
 						</div>
 					</details>
 
-					<details class="selis-editor-details" id="selis-editor-section-compress">
+<details class="selis-editor-details" id="selis-editor-section-compress">
 						<summary>Reduce the file size</summary>
 						<p class="selis-editor-hint">
 							Rewrite the document more compactly. The pages look the same; the
@@ -1293,61 +1212,56 @@
 						</div>
 					</details>
 
-					<details class="selis-editor-details" id="selis-editor-section-header">
-						<summary>Header and footer</summary>
+<details
+						class="selis-editor-details"
+						id="selis-editor-section-sign"
+					>
+						<summary>Signature</summary>
 						<p class="selis-editor-hint">
-							A line at the top or the bottom of every page. Use
-							<code>{page}</code> for the page number and <code>{pages}</code>
-							for the page count.
-						</p>
-						<div class="selis-editor-grid">
-							<label for="selis-editor-header-left">Header left</label>
-							<input id="selis-editor-header-left" type="text" />
-							<label for="selis-editor-header-center">Header centre</label>
-							<input id="selis-editor-header-center" type="text" />
-							<label for="selis-editor-header-right">Header right</label>
-							<input id="selis-editor-header-right" type="text" />
-							<label for="selis-editor-footer-left">Footer left</label>
-							<input id="selis-editor-footer-left" type="text" />
-							<label for="selis-editor-footer-center">Footer centre</label>
-							<input id="selis-editor-footer-center" type="text" />
-							<label for="selis-editor-footer-right">Footer right</label>
-							<input id="selis-editor-footer-right" type="text" />
+							Draw your signature on the page. A visual stamp, not a cryptographic signature.</p>
+					</details>
+
+<details class="selis-editor-details" id="selis-editor-section-fields"
+						open
+					>
+						<summary>Form fields</summary>
+						<p class="selis-editor-hint">
+							Read the form's fields, fill them in, and write the values into the document.</p>
+						<div id="selis-editor-fields" class="selis-editor-fields">
+							<p class="selis-editor-hint">Read the fields to fill them in.</p>
 						</div>
 						<div class="selis-editor-actions">
-							<button type="button" id="selis-editor-header-apply">
-								Write the header and footer
+							<button type="button" id="selis-editor-fields-read">Read the fields</button>
+							<button type="button" id="selis-editor-fields-apply" disabled>
+								Fill them in
 							</button>
 						</div>
 					</details>
 
-					<details class="selis-editor-details" id="selis-editor-section-watermark">
-						<summary>Watermark</summary>
+<details
+						class="selis-editor-details"
+						id="selis-editor-section-outline"
+					>
+						<summary>Bookmarks</summary>
 						<p class="selis-editor-hint">
-							A line of text across every page — a draft mark, a confidential
-							stamp.
-						</p>
-						<div class="selis-editor-grid">
-							<label for="selis-editor-watermark-text">Text</label>
-							<input id="selis-editor-watermark-text" type="text" placeholder="DRAFT" />
-							<label for="selis-editor-watermark-size">Size</label>
-							<input id="selis-editor-watermark-size" type="number" min="6" max="200" step="1" value="48" />
-							<label for="selis-editor-watermark-opacity">Opacity</label>
-							<input id="selis-editor-watermark-opacity" type="number" min="0.05" max="1" step="0.05" value="0.2" />
-							<label for="selis-editor-watermark-angle">Angle</label>
-							<select id="selis-editor-watermark-angle">
-								<option value="diagonal">Diagonal</option>
-								<option value="horizontal">Horizontal</option>
-							</select>
+							The document's bookmarks. A bookmark that points at a named destination is shown, but it cannot be edited here.</p>
+						<div id="selis-editor-outline" class="selis-editor-outline">
+							<p class="selis-editor-hint">Read the bookmarks to edit them.</p>
 						</div>
 						<div class="selis-editor-actions">
-							<button type="button" id="selis-editor-watermark-apply">
-								Apply the watermark
+							<button type="button" id="selis-editor-outline-read">
+								Read the bookmarks
+							</button>
+							<button type="button" id="selis-editor-outline-add" disabled>
+								Add a bookmark
+							</button>
+							<button type="button" id="selis-editor-outline-apply" disabled>
+								Save them
 							</button>
 						</div>
 					</details>
 
-					<details class="selis-editor-details" id="selis-editor-section-properties">
+<details class="selis-editor-details" id="selis-editor-section-properties">
 						<summary>Properties</summary>
 						<p class="selis-editor-hint">
 							The document's title, author, subject and keywords.
@@ -1369,7 +1283,7 @@
 						</div>
 					</details>
 
-					<details class="selis-editor-details" id="selis-editor-section-history">
+<details class="selis-editor-details" id="selis-editor-section-history">
 						<summary>History</summary>
 						<p class="selis-editor-hint">
 							Every change, newest first. Undo returns the document to the
@@ -1383,7 +1297,40 @@
 						</div>
 					</details>
 
-					<details class="selis-editor-details" id="selis-editor-section-privacy">
+<details
+						class="selis-editor-details"
+						id="selis-editor-section-protect"
+					>
+						<summary>Password</summary>
+						<p class="selis-editor-hint">
+							Put a password on the document, or take one off. It never leaves this device.</p>
+						<div class="selis-editor-grid">
+							<label for="selis-editor-password">Open password</label>
+							<input
+								id="selis-editor-password"
+								type="password"
+								autocomplete="new-password"
+								spellcheck="false"
+							/>
+							<label for="selis-editor-owner-password">Owner password</label>
+							<input
+								id="selis-editor-owner-password"
+								type="password"
+								autocomplete="new-password"
+								spellcheck="false"
+							/>
+						</div>
+						<div class="selis-editor-actions">
+							<button type="button" id="selis-editor-protect-apply">
+								Protect it
+							</button>
+							<button type="button" id="selis-editor-unlock-apply" disabled>
+								Take the password off
+							</button>
+						</div>
+					</details>
+
+<details class="selis-editor-details" id="selis-editor-section-privacy">
 						<summary>Privacy report</summary>
 						<p class="selis-editor-hint">
 							What the document carries about itself. The report is read on
@@ -1392,7 +1339,7 @@
 						<div class="selis-editor-report"></div>
 					</details>
 
-					<details class="selis-editor-details" id="selis-editor-section-fingerprint">
+<details class="selis-editor-details" id="selis-editor-section-fingerprint">
 						<summary>Fingerprint</summary>
 						<p class="selis-editor-hint">
 							What is inside the document — its pages, its fonts, its images.
@@ -1401,33 +1348,13 @@
 						<div class="selis-editor-report"></div>
 					</details>
 
-					<!--
-						The limits, in the same words the plan uses. A document
-						editor that quietly reflowed a line, or that covered an
-						image and called it a redaction, would be promising
-						something this engine cannot do.
-					-->
-					<section class="selis-editor-panel selis-editor-limits">
-						<h3 class="selis-editor-panel__title">What this editor cannot do</h3>
+<details class="selis-editor-details" id="selis-editor-section-export" open>
+						<summary>Last export</summary>
 						<p class="selis-editor-hint">
-							The text is replaced <strong>where it is drawn</strong> — the line
-							does not re-flow, so a much longer replacement runs over what
-							follows it. Not every line can be changed: a line drawn as several
-							separate runs can only have one of them replaced.
-						</p>
-						<p class="selis-editor-hint">
-							New text and images are drawn <strong>on top of</strong> of the
-							page. A redaction removes the <strong>text</strong> under the region
-							and covers it with a black box; anything else under it — an
-							image, a line of art — is covered, not erased.
-						</p>
-						<p class="selis-editor-hint">
-							Nothing leaves this device. The document is read, changed and written
-							here, and the result downloads straight to you.
-						</p>
-					</section>
-				</div>
-			</aside>
+							The file the last export produced — the link takes it again.</p>
+						<div id="selis-editor-export-result"></div>
+					</details>
+				</aside>
 		</main>
 
 		<footer class="selis-editor-statusbar">
