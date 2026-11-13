@@ -7362,10 +7362,10 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
         .get("session")
         .and_then(Json::as_object)
         .ok_or_else(|| "the page reported no session leg (session = None)".to_string())?;
-    if session.get("openHidden").and_then(Json::as_bool) != Some(true) {
-        return Err("the Open button is still offered while a document is open".into());
+    if session.get("openShown").and_then(Json::as_bool) != Some(false) {
+        return Err("the Open button is on the screen while a document is open".into());
     }
-    if session.get("closeHidden").and_then(Json::as_bool) != Some(false) {
+    if session.get("closeShown").and_then(Json::as_bool) != Some(true) {
         return Err("the Close button is missing while a document is open".into());
     }
     if session.get("restoredPages").and_then(Json::as_u64).unwrap_or(0) < 1 {
@@ -7509,14 +7509,14 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
         .get("emptyBar")
         .and_then(Json::as_object)
         .ok_or_else(|| "the page reported no app-bar state (emptyBar = None)".to_string())?;
-    if empty_bar.get("downloadHidden").and_then(Json::as_bool) != Some(true) {
-        return Err("the Download button is offered while there is nothing to download".into());
+    if empty_bar.get("downloadShown").and_then(Json::as_bool) != Some(false) {
+        return Err("the Download button is on the screen while there is nothing to download".into());
     }
-    if empty_bar.get("openHidden").and_then(Json::as_bool) != Some(false) {
+    if empty_bar.get("openShown").and_then(Json::as_bool) != Some(true) {
         return Err("the Open button is missing while there is no document".into());
     }
-    if empty_bar.get("closeHidden").and_then(Json::as_bool) != Some(true) {
-        return Err("the Close button is offered while there is no document".into());
+    if empty_bar.get("closeShown").and_then(Json::as_bool) != Some(false) {
+        return Err("the Close button is on the screen while there is no document".into());
     }
 
 

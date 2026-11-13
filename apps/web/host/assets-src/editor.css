@@ -74,6 +74,19 @@
 	box-sizing: border-box;
 }
 
+/*
+ * The `hidden` attribute must win.
+ *
+ * A class that sets `display` beats the user agent's `[hidden] { display:
+ * none }`, so a hidden element with a flex rule - a button, a panel - is
+ * still on the screen. One rule for the whole shell, because the alternative
+ * is a rule for every element that can be hidden, and the day one is
+ * forgotten the reader sees two buttons at once.
+ */
+.selis-editor-shell [hidden] {
+	display: none;
+}
+
 .selis-editor-shell :focus-visible {
 	outline: var(--selis-border-thick) solid var(--selis-color-focus-ring);
 	outline-offset: var(--selis-space-1);

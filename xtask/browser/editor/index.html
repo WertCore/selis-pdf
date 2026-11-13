@@ -654,11 +654,17 @@
         fileInput.click = nativeClick;
 
         // The app bar with nothing open: there is nothing to download and
-        // nothing to close.
+        // nothing to close. The measurement is VISIBILITY, not the
+        // attribute: a button with `hidden` on it is still on the screen
+        // when a class sets `display`, and that is what the reader saw.
+        const visible = (id) => {
+          const element = doc.getElementById(id);
+          return element !== null && element.offsetParent !== null;
+        };
         const emptyBar = {
-          downloadHidden: doc.getElementById("selis-download").hidden,
-          openHidden: doc.getElementById("selis-open-file-button").hidden,
-          closeHidden: doc.getElementById("selis-close-file-button").hidden,
+          downloadShown: visible("selis-download"),
+          openShown: visible("selis-open-file-button"),
+          closeShown: visible("selis-close-file-button"),
         };
 
         const inspector = doc.getElementById("selis-editor-inspector");
@@ -1081,11 +1087,11 @@
         if (!line) throw new Error("the document drew no clickable text");
         const lineBox = line.getBoundingClientRect();
         const over = { x: lineBox.left + 2, y: lineBox.top + lineBox.height / 2 };
-        const stack = doc.elementsFromPoint(over.x, over.y);
-        const overTarget = stack[0];
-        // The point is geometrically over the line's own box, and the line
-        // is NOT in the stack: with a placement tool armed the line does not
-        // take the pointer, so the click goes to the canvas underneath.
+        // What the browser would hit at that point. With a placement tool
+        // armed the line does NOT take the pointer, so the answer is the
+        // canvas underneath - and that is the whole claim: a click over
+        // text reaches the canvas.
+        const overTarget = doc.elementFromPoint(over.x, over.y);
         const overText =
           over.x >= lineBox.left &&
           over.x <= lineBox.right &&
@@ -1101,8 +1107,9 @@
           pointerId: 6,
           isPrimary: true,
         };
-        overTarget.dispatchEvent(new PointerEvent("pointerdown", { ...opts, buttons: 1 }));
-        overTarget.dispatchEvent(new PointerEvent("pointerup", { ...opts, buttons: 0 }));
+        const target = overTarget === null ? canvas : overTarget;
+        target.dispatchEvent(new PointerEvent("pointerdown", { ...opts, buttons: 1 }));
+        target.dispatchEvent(new PointerEvent("pointerup", { ...opts, buttons: 0 }));
         try {
           await waitFor(
             () => doc.querySelector(".selis-editor-inline__text") !== null,
@@ -1117,7 +1124,40 @@
               ", the tool was " +
               doc.getElementById("selis-editor-doc").dataset.tool +
               ", the status said " +
-              statusText(doc),
+              statusText(doc) +
+              ", the busy flag was " +
+              (doc.getElementById("selis-editor-doc").dataset.busy || "?") +
+              ", the hit target was " +
+              (doc.getElementById("selis-editor-doc").dataset.hit || "?") +
+              ", the tool was " +
+              (doc.getElementById("selis-editor-doc").dataset.tool2 || "?") +
+              ", the line's pointer was " +
+              (() => {
+                const line = doc.querySelector(".selis-editor-line");
+                return line === null ? "no line" : getComputedStyle(line).pointerEvents;
+              })() +
+              ", the served css has the rule: " +
+              (await doc.defaultView
+                .fetch("/assets/editor.css")
+                .then((response) => response.text())
+                .then((text) => text.includes('[data-tool="text"]'))
+                .catch(() => "not readable")) +
+              ", the loaded sheets are " +
+              Array.from(doc.styleSheets)
+                .map((sheet) => sheet.href || "inline")
+                .join(",") +
+              ", the loaded editor css has the rule: " +
+              Array.from(doc.styleSheets)
+                .filter((sheet) => (sheet.href || "").includes("editor.css"))
+                .map((sheet) => {
+                  try {
+                    return Array.from(sheet.cssRules)
+                      .some((rule) => rule.selectorText && rule.selectorText.includes('[data-tool="text"]'));
+                  } catch (error) {
+                    return "unreadable";
+                  }
+                })
+                .join(","),
           );
         }
         // The editor is cancelled, so the document is left as it was.
@@ -1141,7 +1181,9 @@
             Math.round(lineBox.bottom),
           ],
           over: [Math.round(over.x), Math.round(over.y)],
-          stack: stack.map((element) => element.className || element.tagName),
+          stack: Array.from(doc.elementsFromPoint(over.x, over.y)).map(
+            (element) => element.className || element.tagName,
+          ),
           opened: true,
         };
       }
@@ -1589,8 +1631,12 @@
        * nothing to download.
        */
       async function sessionLeg(doc, win, label) {
-        const openHidden = doc.getElementById("selis-open-file-button").hidden;
-        const closeHidden = doc.getElementById("selis-close-file-button").hidden;
+        const shown = (id) => {
+          const element = doc.getElementById(id);
+          return element !== null && element.offsetParent !== null;
+        };
+        const openShown = shown("selis-open-file-button");
+        const closeShown = shown("selis-close-file-button");
 
         // Reload the frame: the document must come back.
         const reloaded = waitForLoad(frame);
@@ -1609,8 +1655,8 @@
         const filename = (after.getElementById("selis-editor-filename").textContent || "").trim();
         const status = statusText(after);
         return {
-          openHidden: openHidden,
-          closeHidden: closeHidden,
+          openShown: openShown,
+          closeShown: closeShown,
           restoredPages: pages,
           restoredName: filename,
           restoredStatus: status,
