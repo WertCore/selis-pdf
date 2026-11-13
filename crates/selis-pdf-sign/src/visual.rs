@@ -34,10 +34,18 @@ use crate::{
 /// The font resource name the appended content stream uses. Prefixed so it
 /// cannot collide with a name the document already chose.
 const FONT_NAME: &str = "SelisSigF";
+/// The bold face's resource name.
+const FONT_NAME_BOLD: &str = "SelisSigFB";
+/// The italic face's resource name.
+const FONT_NAME_ITALIC: &str = "SelisSigFI";
+/// The bold italic face's resource name.
+const FONT_NAME_BOLD_ITALIC: &str = "SelisSigFBI";
 /// A fixed-font line height, in multiples of the font size.
 const LINE_LEADING: f64 = 1.25;
 /// Horizontal padding inside the stamp rectangle.
 const PADDING: f64 = 3.0;
+/// The width of an underline, in points.
+const SIGN_WIDTH: f64 = 0.6;
 
 /// One typed line of the stamp.
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
@@ -47,6 +55,23 @@ pub struct VisualLine {
     pub text: String,
     /// The line's font size in points. `0` means the stamp's default.
     pub size: f64,
+    /// Whether the line is drawn in the bold face.
+    ///
+    /// The face is one of the standard fourteen, so it is named rather than
+    /// embedded: a page that asks for a bold line gets Helvetica-Bold, which
+    /// every reader has.
+    #[serde(default)]
+    pub bold: bool,
+    /// Whether the line is drawn in the italic face.
+    #[serde(default)]
+    pub italic: bool,
+    /// Whether the line is underlined.
+    ///
+    /// The underline is DRAWN, the way the PDF specification asks for a
+    /// text decoration to be drawn, rather than being a flag no reader
+    /// honours.
+    #[serde(default)]
+    pub underline: bool,
 }
 
 impl VisualLine {
@@ -56,6 +81,36 @@ impl VisualLine {
         Self {
             text: text.into(),
             size: 0.0,
+            bold: false,
+            italic: false,
+            underline: false,
+        }
+    }
+
+    /// The face a line is drawn in.
+    ///
+    /// The standard fourteen, named: Helvetica, Helvetica-Bold,
+    /// Helvetica-Oblique and Helvetica-BoldOblique. They are named rather
+    /// than embedded, so a page with a bold line costs nothing and every
+    /// reader has the face.
+    #[must_use]
+    pub fn face(&self) -> &'static str {
+        match (self.bold, self.italic) {
+            (true, true) => "Helvetica-BoldOblique",
+            (true, false) => "Helvetica-Bold",
+            (false, true) => "Helvetica-Oblique",
+            (false, false) => "Helvetica",
+        }
+    }
+
+    /// The resource name a line's face is filed under.
+    #[must_use]
+    pub fn font_name(&self) -> &'static str {
+        match (self.bold, self.italic) {
+            (true, true) => FONT_NAME_BOLD_ITALIC,
+            (true, false) => FONT_NAME_BOLD,
+            (false, true) => FONT_NAME_ITALIC,
+            (false, false) => FONT_NAME,
         }
     }
 }
@@ -216,19 +271,30 @@ pub fn sign_visual(
         Some(Obj::Dict(pairs)) => pairs,
         _ => Vec::new(),
     };
-    let font = Obj::Dict(vec![
-        (crate::bytes(b"Type"), Obj::Name(crate::bytes(b"Font"))),
-        (crate::bytes(b"Subtype"), Obj::Name(crate::bytes(b"Type1"))),
-        (
-            crate::bytes(b"BaseFont"),
-            Obj::Name(crate::bytes(b"Helvetica")),
-        ),
-        (
-            crate::bytes(b"Encoding"),
-            Obj::Name(crate::bytes(b"WinAnsiEncoding")),
-        ),
-    ]);
-    dict_set(&mut fonts, FONT_NAME.as_bytes(), font);
+    // The four faces of the standard Helvetica family, named rather than
+    // embedded: a page that asks for a bold line gets Helvetica-Bold, which
+    // every reader already has, and the document grows by a dictionary
+    // rather than by a font.
+    for (name, base) in [
+        (FONT_NAME, "Helvetica"),
+        (FONT_NAME_BOLD, "Helvetica-Bold"),
+        (FONT_NAME_ITALIC, "Helvetica-Oblique"),
+        (FONT_NAME_BOLD_ITALIC, "Helvetica-BoldOblique"),
+    ] {
+        let font = Obj::Dict(vec![
+            (crate::bytes(b"Type"), Obj::Name(crate::bytes(b"Font"))),
+            (crate::bytes(b"Subtype"), Obj::Name(crate::bytes(b"Type1"))),
+            (
+                crate::bytes(b"BaseFont"),
+                Obj::Name(crate::bytes(base.as_bytes())),
+            ),
+            (
+                crate::bytes(b"Encoding"),
+                Obj::Name(crate::bytes(b"WinAnsiEncoding")),
+            ),
+        ]);
+        dict_set(&mut fonts, name.as_bytes(), font);
+    }
     dict_set(&mut resources, b"Font", Obj::Dict(fonts));
     dict_set(
         &mut page_dict,
@@ -447,7 +513,7 @@ pub(crate) fn content_stream(
             let ty = baseline - size;
             let (ux, uy) = page.display_to_user(tx, ty);
             out.extend_from_slice(b"BT\n");
-            out.extend_from_slice(format!("/{FONT_NAME} {} Tf\n", real(size)).as_bytes());
+            out.extend_from_slice(format!("/{} {} Tf\n", line.font_name(), real(size)).as_bytes());
             out.extend_from_slice(
                 format!(
                     "{} {} {} {} {} {} Tm\n",
@@ -463,6 +529,37 @@ pub(crate) fn content_stream(
             out.push(b'(');
             out.extend_from_slice(&escape_text(&encoded));
             out.extend_from_slice(b") Tj\nET\n");
+            // The underline is DRAWN, the way a text decoration is drawn in
+            // PDF: a flag no reader honours would be a decoration on paper.
+            if line.underline {
+                let underline_y = ty - size * 0.12;
+                let (ux, uy) = page.display_to_user(tx, underline_y);
+                let line_width = text_width(&encoded, size);
+                let (vx, vy) = page.display_dir_to_user(line_width, 0.0);
+                out.extend_from_slice(
+                    format!(
+                        "{} {} {} {} {} {} cm\n",
+                        real(dx),
+                        real(dy),
+                        real(cx),
+                        real(cy),
+                        real(ux),
+                        real(uy)
+                    )
+                    .as_bytes(),
+                );
+                out.extend_from_slice(format!("{} w\n0 0 0 RG\n", real(SIGN_WIDTH)).as_bytes());
+                out.extend_from_slice(
+                    format!(
+                        "{} {} m\n{} {} l\nS\n",
+                        real(0.0),
+                        real(0.0),
+                        real(vx),
+                        real(vy)
+                    )
+                    .as_bytes(),
+                );
+            }
             baseline -= size * LINE_LEADING;
         }
     }

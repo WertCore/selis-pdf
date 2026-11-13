@@ -7237,6 +7237,14 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
     if text_box.get("carriesColour").and_then(Json::as_bool) != Some(true) {
         return Err("the text box is not red in the produced file".into());
     }
+    // The styles the reader chose are in the FILE: the face it asked for,
+    // and the rule under the line.
+    if text_box.get("carriesTheFace").and_then(Json::as_bool) != Some(true) {
+        return Err("the text box is not in the face the reader chose".into());
+    }
+    if text_box.get("carriesTheRule").and_then(Json::as_bool) != Some(true) {
+        return Err("the text box is not underlined".into());
+    }
 
     // The placement tools, tested through the browser's own hit test.
     let placement = report
@@ -7293,7 +7301,10 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
             "the accessibility report said nothing about the document's tags: {report_text:?}"
         ));
     }
-    let attachments = panels.get("attachments").and_then(Json::as_str).unwrap_or("");
+    let attachments = panels
+        .get("attachments")
+        .and_then(Json::as_str)
+        .unwrap_or("");
     if !attachments.contains("notes.txt") {
         return Err(format!(
             "the attached file is not in the document's list of attachments: {attachments:?}"
@@ -7311,7 +7322,9 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
         .ok_or_else(|| "the page reported no tools leg (tools = None)".to_string())?;
     let measured = tools.get("measured").and_then(Json::as_str).unwrap_or("");
     if !measured.contains("pt") || !measured.contains("mm") {
-        return Err(format!("the measurement said nothing about the page: {measured:?}"));
+        return Err(format!(
+            "the measurement said nothing about the page: {measured:?}"
+        ));
     }
     if tools.get("overlay").and_then(Json::as_u64).unwrap_or(0) < 1 {
         return Err("the measurement was not drawn on the page".into());
@@ -7344,7 +7357,9 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
     }
     let comments = markup.get("comments").and_then(Json::as_str).unwrap_or("");
     if !comments.contains("Highlight") {
-        return Err(format!("the document's own report does not list the mark: {comments:?}"));
+        return Err(format!(
+            "the document's own report does not list the mark: {comments:?}"
+        ));
     }
     // A mark can be picked up and put down, and taken off.
     let moved = markup.get("moved").and_then(Json::as_str).unwrap_or("");
@@ -7368,12 +7383,22 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
     if session.get("closeShown").and_then(Json::as_bool) != Some(true) {
         return Err("the Close button is missing while a document is open".into());
     }
-    if session.get("restoredPages").and_then(Json::as_u64).unwrap_or(0) < 1 {
+    if session
+        .get("restoredPages")
+        .and_then(Json::as_u64)
+        .unwrap_or(0)
+        < 1
+    {
         return Err("the document did not survive the reload".into());
     }
-    let restored = session.get("restoredStatus").and_then(Json::as_str).unwrap_or("");
+    let restored = session
+        .get("restoredStatus")
+        .and_then(Json::as_str)
+        .unwrap_or("");
     if !restored.contains("Restored") {
-        return Err(format!("the reload did not restore the document: {restored:?}"));
+        return Err(format!(
+            "the reload did not restore the document: {restored:?}"
+        ));
     }
 
     // The inline editor must BE the line it is over.
@@ -7395,7 +7420,9 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
         return Err("the inline editor is not over the line it is editing".into());
     }
     if inline.get("committedOnClickAway").and_then(Json::as_bool) != Some(true) {
-        return Err("clicking away from the editor threw the edit away instead of keeping it".into());
+        return Err(
+            "clicking away from the editor threw the edit away instead of keeping it".into(),
+        );
     }
 
     let image = report
@@ -7510,7 +7537,9 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
         .and_then(Json::as_object)
         .ok_or_else(|| "the page reported no app-bar state (emptyBar = None)".to_string())?;
     if empty_bar.get("downloadShown").and_then(Json::as_bool) != Some(false) {
-        return Err("the Download button is on the screen while there is nothing to download".into());
+        return Err(
+            "the Download button is on the screen while there is nothing to download".into(),
+        );
     }
     if empty_bar.get("openShown").and_then(Json::as_bool) != Some(true) {
         return Err("the Open button is missing while there is no document".into());
@@ -7518,7 +7547,6 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
     if empty_bar.get("closeShown").and_then(Json::as_bool) != Some(false) {
         return Err("the Close button is on the screen while there is no document".into());
     }
-
 
     let export = report
         .get("export")
@@ -7535,10 +7563,7 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
         ));
     }
     // A PNG is a PNG: it starts with the four bytes 89 50 4E 47.
-    let png_header = export
-        .get("pngHeader")
-        .and_then(Json::as_str)
-        .unwrap_or("");
+    let png_header = export.get("pngHeader").and_then(Json::as_str).unwrap_or("");
     if !png_header.starts_with("\u{89}PNG") && !png_header.contains("PNG") {
         return Err(format!(
             "the PNG export is not a PNG (it starts {png_header:?})"

@@ -1597,6 +1597,48 @@
 	pointer-events: auto;
 }
 
+/*
+ * The styles: bold, italic and underline, as three small marks.
+ *
+ * They are letters rather than icons, because a letter IS the mark: "B" is
+ * what bold looks like everywhere else on the screen.
+ */
+.selis-editor-inline__style {
+	width: 22px;
+	height: 22px;
+	padding: 0;
+	border: 1px solid transparent;
+	border-radius: var(--selis-radius-sm);
+	background: transparent;
+	color: var(--selis-color-fg);
+	font: inherit;
+	font-size: var(--selis-text-sm);
+	line-height: 1;
+	cursor: pointer;
+}
+
+.selis-editor-inline__style:hover {
+	background: var(--selis-color-bg-inset);
+}
+
+.selis-editor-inline__style[aria-pressed="true"] {
+	border-color: var(--selis-color-accent);
+	background: var(--selis-color-accent-subtle);
+	color: var(--selis-color-accent);
+}
+
+.selis-editor-inline__style--bold {
+	font-weight: 700;
+}
+
+.selis-editor-inline__style--italic {
+	font-style: italic;
+}
+
+.selis-editor-inline__style--underline {
+	text-decoration: underline;
+}
+
 /* The size: the ladder every other editor offers. */
 .selis-editor-inline__size {
 	height: 22px;

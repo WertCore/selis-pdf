@@ -69,6 +69,7 @@ import {
 	readAnnotationsReport,
 } from "./markup.js";
 import { measureOnCanvas, measurementText } from "./measure.js";
+import { PLAIN_STYLE, type TextStyle, withStyle } from "./text-style.js";
 import {
 	type EditorOperation,
 	PAGE_SIZES,
@@ -233,6 +234,8 @@ interface EditorState {
 	boxColor: readonly [number, number, number];
 	/** The kind of markup the markup tool leaves. */
 	markupKind: MarkupKind;
+	/** The style of the text the reader is adding. */
+	boxStyle: TextStyle;
 	/** The annotations on the page the editor is showing. */
 	annotations: readonly EditorAnnotation[];
 	/** Whether the document is kept between visits to this page. */
@@ -272,6 +275,7 @@ const state: EditorState = {
 	boxSize: TEXT_BOX_FONT_SIZE,
 	boxColor: BOX_COLOR_BLACK,
 	markupKind: "highlight",
+	boxStyle: PLAIN_STYLE,
 	annotations: [],
 	kept: false,
 	geometry: new Map(),
@@ -2063,6 +2067,13 @@ function closeInline(): void {
 	inline = null;
 }
 
+/** What each style is called, for the button's name and its tooltip. */
+const STYLE_LABELS: Readonly<Record<"bold" | "italic" | "underline", string>> = {
+	bold: "Bold",
+	italic: "Italic",
+	underline: "Underline",
+};
+
 /**
  * Open the inline editor over a rectangle on the page.
  *
@@ -2147,6 +2158,23 @@ function openInlineAt(
 				: "Enter applies · Escape cancels";
 
 	if (mode.kind === "new-box") {
+		// The styles, the way every editor that can draw text offers them:
+		// bold, italic and underline, as three small marks.
+		for (const flag of ["bold", "italic", "underline"] as const) {
+			const button = document.createElement("button");
+			button.type = "button";
+			button.className = `selis-editor-inline__style selis-editor-inline__style--${flag}`;
+			button.dataset.style = flag;
+			button.title = STYLE_LABELS[flag];
+			button.setAttribute("aria-label", STYLE_LABELS[flag]);
+			button.setAttribute("aria-pressed", state.boxStyle[flag] ? "true" : "false");
+			button.addEventListener("click", () => {
+				state.boxStyle = withStyle(state.boxStyle, flag, !state.boxStyle[flag]);
+				button.setAttribute("aria-pressed", state.boxStyle[flag] ? "true" : "false");
+			});
+			tools.appendChild(button);
+		}
+
 		const select = document.createElement("select");
 		select.className = "selis-editor-inline__size";
 		select.setAttribute("aria-label", "The size of the new text");
@@ -2742,6 +2770,7 @@ async function applyTextBox(page: number, click: Rect, text: string): Promise<vo
 			text,
 			size,
 			state.boxColor,
+			state.boxStyle,
 		);
 		const response = runSign(chunk, {
 			op: "stamp",

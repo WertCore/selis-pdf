@@ -300,11 +300,20 @@ export function textBoxOptions(
 	text: string,
 	fontSize: number,
 	color: readonly [number, number, number] = [0.05, 0.05, 0.12],
+	style: { readonly bold?: boolean; readonly italic?: boolean; readonly underline?: boolean } = {},
 ): Record<string, unknown> {
 	return {
 		page: page + 1,
 		rect: [rect.x0, rect.y0, rect.x1, rect.y1],
-		lines: [{ text, size: fontSize }],
+		lines: [
+			{
+				text,
+				size: fontSize,
+				bold: style.bold === true,
+				italic: style.italic === true,
+				underline: style.underline === true,
+			},
+		],
 		strokes: [],
 		color: [color[0], color[1], color[2]],
 		strokeWidth: 1.5,

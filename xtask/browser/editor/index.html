@@ -456,6 +456,18 @@
         const chosenSize = select ? select.value : "";
         const chosenColour = red && red.getAttribute("aria-pressed") === "true" ? "Red" : "";
 
+        // The styles: bold, italic and underline, the way every editor that
+        // can draw text offers them.
+        for (const flag of ["bold", "italic", "underline"]) {
+          const button = tools.querySelector('button[data-style="' + flag + '"]');
+          if (!button) throw new Error("the formatting row has no " + flag + " button");
+          button.click();
+        }
+        const styles = [...tools.querySelectorAll("button[data-style]")].map((button) => ({
+          flag: button.dataset.style,
+          pressed: button.getAttribute("aria-pressed"),
+        }));
+
         const text = "Added by the editor";
         area.value = text;
         area.dispatchEvent(
@@ -475,6 +487,10 @@
           carriesText: produced.carriesText.indexOf(text) >= 0,
           chosenSize: chosenSize,
           chosenColour: chosenColour,
+          styles: styles,
+          // The face is in the FILE, and so is the rule under the line.
+          carriesTheFace: produced.carriesText.indexOf("Helvetica-BoldOblique") >= 0,
+          carriesTheRule: produced.carriesText.indexOf(" l\n") >= 0,
           // The stamp writes the colour into the content stream as
           // "r g b rg". A red box has to be red in the FILE.
           carriesColour: produced.carriesText.indexOf("1 0 0 rg") >= 0,

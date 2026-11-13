@@ -36,6 +36,9 @@ pub(crate) fn stamp(
         .map(|text| selis_pdf_tools::VisualLine {
             text: text.clone(),
             size: font_size,
+            bold: false,
+            italic: false,
+            underline: false,
         })
         .collect();
     let options = selis_pdf_tools::VisualOptions {

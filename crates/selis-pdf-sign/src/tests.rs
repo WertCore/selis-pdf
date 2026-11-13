@@ -112,6 +112,76 @@ fn visual_options() -> VisualOptions {
 }
 
 #[test]
+fn a_bold_italic_line_is_drawn_in_the_bold_italic_face() {
+    // The face is NAMED, not embedded: the standard fourteen are in every
+    // reader, and a document that asks for a bold line costs a dictionary
+    // rather than a font.
+    let mut options = visual_options();
+    options.lines = vec![VisualLine {
+        text: "Bold".to_string(),
+        size: 12.0,
+        bold: true,
+        italic: true,
+        underline: false,
+    }];
+    let src = base_pdf(None);
+    let budget = Budget::unlimited();
+    let mut g = budget.guard();
+    let (out, _) = sign_visual(&src, &options, &budget, &mut g).expect("the stamp");
+    let text = String::from_utf8_lossy(&out);
+    assert!(
+        text.contains("Helvetica-BoldOblique"),
+        "the bold italic face is in the page's resources: {text}"
+    );
+    assert!(
+        text.contains("/SelisSigFBI"),
+        "the line is drawn in the bold italic face: {text}"
+    );
+}
+
+#[test]
+fn an_underlined_line_is_underlined() {
+    // The underline is DRAWN, the way a text decoration is drawn in PDF: a
+    // flag no reader honours would be a decoration on paper.
+    let mut options = visual_options();
+    options.lines = vec![VisualLine {
+        text: "Under".to_string(),
+        size: 12.0,
+        bold: false,
+        italic: false,
+        underline: true,
+    }];
+    let src = base_pdf(None);
+    let budget = Budget::unlimited();
+    let mut g = budget.guard();
+    let (out, _) = sign_visual(&src, &options, &budget, &mut g).expect("the stamp");
+    let text = String::from_utf8_lossy(&out);
+    assert!(text.contains(" m\n"), "the underline is drawn: {text}");
+    assert!(text.contains(" l\n"), "the underline is drawn: {text}");
+    assert!(text.contains("S\n"), "the underline is stroked: {text}");
+}
+
+#[test]
+fn a_plain_line_is_drawn_in_the_plain_face() {
+    let mut options = visual_options();
+    options.lines = vec![VisualLine {
+        text: "Plain".to_string(),
+        size: 12.0,
+        bold: false,
+        italic: false,
+        underline: false,
+    }];
+    let src = base_pdf(None);
+    let budget = Budget::unlimited();
+    let mut g = budget.guard();
+    let (out, _) = sign_visual(&src, &options, &budget, &mut g).expect("the stamp");
+    let text = String::from_utf8_lossy(&out);
+    assert!(
+        text.contains("/SelisSigF 12 Tf"),
+        "the plain face is used: {text}"
+    );
+}
+#[test]
 fn a_visual_stamp_appends_a_revision_and_preserves_the_prefix() {
     let src = base_pdf(None);
     let budget = Budget::profile(Surface::Viewer);

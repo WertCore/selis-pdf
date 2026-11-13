@@ -56,7 +56,9 @@ describe("the options for placing content", () => {
 		const options = textBoxOptions(2, { x0: 10, y0: 20, x1: 110, y1: 40 }, "Hi", 12);
 		expect(options.page).toBe(3);
 		expect(options.rect).toEqual([10, 20, 110, 40]);
-		expect(options.lines).toEqual([{ text: "Hi", size: 12 }]);
+		expect(options.lines).toEqual([
+			{ text: "Hi", size: 12, bold: false, italic: false, underline: false },
+		]);
 		expect(options.border).toBe(false);
 		expect(options.color).toEqual([0.05, 0.05, 0.12]);
 	});
@@ -71,7 +73,22 @@ describe("the options for placing content", () => {
 		);
 		expect(options.color).toEqual([1, 0, 0]);
 		expect(options.fontSize).toBe(18);
-		expect(options.lines).toEqual([{ text: "Hi", size: 18 }]);
+		expect(options.lines).toEqual([
+			{ text: "Hi", size: 18, bold: false, italic: false, underline: false },
+		]);
+	});
+
+	it("places a text box in the style the reader chose", () => {
+		// The styles travel with the line, because they are the line's
+		// style: the engine draws the face and rules the underline.
+		const options = textBoxOptions(2, { x0: 10, y0: 20, x1: 110, y1: 40 }, "Hi", 12, undefined, {
+			bold: true,
+			italic: true,
+			underline: true,
+		});
+		expect(options.lines).toEqual([
+			{ text: "Hi", size: 12, bold: true, italic: true, underline: true },
+		]);
 	});
 
 	it("places an image at a point, opaque and not tiled", () => {
