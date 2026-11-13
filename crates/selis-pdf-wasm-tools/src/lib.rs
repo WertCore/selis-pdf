@@ -1172,51 +1172,45 @@ fn run_form_fields(stem: &str, bytes_in: usize) -> Result<RunOutput, ToolError> 
     Ok((verification, reports, vec![(name, json)], None))
 }
 
-
 /// Read the annotations a page carries, as a JSON report.
 ///
 /// The report is a READ-ONLY view: it changes nothing and writes nothing.
 fn run_annotations(
-	options: &serde_json::Value,
-	stem: &str,
-	bytes_in: usize,
+    options: &serde_json::Value,
+    stem: &str,
+    bytes_in: usize,
 ) -> Result<RunOutput, ToolError> {
-	let page = option_u64(options, "page").unwrap_or(0);
-	let page = u32::try_from(page).unwrap_or(u32::MAX);
-	let json = selis_pdf_tools::annotations("in/0", page)?;
-	let verification = Verification {
-		pages_in: None,
-		pages_out: 0,
-		annotations_in: None,
-		annotations_out: 0,
-		fields_in: None,
-		fields_out: 0,
-		ocgs_in: None,
-		ocgs_out: 0,
-		outline_entries_in: None,
-		outline_entries_out: 0,
-		embedded_files_in: None,
-		embedded_files_out: 0,
-		bytes_in: u64::try_from(bytes_in).unwrap_or(u64::MAX),
-		bytes_out: u64::try_from(json.len()).unwrap_or(u64::MAX),
-		verdict: "read".to_string(),
-		checked: Vec::new(),
-		repair_mode: None,
-	};
-	let name = format!("{stem}-annotations.json");
-	let reports = vec![serde_json::json!({
-		"name": name,
-		"kind": "report",
-		"pages": 0,
-		"bytes": json.len(),
-		"verdict": verification.verdict,
-	})];
-	Ok((
-		verification,
-		reports,
-		vec![(name, json.into_bytes())],
-		None,
-	))
+    let page = option_u64(options, "page").unwrap_or(0);
+    let page = u32::try_from(page).unwrap_or(u32::MAX);
+    let json = selis_pdf_tools::annotations("in/0", page)?;
+    let verification = Verification {
+        pages_in: None,
+        pages_out: 0,
+        annotations_in: None,
+        annotations_out: 0,
+        fields_in: None,
+        fields_out: 0,
+        ocgs_in: None,
+        ocgs_out: 0,
+        outline_entries_in: None,
+        outline_entries_out: 0,
+        embedded_files_in: None,
+        embedded_files_out: 0,
+        bytes_in: u64::try_from(bytes_in).unwrap_or(u64::MAX),
+        bytes_out: u64::try_from(json.len()).unwrap_or(u64::MAX),
+        verdict: "read".to_string(),
+        checked: Vec::new(),
+        repair_mode: None,
+    };
+    let name = format!("{stem}-annotations.json");
+    let reports = vec![serde_json::json!({
+        "name": name,
+        "kind": "report",
+        "pages": 0,
+        "bytes": json.len(),
+        "verdict": verification.verdict,
+    })];
+    Ok((verification, reports, vec![(name, json.into_bytes())], None))
 }
 
 /// Run one tool across every selected document, each file on its own.

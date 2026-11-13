@@ -6168,7 +6168,8 @@ endobj
 ".to_string(),
         ];
         let mut out = b"%PDF-1.4
-".to_vec();
+"
+        .to_vec();
         let mut offsets = Vec::new();
         for object in &mut objects {
             offsets.push(out.len());
