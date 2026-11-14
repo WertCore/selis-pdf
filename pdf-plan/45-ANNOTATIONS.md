@@ -125,8 +125,7 @@ MEASUREMENT that is wrong.
 
 This is in the sign chunk's page rewrite — the text box is a **visual stamp**,
 and the stamp rewrites the page — or in the text layer's reading of the
-rewritten page. **The cause is not yet known, and the fix is not yet made.**
-What is known:
+rewritten page. What is known:
 
 - it needs **both** an edited page and a stamp. A stamp on a page whose text
   was never edited measures fine (488px, then 426px for the box itself), and
@@ -135,8 +134,86 @@ What is known:
 - it is not the undo, the redo, the split, the attach or the signature: each
   was tried on its own, and none of them did it.
 
-Until it is fixed, the editor's own check picks a line whose measured width
-is real, because a line whose width has collapsed cannot be clicked at all.
+### 3b-i. The cause: the stamp numbered its objects from the wrong revision
+
+The stamp writes an **incremental update**: the original bytes are kept and
+the changed objects are appended. The object numbers it uses must not be
+numbers the document already uses.
+
+They were:
+
+```rust
+doc.revisions().last()          // the NEWEST revision only
+    .map(|revision| revision.entries.keys().copied().max().unwrap_or(0) + 1)
+```
+
+An incremental update writes **only the objects it changes**, so the newest
+revision's table holds ONE entry — the object the editor's text edit
+rewrote. The max of that table is the edited object's number, and the stamp
+handed out the number after it.
+
+In the check's fixture the page's font is object 5 and the edited content
+stream is object 4, so the stamp's own content stream was numbered 5 — the
+font's number. The stamp **overwrote the page's font with its content
+stream**:
+
+```
+3 0 obj
+<</Type /Page/Parent 2 0 R/MediaBox [0 0 300 200]
+  /Contents [4 0 R 5 0 R]/Resources 6 0 R>>
+endobj
+5 0 obj
+<</Length 102>>
+stream
+q 0.05 0.05 0.12 rg ... (A stamp) Tj ET Q
+endstream
+endobj
+6 0 obj
+<</Font <</F1 5 0 R ...>>>>     <-- /F1 now points at the stamp's stream
+endobj
+```
+
+So `/F1` resolved to a stream instead of a font dictionary. The page still
+DREW its text — the renderer substitutes a face when a font cannot be
+read — but the font's `/Widths` were gone, so the text layer's advance
+table had no widths and every line measured a fraction of its real width.
+
+The fix is one line and it is the same rule the annotation crate already
+used: **every revision counts**, because a document's object numbers are
+the highest across all of them.
+
+```rust
+let mut highest = 0u32;
+for revision in doc.revisions() {
+    for number in revision.entries.keys() {
+        highest = highest.max(*number);
+    }
+}
+highest.saturating_add(1)
+```
+
+### 3b-ii. The proof
+
+The sign crate has a test that reproduces the collision
+(`a_stamp_after_an_edit_does_not_overwrite_the_page_font`): it edits a
+document, stamps it, and asks whether object 5 is still a font. It fails
+without the fix and passes with it.
+
+And the editor's own check measures what the reader can click, before the
+stamp and after it:
+
+```json
+{"widthsBefore": [{"text": "Invoice total: 1200 USD", "width": 247}],
+ "widthsAfter":  [{"text": "Invoice total: 1200 USD", "width": 247},
+                  {"text": "Added by the editor", "width": 442}]}
+```
+
+Without the fix the same check says:
+
+```
+the line "Invoice total: 1200 USD" measured 247px before the stamp and 0px
+after it; the stamp took the page's font away
+```
 
 ---
 

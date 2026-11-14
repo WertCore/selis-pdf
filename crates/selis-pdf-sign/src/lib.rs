@@ -485,18 +485,25 @@ pub(crate) fn carried_trailer(carried: &selis_pdf_cos::revision::Revision) -> Ve
     out
 }
 
-/// The next free object number in the newest revision.
+/// The next free object number in the document.
+///
+/// EVERY revision counts, not just the newest. An incremental update writes
+/// only the objects it changes, so the newest revision's table holds one
+/// entry - the object that was edited - and the max of THAT alone hands out a
+/// number an earlier revision already used.
+///
+/// That is not a theoretical collision: a document that was edited and then
+/// stamped had its FONT overwritten by the stamp's content stream, because the
+/// font was object 5 and the stamp's stream was numbered 5. The page still
+/// drew its text - the renderer substitutes a face - but the text layer lost
+/// the font's WIDTHS, so every line measured a fraction of its real width and
+/// became unclickable.
 pub(crate) fn next_object_number(doc: &Doc) -> u32 {
-    doc.revisions()
-        .last()
-        .map(|revision| {
-            revision
-                .entries
-                .keys()
-                .copied()
-                .max()
-                .unwrap_or(0)
-                .saturating_add(1)
-        })
-        .unwrap_or(1)
+    let mut highest = 0u32;
+    for revision in doc.revisions() {
+        for number in revision.entries.keys() {
+            highest = highest.max(*number);
+        }
+    }
+    highest.saturating_add(1)
 }

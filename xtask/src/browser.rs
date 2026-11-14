@@ -7237,6 +7237,61 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
     if text_box.get("carriesColour").and_then(Json::as_bool) != Some(true) {
         return Err("the text box is not red in the produced file".into());
     }
+    // The lines the reader can still click.
+    //
+    // A stamp that overwrites the page's FONT leaves the text on the page and
+    // takes its WIDTHS with it: the line then measures a fraction of its real
+    // width, the overlay that follows the measurement shrinks with it, and the
+    // line becomes unclickable. Every line that was there before the stamp
+    // must still be most of its width afterwards.
+    let widths_before = text_box
+        .get("widthsBefore")
+        .and_then(Json::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(Json::as_object)
+                .map(|row| {
+                    (
+                        row.get("text")
+                            .and_then(Json::as_str)
+                            .unwrap_or("")
+                            .to_string(),
+                        row.get("width").and_then(Json::as_u64).unwrap_or(0),
+                    )
+                })
+                .collect::<Vec<(String, u64)>>()
+        })
+        .unwrap_or_default();
+    let widths_after = text_box
+        .get("widthsAfter")
+        .and_then(Json::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(Json::as_object)
+                .map(|row| {
+                    (
+                        row.get("text")
+                            .and_then(Json::as_str)
+                            .unwrap_or("")
+                            .to_string(),
+                        row.get("width").and_then(Json::as_u64).unwrap_or(0),
+                    )
+                })
+                .collect::<Vec<(String, u64)>>()
+        })
+        .unwrap_or_default();
+    for (text, before) in &widths_before {
+        let Some((_, after)) = widths_after.iter().find(|(line, _)| line == text) else {
+            continue;
+        };
+        if *before > 40 && after.saturating_mul(2) < *before {
+            return Err(format!(
+                "the line {text:?} measured {before}px before the stamp and {after}px after it; \
+                 the stamp took the page's font away"
+            ));
+        }
+    }
+
     // The styles the reader chose are in the FILE: the face it asked for,
     // and the rule under the line.
     if text_box.get("carriesTheFace").and_then(Json::as_bool) != Some(true) {

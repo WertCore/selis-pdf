@@ -440,6 +440,10 @@
         );
         const area = doc.querySelector(".selis-editor-inline__text");
 
+        // The widths BEFORE the stamp: a stamp that takes the page's font
+        // away collapses every other line's measurement.
+        const widthsBefore = lineWidths(doc);
+
         // The formatting row: the size and the colour the reader chooses
         // BEFORE the text is placed, the way Acrobat and Foxit do it. The
         // controls are checked against the DOCUMENT, not against the DOM:
@@ -482,6 +486,8 @@
         return {
           text,
           lines: lines(doc),
+          widthsBefore: widthsBefore,
+          widthsAfter: lineWidths(doc),
           status: statusText(doc),
           bytes: produced.bytes,
           carriesText: produced.carriesText.indexOf(text) >= 0,
@@ -799,6 +805,21 @@
           stillThere: alive,
         };
       }
+      /**
+       * The measured width of every line on the page.
+       *
+       * The text layer reports each line's box, and the editor draws its
+       * clickable overlay from that box. A line whose measured width
+       * collapsed is a line the reader cannot click: the text is still there
+       * and the page still draws it, but the MEASUREMENT is wrong.
+       */
+      function lineWidths(doc) {
+        return [...doc.querySelectorAll(".selis-editor-line")].map((line) => ({
+          text: line.textContent,
+          width: Math.round(line.getBoundingClientRect().width),
+        }));
+      }
+
       /**
        * One exported file, captured rather than downloaded.
        *

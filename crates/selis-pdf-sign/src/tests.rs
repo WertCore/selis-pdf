@@ -111,6 +111,89 @@ fn visual_options() -> VisualOptions {
     }
 }
 
+/// THE COLLISION, REPRODUCED.
+///
+/// An incremental update writes only the objects it changes, so a
+/// document that was edited and then stamped has a newest revision whose
+/// table holds ONE entry. Numbering the stamp's objects from that table
+/// alone hands out a number the FIRST revision already used - and the
+/// stamp's content stream lands on the page's FONT.
+///
+/// The page still draws its text (the renderer substitutes a face), but
+/// the font's /Widths are gone, so the text layer measures every line at
+/// a fraction of its real width and the line becomes unclickable.
+#[test]
+fn a_stamp_after_an_edit_does_not_overwrite_the_page_font() {
+    // A page with a font, drawn through a content stream.
+    let objects: Vec<(u32, Vec<u8>)> = vec![
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (
+                3,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"
+                    .to_vec(),
+            ),
+            (
+                4,
+                b"<< /Length 34 >>
+stream
+BT /F1 12 Tf 10 100 Td (Hi) Tj ET
+endstream".to_vec(),
+            ),
+            (
+                5,
+                b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_vec(),
+            ),
+        ];
+    let borrowed: Vec<(u32, &[u8])> = objects
+        .iter()
+        .map(|(num, body)| (*num, body.as_slice()))
+        .collect();
+    let src = build_pdf(&borrowed, "");
+
+    // The edit: an incremental update that rewrites the content stream
+    // and nothing else. This is what the editor's own text edit writes.
+    let budget = Budget::unlimited();
+    let mut g = budget.guard();
+    let edited = selis_pdf_cos::doc_writer::write_incremental_update(
+        &src,
+        &[(
+            4,
+            Obj::Stream {
+                dict: vec![(crate::bytes(b"Length"), Obj::Int(34))],
+                data: selis_bytes::Bytes::copy_from_slice(b"BT /F1 12 Tf 10 100 Td (Ho) Tj ET"),
+            },
+        )],
+        &[(b"Root".to_vec(), Obj::Ref(Ref::new(1, 0)))],
+        &budget,
+        &mut g,
+    )
+    .expect("the edit");
+
+    // The stamp: the same stamp, on the edited document.
+    let mut options = visual_options();
+    options.rect = [10.0, 100.0, 200.0, 160.0];
+    options.lines = vec![VisualLine::new("A stamp")];
+    options.strokes = Vec::new();
+    let (stamped, _) = sign_visual(&edited, &options, &budget, &mut g).expect("the stamp");
+
+    // The page's font must still be a FONT. Before the fix the stamp's
+    // content stream was object 5, and /F1 pointed at it.
+    let doc = crate::open_doc(&stamped, &budget, &mut g).expect("the stamped document");
+    let font =
+        resolve(&stamped, &doc, Obj::Ref(Ref::new(5, 0)), &budget, &mut g).expect("object 5");
+    match font {
+        Obj::Dict(pairs) => {
+            let is_font = pairs.iter().any(|(key, value)| {
+                key.as_slice() == b"Type"
+                    && matches!(value, Obj::Name(name) if name.as_slice() == b"Font")
+            });
+            assert!(is_font, "object 5 is no longer the page's font");
+        }
+        other => panic!("object 5 is not a dictionary: {other:?}"),
+    }
+}
+
 #[test]
 fn a_bold_italic_line_is_drawn_in_the_bold_italic_face() {
     // The face is NAMED, not embedded: the standard fourteen are in every
