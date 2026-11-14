@@ -39,11 +39,19 @@ describe("the export formats", () => {
 	});
 
 	it("knows which format needs the page's own picture", () => {
-		// A deck that carries each page as a picture is worth having; the
-		// others carry text.
+		// The deck and the Word document are the two formats that carry a
+		// page as a picture: the deck shows the page, and the document keeps
+		// the photographs and the rules a text-only facsimile would drop.
 		expect(exportFormat("slides")?.needsPageImages).toBe(true);
-		expect(exportFormat("word")?.needsPageImages).toBe(false);
+		expect(exportFormat("word")?.needsPageImages).toBe(true);
 		expect(exportFormat("nonsense")).toBeNull();
+	});
+
+	it("reads the page's picture into the chunk that asked for it", async () => {
+		const { pageImageOptions } = await import("./export");
+		expect(pageImageOptions("word", ["aGk="])).toEqual({ pageImages: ["aGk="] });
+		expect(pageImageOptions("slides", ["aGk="])).toEqual({ slideImages: ["aGk="] });
+		expect(pageImageOptions("word", undefined)).toEqual({});
 	});
 
 	it("sends every format but the web page to the text chunk", () => {

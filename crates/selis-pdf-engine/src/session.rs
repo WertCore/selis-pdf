@@ -1069,6 +1069,81 @@ impl Session {
         None
     }
 
+    /// The face each font resource on a page names: `(resource name, /BaseFont)`.
+    ///
+    /// The extractors recover text by the resource name the content stream uses
+    /// (`F1`, `TT1`), which says nothing about the typeface. A writer that has
+    /// to NAME the face — Word's `w:rFonts` — needs the dictionary's
+    /// `/BaseFont`, and this is the one place that knows how to reach it: the
+    /// page's own `/Resources`, folded with every face reachable inside a form
+    /// XObject, which is the same set the renderer uses.
+    ///
+    /// A page with no font resources, or a resource whose dictionary cannot be
+    /// read, contributes nothing: the caller falls back to a face every reader
+    /// has rather than to an error.
+    pub fn page_fonts(
+        &self,
+        page_num: usize,
+        budget: &Budget,
+        g: &mut BudgetGuard<'_>,
+    ) -> Vec<(String, String)> {
+        let Some(page) = self.document.pages.get(page_num) else {
+            return Vec::new();
+        };
+        let augmented = augment_page_font_resources(self, page.resources.as_ref(), budget, g);
+        let resources = augmented.as_ref().or(page.resources.as_ref());
+        let mut resolver = self.new_resolver(budget);
+        let Some(Obj::Dict(resource_dict)) = resources.cloned() else {
+            return Vec::new();
+        };
+        let Some(font_value) = resource_dict
+            .iter()
+            .find(|(key, _)| key.as_slice() == b"Font")
+            .map(|(_, value)| value.clone())
+        else {
+            return Vec::new();
+        };
+        let fonts = match font_value {
+            Obj::Ref(r) => resolver.resolve(r, g).ok(),
+            other => Some(other),
+        };
+        let Some(Obj::Dict(fonts)) = fonts else {
+            return Vec::new();
+        };
+        let mut out = Vec::with_capacity(fonts.len());
+        for (name, value) in &fonts {
+            let font = match value {
+                Obj::Ref(r) => resolver.resolve(*r, g).ok(),
+                other => Some(other.clone()),
+            };
+            let Some(Obj::Dict(font)) = font else {
+                continue;
+            };
+            let Some(base_value) = font
+                .iter()
+                .find(|(key, _)| key.as_slice() == b"BaseFont")
+                .map(|(_, value)| value.clone())
+            else {
+                continue;
+            };
+            let base = match base_value {
+                Obj::Name(name) => String::from_utf8_lossy(name.as_slice()).into_owned(),
+                Obj::Ref(r) => match resolver.resolve(r, g).ok() {
+                    Some(Obj::Name(name)) => String::from_utf8_lossy(name.as_slice()).into_owned(),
+                    _ => String::new(),
+                },
+                _ => String::new(),
+            };
+            if base.is_empty() {
+                continue;
+            }
+            out.push((String::from_utf8_lossy(name.as_slice()).into_owned(), base));
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
+
     /// The `/Resources` objects of every drawable annotation appearance on a
     /// page, in `/Annots` order (SL-3.TEXT.14 fallback for `text_unicode`).
     /// The set matches the render walk's inclusion policy exactly (hidden and

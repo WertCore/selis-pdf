@@ -7593,6 +7593,77 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
     if export.get("htmlCarriesTheText").and_then(Json::as_bool) != Some(true) {
         return Err("the HTML export does not carry the document's text".into());
     }
+
+    // THE WORD EXPORT, measured.
+    //
+    // The document is a facsimile: it carries the page's own picture, the
+    // words sit in frames, and the frames are sized from the TYPE.
+    if export.get("wordCarriesThePicture").and_then(Json::as_bool) != Some(true) {
+        return Err("the Word document does not carry the page's own picture".into());
+    }
+    if export.get("wordCarriesTheDrawing").and_then(Json::as_bool) != Some(true) {
+        return Err("the Word document does not place its picture behind the words".into());
+    }
+    // A frame one point tall (20 twips) is the bug: the recovered line box is
+    // built from pen positions, so it has no height, and Word clipped the line
+    // to the frame it was given.
+    let heights = export
+        .get("wordFrameHeights")
+        .and_then(Json::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(Json::as_u64)
+                .map(|twips| twips as f64 / 20.0)
+                .collect::<Vec<f64>>()
+        })
+        .unwrap_or_default();
+    if heights.is_empty() {
+        return Err("the Word document has no frames at all".into());
+    }
+    if let Some(shortest) = heights
+        .iter()
+        .copied()
+        .fold(None, |a: Option<f64>, b| match a {
+            None => Some(b),
+            Some(a) => Some(a.min(b)),
+        })
+    {
+        if shortest < 4.0 {
+            return Err(format!(
+                "a frame in the Word document is {shortest} points tall; the words are clipped"
+            ));
+        }
+    }
+    // The face the page drew, not the document's default style: the frames
+    // ask for the page's own face, and the styles part keeps its own.
+    let faces = export
+        .get("wordFaces")
+        .and_then(Json::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(Json::as_str)
+                .map(str::to_string)
+                .collect::<Vec<String>>()
+        })
+        .unwrap_or_default();
+    if faces.is_empty() {
+        return Err("the Word document's frames name no face at all".into());
+    }
+    if faces.iter().all(|face| face == "Georgia") {
+        return Err(
+            "every frame in the Word document asks for the document's default face, not the page's"
+                .into(),
+        );
+    }
+    // The weight the reader chose has to survive the export: the text box they
+    // added is bold, and a bold line is bold in the file.
+    let bold = export
+        .get("wordBoldRuns")
+        .and_then(Json::as_u64)
+        .unwrap_or(0);
+    if bold < 1 {
+        return Err("the Word document lost the bold the reader asked for".into());
+    }
     if export.get("offeredAgain").and_then(Json::as_bool) != Some(true) {
         return Err("the export did not offer the file again".into());
     }

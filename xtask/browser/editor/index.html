@@ -780,6 +780,21 @@
           // A PNG starts with the four bytes 89 50 4E 47.
           pngHeader: png.header,
           htmlCarriesTheText: html.text.indexOf("Added") >= 0,
+          // The Word document is a facsimile: it carries the page's own
+          // picture, and the words are in frames sized from the type.
+          wordCarriesThePicture: word.text.indexOf("word/media/page1.png") >= 0,
+          wordCarriesTheDrawing: word.text.indexOf("behindDoc") >= 0,
+          // A frame's height comes from the type, not from the pen positions:
+          // the old frame was 20 twips tall and Word clipped the line to it.
+          wordFrameHeights: [...word.text.matchAll(/w:h="(\d+)"/g)].map((m) => Number(m[1])),
+          // The face each FRAME asks for: the styles part names a face
+          // too, and that one is the document's default, not the page's.
+          wordFaces: [
+            ...word.text.matchAll(/<w:framePr[\s\S]{0,400}?w:ascii="([^"]+)"/g),
+          ].map((m) => m[1]),
+          // The weight the reader chose: the text box they added is bold, and
+          // the export says so.
+          wordBoldRuns: [...word.text.matchAll(/<w:b\/>/g)].length,
           offeredAgain: link !== null,
           stillThere: alive,
         };

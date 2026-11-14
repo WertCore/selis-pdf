@@ -561,25 +561,61 @@ pub struct WorkbookExport {
 /// As [`extract_text`], plus a page with no view or a package that fails its
 /// read-back.
 pub fn extract_docx(path: &str, pages: Option<&str>, title: &str) -> ToolResult<WordExport> {
+    extract_docx_with_images(path, pages, title, None)
+}
+
+/// Write the selection as a Word document carrying the page's own picture: one
+/// PNG per selected page, in selection order, placed full-bleed behind the
+/// frames — the same shape as the deck.
+///
+/// The picture is the page's own ink: its photographs, its rules, its
+/// handwriting. Without one the facsimile carries only what the extractor could
+/// recover as text, and an image in the page is simply missing from the file.
+pub fn extract_docx_with_images(
+    path: &str,
+    pages: Option<&str>,
+    title: &str,
+    images: Option<&[Vec<u8>]>,
+) -> ToolResult<WordExport> {
     with_session(path, |session, budget| {
         let clock = crate::shell_clock();
         let selected = parse_pages(pages, session.len())?;
+        if let Some(images) = images {
+            if images.len() != selected.len() {
+                return Err(CliError(format!(
+                    "the images do not line up with the selected pages ({} vs {})",
+                    images.len(),
+                    selected.len()
+                )));
+            }
+        }
         let mut frame_pages: Vec<selis_pdf_text::FramePage> = Vec::with_capacity(selected.len());
-        for page in selected {
+        for (position, page) in selected.into_iter().enumerate() {
             let number = u32::try_from(page.saturating_add(1)).unwrap_or(u32::MAX);
             let view = session
                 .page_view(page, 72.0)
                 .ok_or_else(|| CliError(format!("page {number}: cannot measure the page")))?;
             let mut g = crate::runtime::cli_guard(budget, &clock);
-            let (lines, line_texts, _) = page_lines(session, page, budget, &mut g)?;
-            frame_pages.push(selis_pdf_text::frame_page_from_lines(
+            // The frames carry their own text, cut from the page's glyphs, so
+            // the recovered line strings are not needed here.
+            let (lines, _texts, _) = page_lines(session, page, budget, &mut g)?;
+            let fonts = session.page_fonts(page, budget, &mut g);
+            let fonts: Vec<(&str, &str)> = fonts
+                .iter()
+                .map(|(name, base)| (name.as_str(), base.as_str()))
+                .collect();
+            let mut frame_page = selis_pdf_text::frame_page_from_lines(
                 number,
                 f64::from(view.width),
                 f64::from(view.height),
                 view.ctm,
                 &lines,
-                &line_texts,
-            ));
+                &fonts,
+            );
+            if let Some(images) = images {
+                frame_page.image = images.get(position).cloned();
+            }
+            frame_pages.push(frame_page);
         }
         let bytes = selis_pdf_text::to_docx_frames(title, &frame_pages).map_err(|e| {
             CliError(format!(

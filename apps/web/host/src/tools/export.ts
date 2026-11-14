@@ -82,9 +82,9 @@ export const EXPORT_FORMATS: readonly ExportFormatInfo[] = [
 	{
 		id: "word",
 		label: "Word document",
-		note: "A .docx with the document's text in reading order.",
+		note: "A .docx with the pages as they look and the words editable on top.",
 		extension: "docx",
-		needsPageImages: false,
+		needsPageImages: true,
 	},
 	{
 		id: "slides",
@@ -236,8 +236,38 @@ export interface ExportRequest {
 	readonly name: string;
 	/** An optional page selection, in the engine's own syntax. */
 	readonly pages?: string;
-	/** The page's own images, base64 PNGs, when the format needs them. */
+	/**
+	 * The page's own images, base64 PNGs, when the format needs them.
+	 *
+	 * The deck and the Word document are the two formats that carry the page
+	 * as a picture: a deck that shows the page, and a document that keeps the
+	 * photographs a text-only facsimile would drop.
+	 */
 	readonly slideImages?: readonly string[];
+}
+
+/**
+ * The page-image option a format reads, under the name it reads it by.
+ *
+ * The deck and the Word document both carry the page as a picture, and the two
+ * writers name the option differently: the deck's writer reads `slideImages`,
+ * the document's reads `pageImages`. A format that carries no picture — or a
+ * call that supplied none — contributes nothing.
+ */
+export function pageImageOptions(
+	format: ExportFormat,
+	images: readonly string[] | undefined,
+): Record<string, readonly string[]> {
+	if (images === undefined) {
+		return {};
+	}
+	const info = exportFormat(format);
+	if (info === null || info.needsPageImages !== true) {
+		return {};
+	}
+	// The chunk names the option per format: the deck reads `slideImages`, the
+	// document reads `pageImages`.
+	return { [format === "slides" ? "slideImages" : "pageImages"]: [...images] };
 }
 
 /** The chunk loaders, injected so a test can supply its own. */
@@ -274,12 +304,13 @@ export async function exportDocument(
 
 	if (op !== null) {
 		const wasm = await loaders.loadText();
-		const options: Record<string, string | string[]> = { name: request.name, title: stem };
+		const options: Record<string, string | string[]> = {
+			name: request.name,
+			title: stem,
+			...pageImageOptions(request.format, request.slideImages),
+		};
 		if (request.pages !== undefined && request.pages !== "") {
 			options.pages = request.pages;
-		}
-		if (request.slideImages !== undefined) {
-			options.slideImages = [...request.slideImages];
 		}
 		const outputs: readonly TextOutput[] = runTextOp(wasm, request.bytes, op, options);
 		return outputs.map((output) => ({

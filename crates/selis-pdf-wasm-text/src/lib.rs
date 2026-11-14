@@ -580,8 +580,30 @@ fn run_impl(input: &[u8], op: Op, options: &str) -> Result<(Outputs, u32), Strin
         }
         Op::Word => {
             let title = option(options, "title").unwrap_or_else(|| stem.clone());
-            let export = selis_pdf_tools::extract_docx("in/0", pages.as_deref(), &title)
-                .map_err(|e| e.to_string())?;
+            // The document carries the page rendered by the caller when one
+            // supplied it — `pageImages` holds one base64 PNG per selected
+            // page, in selection order. The picture is the page's own ink, so
+            // the export keeps the photographs and the rules a text-only
+            // facsimile would drop.
+            let images = match option_strings(options, "pageImages") {
+                None => None,
+                Some(decoded) => {
+                    let mut out: Vec<Vec<u8>> = Vec::with_capacity(decoded.len());
+                    for (index, encoded) in decoded.iter().enumerate() {
+                        let bytes = decode_base64(encoded)
+                            .ok_or_else(|| format!("pageImages[{index}] is not valid base64"))?;
+                        out.push(bytes);
+                    }
+                    Some(out)
+                }
+            };
+            let export = selis_pdf_tools::extract_docx_with_images(
+                "in/0",
+                pages.as_deref(),
+                &title,
+                images.as_deref(),
+            )
+            .map_err(|e| e.to_string())?;
             let pages_out = u32::try_from(export.pages).unwrap_or(u32::MAX);
             Ok((
                 vec![(format!("{stem}.docx"), "file", export.bytes)],
@@ -927,6 +949,27 @@ mod tests {
         let has = |needle: &[u8]| bytes.windows(needle.len()).any(|w| w == needle);
         assert!(has(b"word/document.xml"));
         assert!(has(b"word/styles.xml"));
+    }
+
+    #[test]
+    fn the_word_document_carries_the_callers_page_images() {
+        // A tiny fake PNG: the embedder does not decode it, the package just
+        // carries it. The needle is the media part's own file name, which
+        // appears in the archive's local and central headers.
+        let fake_png = "iVBORw0KGgoAAAANSUhEUg=="; // "\x89PNG\r\n\x1a\n\0IEND"
+        let options = format!(
+            r#"{{"name":"report.pdf","title":"Report","pageImages":["{fake_png}","{fake_png}"]}}"#
+        );
+        let (outputs, pages) = run(NAV, Op::Word, &options);
+        assert_eq!(pages, 2);
+        let (name, kind, bytes) = &outputs[0];
+        assert_eq!(name, "report.docx");
+        assert_eq!(*kind, "file");
+        let has = |needle: &[u8]| bytes.windows(needle.len()).any(|w| w == needle);
+        assert!(has(b"word/media/page1.png"));
+        assert!(has(b"word/media/page2.png"));
+        // The picture is behind the words, and the document says so.
+        assert!(has(b"behindDoc"));
     }
 
     #[test]
