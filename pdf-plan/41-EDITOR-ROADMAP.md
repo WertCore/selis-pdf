@@ -458,6 +458,47 @@ a list of panels and not a list of engine work.
 - [ ] **I1e — Flattening through the model, and XFDF.** `SL-5.ANNOT.05`,
       `SL-5.ANNOT.06`.
 
+### Slice 8b — the workspace a reader comes back to (shipped)
+
+What the reader asked for, in the reader's words: the Close button did not
+close, the ribbon's Download was on the screen with nothing to download,
+there was no way to select text without editing it, the right pane was a
+wall, and the buttons' colours did not follow the theme.
+
+- [x] **The Close button closes.** It forgot the document but left the
+      pages on the screen: a document that is still open with no way to
+      reach it. The workspace now draws the empty workspace, and the check
+      measures the pages before and after.
+- [x] **The ribbon's Download follows the document.** The app bar's
+      Download was hidden while there was nothing to download, and the
+      ribbon's was not — two buttons for one command, one of them lying.
+- [x] **A text selection mode.** The competitors' first tool is a
+      selection: Acrobat's "Select Text", Foxit's arrow with a drop-down,
+      and the page is a document to be READ as often as one to be changed.
+      So the workspace opens with the Select tool, the text layer's lines
+      take the pointer again, the browser's own selection picks the words
+      out, and a Copy button takes them away.
+- [x] **The right pane is a short list.** Twenty panels at once is a list
+      nobody reads. The pane follows the ribbon's tab — click Organize and
+      it shows the page tools, click Protect and it shows the protection —
+      and a filter still offers the whole list.
+- [x] **The theme's switch changes the colours in one go.** A colour that
+      comes from a token is a colour whose value a custom property decides,
+      and a transition on such a colour does not always run when that
+      property changes: the button that was dark stayed dark in the light
+      theme. The switch now turns the transitions off while the tokens
+      change, and the check reads every label in BOTH themes and says which
+      ones cannot be read against their own background.
+- [x] **The text formatting is where the competitors put it.** Foxit has a
+      Text GROUP in the Edit tab; Acrobat has a floating bar over the text.
+      NEITHER has a Text tab, so neither do we: the Edit tab carries the
+      group, and the inline row still offers the same controls over the
+      text being typed.
+- [x] **The header and footer have a panel of their own.** They were inside
+      the Page numbers panel, whose button was never closed — invalid
+      markup, and the ribbon's "Header and footer" command opened a panel
+      that did not exist.
+
 ### Slice 9 — what still needs the engine
 
 These are the blockers named above, in the order they unlock the most.

@@ -7602,6 +7602,123 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
     if empty_bar.get("closeShown").and_then(Json::as_bool) != Some(false) {
         return Err("the Close button is on the screen while there is no document".into());
     }
+    // The RIBBON's Download means the same thing: with no document there is
+    // nothing to download, and a button that offers a file that does not
+    // exist reads as broken.
+    if empty_bar.get("ribbonDownloadShown").and_then(Json::as_bool) != Some(false) {
+        return Err("the ribbon's Download button is on the screen with no document".into());
+    }
+
+    // THE READING LEG: the select tool, the close button, the pane.
+    let reading = report
+        .get("reading")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the page reported no reading leg (reading = None)".to_string())?;
+
+    // A PDF is a document to be READ as often as one to be changed, so the
+    // words have to be selectable: the line takes the pointer and the
+    // browser's own selection picks the words out.
+    if reading.get("takesThePointer").and_then(Json::as_bool) != Some(true) {
+        return Err("the Select tool does not let the reader select the words".into());
+    }
+    let selected = reading.get("selected").and_then(Json::as_str).unwrap_or("");
+    if selected.trim().is_empty() {
+        return Err("the Select tool selected nothing".into());
+    }
+    if reading.get("copyShown").and_then(Json::as_bool) != Some(true) {
+        return Err("the Select tool offers no way to copy what was selected".into());
+    }
+
+    // The pane follows the ribbon's tab: a short list, not a wall.
+    let organize = reading
+        .get("organizePanels")
+        .and_then(Json::as_array)
+        .map(|rows| rows.len())
+        .unwrap_or(0);
+    let home = reading
+        .get("homePanels")
+        .and_then(Json::as_array)
+        .map(|rows| rows.len())
+        .unwrap_or(0);
+    if organize == 0 || home == 0 {
+        return Err("the pane shows nothing for a ribbon tab".into());
+    }
+    if organize >= home && organize >= 8 {
+        return Err(format!(
+            "the pane shows {organize} panels for one tab; it is a wall again"
+        ));
+    }
+    // The whole list is still one click away.
+    let all = reading.get("allPanels").and_then(Json::as_u64).unwrap_or(0);
+    if all < organize as u64 {
+        return Err("the filter cannot show the whole list".into());
+    }
+
+    // The Close button CLOSES: the pages go, and the app bar says what is
+    // left to do. A Close that only forgot the document left the pages on
+    // the screen, and the reader had to refresh to see the truth.
+    let pages_before = reading
+        .get("pagesBefore")
+        .and_then(Json::as_u64)
+        .unwrap_or(0);
+    let pages_after = reading
+        .get("pagesAfter")
+        .and_then(Json::as_u64)
+        .unwrap_or(0);
+    if pages_before < 1 {
+        return Err("the reading leg had no document to close".into());
+    }
+    if pages_after != 0 {
+        return Err(format!(
+            "the Close button left {pages_after} page(s) on the screen"
+        ));
+    }
+    if reading.get("openShown").and_then(Json::as_bool) != Some(true) {
+        return Err("the Open button is missing after the document was closed".into());
+    }
+    if reading.get("closeShown").and_then(Json::as_bool) != Some(false) {
+        return Err("the Close button is still on the screen after the document closed".into());
+    }
+    if reading.get("downloadShown").and_then(Json::as_bool) != Some(false) {
+        return Err("the Download button is on the screen with no document".into());
+    }
+
+    // THE THEME: every label must be readable against its own background, in
+    // BOTH themes. A label that is white on a white panel is a button nobody
+    // can find, and the reader's word for it is "the buttons are the wrong
+    // colour".
+    let theme = report
+        .get("theme")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the page reported no theme leg (theme = None)".to_string())?;
+    for theme_name in ["unreadableDark", "unreadableLight"] {
+        let unreadable = theme
+            .get(theme_name)
+            .and_then(Json::as_array)
+            .map(|rows| rows.len())
+            .unwrap_or(0);
+        if unreadable > 0 {
+            let labels = theme
+                .get(theme_name)
+                .and_then(Json::as_array)
+                .map(|rows| {
+                    rows.iter()
+                        .filter_map(Json::as_object)
+                        .map(|row| {
+                            row.get("label")
+                                .and_then(Json::as_str)
+                                .unwrap_or("?")
+                                .to_string()
+                        })
+                        .collect::<Vec<String>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+            return Err(format!(
+                "{unreadable} label(s) cannot be read in the {theme_name} theme: {labels}"
+            ));
+        }
+    }
 
     let export = report
         .get("export")

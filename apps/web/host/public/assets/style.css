@@ -254,6 +254,22 @@
 
 /* ── Shell ─────────────────────────────────────────────────────────────── */
 
+/*
+ * The theme's switch: the colours change at once.
+ *
+ * A colour that comes from a token is a colour whose value is decided by a
+ * custom property, and a transition on such a colour does not always run
+ * when that custom property changes: the button that was dark stays dark in
+ * the light theme, and the reader sees a light label on a dark panel.
+ *
+ * So the switch turns the transitions off for the moment it takes, and the
+ * page changes colour in one go - which is what a theme switch is anyway.
+ */
+[data-theme-switching],
+[data-theme-switching] * {
+	transition: none !important;
+}
+
 .selis-root,
 .selis-root * {
 	box-sizing: border-box;

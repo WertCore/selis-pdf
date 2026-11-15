@@ -217,6 +217,7 @@
         out.theme = await themeLeg(onlineDoc, onlineWin, "online");
         out.export = await exportLeg(onlineDoc, onlineWin, "online");
         out.bates = await batesLeg(onlineDoc, onlineWin, "online");
+        out.reading = await readingLeg(onlineDoc, onlineWin, "online");
 
         // The form's fields, on a document that has a form.
         const formBytes = new Uint8Array(
@@ -324,6 +325,11 @@
         };
 
         // Click a line and change it.
+        //
+        // The TEXT tool is armed first: the workspace opens with the Select
+        // tool, the way every other editor opens - a PDF is a document to be
+        // read as often as one to be changed - so a leg that edits says so.
+        useTool(doc, "text");
         const line = doc.querySelector(".selis-editor-line");
         if (!line) throw new Error("the document drew no clickable text");
         line.click();
@@ -687,6 +693,12 @@
           downloadShown: visible("selis-download"),
           openShown: visible("selis-open-file-button"),
           closeShown: visible("selis-close-file-button"),
+          // The RIBBON carries a Download too, and it means the same thing:
+          // with no document there is nothing to download.
+          ribbonDownloadShown: (() => {
+            const button = doc.querySelector('#selis-editor-ribbon button[data-action="download"]');
+            return button !== null && button.offsetParent !== null;
+          })(),
         };
 
         const inspector = doc.getElementById("selis-editor-inspector");
@@ -729,6 +741,17 @@
         );
         const after = doc.documentElement.dataset.theme || "";
         const stored = doc.defaultView.localStorage.getItem("selis-theme");
+        // The other theme's buttons must be READABLE: a label that is white
+        // on a white panel is a button nobody can find. Both themes are
+        // measured, because the complaint was about one of them.
+        const dark = unreadableLabels(doc);
+        doc.getElementById("selis-theme-toggle").click();
+        await waitFor(
+          () => (doc.documentElement.dataset.theme || "") !== after,
+          10_000,
+          "the theme to switch back (" + label + ")",
+        );
+        const light = unreadableLabels(doc);
         // Put it back, so the rest of the check runs in the theme it started in.
         doc.getElementById("selis-theme-toggle").click();
         return {
@@ -737,7 +760,69 @@
           stored: stored,
           switched: after !== before,
           remembered: stored === after,
+          unreadableDark: dark,
+          unreadableLight: light,
         };
+      }
+
+      /**
+       * The buttons whose label cannot be read against its own background.
+       *
+       * Every button in the workspace, in the theme as it is now: the label's
+       * own colour against the colour behind it. A label that is lighter
+       * than its background by a wide margin is a label nobody can read -
+       * which is what a reader sees as "the buttons are the wrong colour".
+       */
+      function unreadableLabels(doc) {
+        const parse = (value) => {
+          if (!value) return null;
+          const numbers = value.match(/[\d.]+/g);
+          if (!numbers) return null;
+          return {
+            r: Number(numbers[0]),
+            g: Number(numbers[1]),
+            b: Number(numbers[2]),
+            a: numbers[3] === undefined ? 1 : Number(numbers[3]),
+          };
+        };
+        const luminance = (colour) =>
+          (0.2126 * colour.r + 0.7152 * colour.g + 0.0722 * colour.b) / 255;
+        const backgroundOf = (element) => {
+          let node = element;
+          while (node) {
+            const background = parse(getComputedStyle(node).backgroundColor);
+            if (background && background.a > 0.5) return background;
+            node = node.parentElement;
+          }
+          return { r: 255, g: 255, b: 255, a: 1 };
+        };
+        const unreadable = [];
+        for (const element of doc.querySelectorAll("button, select, summary, .selis-editor-hint")) {
+          const label = (element.textContent || "").trim();
+          if (label === "") continue;
+          const style = getComputedStyle(element);
+          if (style.visibility === "hidden" || style.display === "none") continue;
+          if (element.closest("[hidden]")) continue;
+          // A DISABLED control is meant to be faint: that is what the theme's
+          // disabled colour is for. It is not a label nobody can read.
+          if (element.matches(":disabled") || element.getAttribute("aria-disabled") === "true") {
+            continue;
+          }
+          const foreground = parse(style.color);
+          if (!foreground || foreground.a < 0.5) continue;
+          const background = backgroundOf(element);
+          const difference =
+            Math.abs(luminance(foreground) - luminance(background));
+          if (difference < 0.35) {
+            unreadable.push({
+              label: label.slice(0, 24),
+              class: element.className || element.tagName,
+              colour: style.color,
+              on: "rgb(" + background.r + "," + background.g + "," + background.b + ")",
+            });
+          }
+        }
+        return unreadable;
       }
 
       /**
@@ -1448,6 +1533,105 @@
 
 
       /**
+       * The select tool, the close button, and the pane.
+       *
+       * Three things a reader notices first:
+       *
+       *  - the SELECT tool selects the words and copies them, because a PDF
+       *    is a document to be read as often as a document to be changed;
+       *  - the CLOSE button closes the document, pages and all, and not only
+       *    after a refresh;
+       *  - the PANE follows the ribbon's tab, so it is a short list and not
+       *    a wall of accordions.
+       */
+      async function readingLeg(doc, win, label) {
+        // ── the select tool ──────────────────────────────────────────────
+        useTool(doc, "select");
+        // A line that is ON THE SCREEN: the first line in the DOM may be
+        // another page's, and a pointer that lands on nothing proves nothing.
+        const line = [...doc.querySelectorAll(".selis-editor-line")].find(
+          (candidate) => {
+            const box = candidate.getBoundingClientRect();
+            return (
+              (candidate.textContent || "").trim() !== "" &&
+              box.width > 4 &&
+              box.top > 0 &&
+              box.bottom < doc.defaultView.innerHeight
+            );
+          },
+        );
+        if (!line) throw new Error("the document drew no line to select");
+        const lineBox = line.getBoundingClientRect();
+        // The line takes the pointer when the Select tool is armed: the
+        // words are picked out with the browser's own selection.
+        // The line takes the pointer when the Select tool is armed: the
+        // words are picked out with the browser's own selection. The
+        // measurement is the computed style, because a line that is off the
+        // screen cannot be hit but is still selectable.
+        const takesThePointer = getComputedStyle(line).pointerEvents === "auto";
+        const selection = win.getSelection();
+        const range = doc.createRange();
+        range.selectNodeContents(line.querySelector(".selis-editor-line__text"));
+        selection.removeAllRanges();
+        selection.addRange(range);
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        const selected = selection.toString();
+        const copy = doc.getElementById("selis-editor-copy");
+        const copyShown = copy !== null && copy.offsetParent !== null;
+        const copyLabel = copy === null ? "" : copy.textContent;
+
+        // ── the pane follows the ribbon's tab ────────────────────────────
+        const visiblePanels = () =>
+          [...doc.querySelectorAll("#selis-editor-inspector .selis-editor-details")]
+            .filter((section) => !section.hidden)
+            .map((section) => section.querySelector("summary").textContent.trim());
+        doc.getElementById("selis-editor-tab-organize").click();
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        const organize = visiblePanels();
+        doc.getElementById("selis-editor-tab-home").click();
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        const home = visiblePanels();
+        // The whole list is still one click away.
+        const filter = doc.getElementById("selis-editor-inspector-filter");
+        filter.value = "all";
+        filter.dispatchEvent(new Event("change", { bubbles: true }));
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        const everything = visiblePanels();
+        filter.value = "home";
+        filter.dispatchEvent(new Event("change", { bubbles: true }));
+
+        // ── the close button closes ──────────────────────────────────────
+        const pagesBefore = doc.querySelectorAll(".selis-editor-page").length;
+        doc.getElementById("selis-close-file-button").click();
+        await waitFor(
+          () => doc.querySelectorAll(".selis-editor-page").length === 0,
+          30_000,
+          "the document to close (" + label + ")",
+        );
+        const pagesAfter = doc.querySelectorAll(".selis-editor-page").length;
+        const shown = (id) => {
+          const element = doc.getElementById(id);
+          return element !== null && element.offsetParent !== null;
+        };
+
+        return {
+          takesThePointer: takesThePointer,
+          selected: selected,
+          copyShown: copyShown,
+          copyLabel: copyLabel,
+          organizePanels: organize,
+          homePanels: home,
+          allPanels: everything.length,
+          pagesBefore: pagesBefore,
+          pagesAfter: pagesAfter,
+          openShown: shown("selis-open-file-button"),
+          closeShown: shown("selis-close-file-button"),
+          downloadShown: shown("selis-download"),
+          status: statusText(doc),
+        };
+      }
+
+      /**
        * The measure tool and the signature.
        *
        * Both are tools the reader uses on the page itself, and both are
@@ -1548,13 +1732,34 @@
             pointerId: 9,
             isPrimary: true,
           });
+        // The pointer's place ON THE CANVAS, and the canvas's place on the
+        // screen RIGHT NOW.
+        //
+        // The workspace scrolls the line it is editing into view, and that
+        // scroll is animated: a coordinate measured from the screen can be
+        // stale by the time the event lands, and the mark is then placed
+        // somewhere the reader never pointed. The canvas's own coordinates do
+        // not move when the page moves, so they are what the drag uses.
+        const onCanvas = (canvas, point) => {
+          const box = canvas.getBoundingClientRect();
+          return { x: box.left + point.x, y: box.top + point.y };
+        };
+        const relativeTo = (canvas, element) => {
+          const box = canvas.getBoundingClientRect();
+          const own = element.getBoundingClientRect();
+          return { x: own.left - box.left, y: own.top - box.top };
+        };
 
         // The highlight: a drag over the words.
         doc.getElementById("selis-editor-tab-edit").click();
         doc.querySelector('button[data-markup="highlight"]').click();
-        canvas.dispatchEvent(at(box.left, box.top, 1, "pointerdown"));
-        canvas.dispatchEvent(at(box.right, box.bottom, 1, "pointermove"));
-        canvas.dispatchEvent(at(box.right, box.bottom, 0, "pointerup"));
+        const start = relativeTo(canvas, line);
+        const end = { x: start.x + box.width, y: start.y + box.height };
+        const from = onCanvas(canvas, start);
+        const to = onCanvas(canvas, end);
+        canvas.dispatchEvent(at(from.x, from.y, 1, "pointerdown"));
+        canvas.dispatchEvent(at(to.x, to.y, 1, "pointermove"));
+        canvas.dispatchEvent(at(to.x, to.y, 0, "pointerup"));
         await waitFor(
           () => {
             const status = statusText(doc);
@@ -1572,8 +1777,9 @@
         doc.querySelector('button[data-markup="note"]').click();
         const fresh = doc.querySelector("canvas");
         const freshBox = fresh.getBoundingClientRect();
-        fresh.dispatchEvent(at(freshBox.left + 40, freshBox.top + 160, 1, "pointerdown"));
-        fresh.dispatchEvent(at(freshBox.left + 40, freshBox.top + 160, 0, "pointerup"));
+        const note = onCanvas(fresh, { x: 40, y: 160 });
+        fresh.dispatchEvent(at(note.x, note.y, 1, "pointerdown"));
+        fresh.dispatchEvent(at(note.x, note.y, 0, "pointerup"));
         await waitFor(
           () => doc.querySelector(".selis-editor-inline__text") !== null,
           15_000,
@@ -1618,9 +1824,17 @@
           return candidate.getBoundingClientRect().width > 4;
         });
         const movedBox = movedLine.getBoundingClientRect();
-        page.dispatchEvent(at(movedBox.left + 4, movedBox.top + 4, 1, "pointerdown"));
-        page.dispatchEvent(at(movedBox.left + 4, movedBox.top + 160, 1, "pointermove"));
-        page.dispatchEvent(at(movedBox.left + 4, movedBox.top + 160, 0, "pointerup"));
+        // The canvas is looked up AGAIN: every mark redrew the page, so the
+        // canvas the first drag was on is no longer in the document, and a
+        // drag on a detached canvas reaches nobody.
+        const live = doc.querySelector("canvas");
+        // The mark is where the line is, in the canvas's own coordinates.
+        const grab = relativeTo(live, movedLine);
+        const grip = onCanvas(live, { x: grab.x + 4, y: grab.y + 4 });
+        const drop = onCanvas(live, { x: grab.x + 4, y: grab.y + 160 });
+        live.dispatchEvent(at(grip.x, grip.y, 1, "pointerdown"));
+        live.dispatchEvent(at(drop.x, drop.y, 1, "pointermove"));
+        live.dispatchEvent(at(drop.x, drop.y, 0, "pointerup"));
         let moved = "";
         try {
           await waitFor(
@@ -1664,6 +1878,7 @@
           noted: noted,
           comments: comments,
           moved: moved,
+          geometry: doc.getElementById("selis-editor-doc").dataset.geometry || "?",
           removed: removed,
           bytes: produced.bytes,
           // The annotation is IN the file, and it is a standard one.

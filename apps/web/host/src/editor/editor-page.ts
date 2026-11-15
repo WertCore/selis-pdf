@@ -184,7 +184,15 @@ const THUMBNAIL_WIDTH = 132;
 const SURFACE_GUTTER = 72;
 
 /** What the workspace is armed to do on the page. */
-export type EditorTool = "text" | "box" | "image" | "redact" | "measure" | "sign" | "markup";
+export type EditorTool =
+	| "select"
+	| "text"
+	| "box"
+	| "image"
+	| "redact"
+	| "measure"
+	| "sign"
+	| "markup";
 
 /** The image the reader has picked, ready to place. */
 interface PickedImage {
@@ -232,6 +240,8 @@ interface EditorState {
 	boxSize: number;
 	/** The colour a new text box is drawn in. */
 	boxColor: readonly [number, number, number];
+	/** The name of that colour, so a swatch can say it is the chosen one. */
+	boxColorName: string;
 	/** The kind of markup the markup tool leaves. */
 	markupKind: MarkupKind;
 	/** The style of the text the reader is adding. */
@@ -270,10 +280,11 @@ const state: EditorState = {
 	name: "document.pdf",
 	history: new DocumentHistory(HISTORY_DEPTH),
 	page: 0,
-	tool: "text",
+	tool: "select",
 	image: null,
 	boxSize: TEXT_BOX_FONT_SIZE,
 	boxColor: BOX_COLOR_BLACK,
+	boxColorName: "Black",
 	markupKind: "highlight",
 	boxStyle: PLAIN_STYLE,
 	annotations: [],
@@ -354,6 +365,9 @@ const dom = {
 	fitPage: el<HTMLButtonElement>("selis-editor-fit-page"),
 	inspector: el<HTMLElement>("selis-editor-inspector"),
 	inspectorToggle: el<HTMLButtonElement>("selis-editor-inspector-toggle"),
+	inspectorFilter: el<HTMLSelectElement>("selis-editor-inspector-filter"),
+	copy: el<HTMLButtonElement>("selis-editor-copy"),
+	textTools: el<HTMLElement>("selis-editor-text-tools"),
 	history: el<HTMLOListElement>("selis-editor-history"),
 	historyClear: el<HTMLButtonElement>("selis-editor-history-clear"),
 	labelsApply: el<HTMLButtonElement>("selis-editor-labels-apply"),
@@ -384,14 +398,57 @@ const dom = {
 };
 
 /** The ribbon's tabs, and the panel each one shows. */
-const TABS: readonly { readonly tab: string; readonly panel: string }[] = [
-	{ tab: "selis-editor-tab-home", panel: "selis-editor-panel-home" },
-	{ tab: "selis-editor-tab-edit", panel: "selis-editor-panel-edit" },
-	{ tab: "selis-editor-tab-organize", panel: "selis-editor-panel-organize" },
-	{ tab: "selis-editor-tab-document", panel: "selis-editor-panel-document" },
-	{ tab: "selis-editor-tab-protect", panel: "selis-editor-panel-protect" },
-	{ tab: "selis-editor-tab-export", panel: "selis-editor-panel-export" },
+interface RibbonTab {
+	readonly tab: string;
+	readonly panel: string;
+	/** The inspector group the tab's options belong to. */
+	readonly group: string;
+}
+
+const TABS: readonly RibbonTab[] = [
+	{ tab: "selis-editor-tab-home", panel: "selis-editor-panel-home", group: "home" },
+	{ tab: "selis-editor-tab-edit", panel: "selis-editor-panel-edit", group: "edit" },
+	{ tab: "selis-editor-tab-organize", panel: "selis-editor-panel-organize", group: "organize" },
+	{ tab: "selis-editor-tab-document", panel: "selis-editor-panel-document", group: "document" },
+	{ tab: "selis-editor-tab-protect", panel: "selis-editor-panel-protect", group: "protect" },
+	{ tab: "selis-editor-tab-export", panel: "selis-editor-panel-export", group: "export" },
 ];
+
+/**
+ * Which ribbon tab owns each inspector panel.
+ *
+ * The inspector is a view over the current ribbon tab, not a second menu: the
+ * reader finds the same options under the same word they used in the ribbon.
+ */
+const INSPECTOR_SECTION_GROUPS: Readonly<Record<string, string>> = {
+	// Home: the document itself.
+	"selis-editor-section-fields": "home",
+	"selis-editor-section-outline": "home",
+	"selis-editor-section-properties": "home",
+	"selis-editor-section-history": "home",
+	// Edit: what the reader does to the page.
+	"selis-editor-section-comments": "edit",
+	"selis-editor-section-sign": "edit",
+	// Organize: the pages.
+	"selis-editor-section-split": "organize",
+	"selis-editor-section-size": "organize",
+	"selis-editor-section-labels": "organize",
+	"selis-editor-section-nup": "organize",
+	// Document: what is written on the pages, and what the file carries.
+	"selis-editor-section-numbers": "document",
+	"selis-editor-section-header": "document",
+	"selis-editor-section-watermark": "document",
+	"selis-editor-section-bates": "document",
+	"selis-editor-section-compress": "document",
+	"selis-editor-section-accessibility": "document",
+	"selis-editor-section-attachments": "document",
+	// Protect: what the document refuses.
+	"selis-editor-section-protect": "protect",
+	"selis-editor-section-privacy": "protect",
+	"selis-editor-section-fingerprint": "protect",
+	// Export: what the document becomes.
+	"selis-editor-section-export": "export",
+};
 
 /** Say what happened, in the status line under the document. */
 function setStatus(message: string, kind: "info" | "error" = "info"): void {
@@ -776,9 +833,33 @@ function renderDocumentState(): void {
 	dom.openButton.hidden = !empty;
 	dom.closeButton.hidden = empty;
 	dom.download.hidden = empty;
+	// The RIBBON carries a Download too, and it means the same thing: there
+	// is nothing to download while there is no document. A button that offers
+	// a file that does not exist is a button that reads as broken.
+	for (const button of dom.ribbon.querySelectorAll<HTMLButtonElement>(
+		"button[data-action='download']",
+	)) {
+		button.hidden = empty;
+	}
 }
 
 /** Reflect the history's state in the undo and redo buttons, and in the panel. */
+/**
+ * Say whether there is anything to download.
+ *
+ * The app bar's Download and the ribbon's are the same command, so they are
+ * disabled together: a Download that is offered when there is nothing to
+ * download is a button that reads as broken.
+ */
+function setDownloadDisabled(disabled: boolean): void {
+	dom.download.disabled = disabled;
+	for (const button of dom.ribbon.querySelectorAll<HTMLButtonElement>(
+		"button[data-action='download']",
+	)) {
+		button.disabled = disabled;
+	}
+}
+
 function renderHistory(): void {
 	dom.undo.disabled = !state.history.canUndo;
 	dom.redo.disabled = !state.history.canRedo;
@@ -786,7 +867,7 @@ function renderHistory(): void {
 	const redoLabel = state.history.redoLabel;
 	dom.undo.title = undoLabel === null ? "Undo" : `Undo: ${undoLabel}`;
 	dom.redo.title = redoLabel === null ? "Redo" : `Redo: ${redoLabel}`;
-	dom.download.disabled = state.bytes === null;
+	dom.download.disabled = state.bytes === null || state.busy;
 	// The ribbon carries its own undo and redo, and they follow the same
 	// state as the ones in the app bar.
 	for (const button of dom.ribbon.querySelectorAll<HTMLButtonElement>(
@@ -798,6 +879,7 @@ function renderHistory(): void {
 			button.disabled = !state.history.canRedo;
 		}
 	}
+	setDownloadDisabled(state.bytes === null || state.busy);
 	renderHistoryList();
 	dom.historyClear.disabled = state.history.cursor <= 0;
 }
@@ -843,6 +925,7 @@ function hydrateIcons(): void {
  * page should find the commands it can reach.
  */
 function selectTab(tabId: string): void {
+	const active = TABS.find((entry) => entry.tab === tabId);
 	for (const entry of TABS) {
 		const tab = document.getElementById(entry.tab);
 		const panel = document.getElementById(entry.panel);
@@ -853,13 +936,57 @@ function selectTab(tabId: string): void {
 		tab.setAttribute("aria-selected", selected ? "true" : "false");
 		panel.hidden = !selected;
 	}
+	if (active !== undefined) {
+		setInspectorGroup(active.group);
+	}
+}
+
+/** Mark each inspector panel with the ribbon tab it belongs to. */
+function applyInspectorGroups(): void {
+	for (const section of dom.inspector.querySelectorAll<HTMLElement>(
+		".selis-editor-details, .selis-editor-panel[id]",
+	)) {
+		const group = INSPECTOR_SECTION_GROUPS[section.id];
+		if (group !== undefined) {
+			section.dataset.panelGroup = group;
+		}
+	}
+	setInspectorGroup("home");
+}
+
+/**
+ * Show only the inspector panels that belong to one ribbon tab.
+ *
+ * The inspector used to show every panel at once, which made a two-line job
+ * look like twenty. The filter is a view over the same panels, not a second
+ * menu, and "all" is always available for a reader who wants the full list.
+ */
+function setInspectorGroup(group: string): void {
+	dom.inspectorFilter.value = group;
+	for (const section of dom.inspector.querySelectorAll<HTMLElement>(
+		"[data-panel-group]",
+	)) {
+		const visible = group === "all" || section.dataset.panelGroup === group;
+		section.hidden = !visible;
+		if (!visible && section instanceof HTMLDetailsElement) {
+			section.open = false;
+		}
+	}
 }
 
 /** Open one of the inspector's panels and put the cursor in it. */
 function focusSection(name: string): void {
-	const section = document.getElementById(`selis-editor-section-${name}`);
+	const id = `selis-editor-section-${name}`;
+	const section = document.getElementById(id);
 	if (!(section instanceof HTMLDetailsElement)) {
 		return;
+	}
+	const group = INSPECTOR_SECTION_GROUPS[id];
+	if (group !== undefined) {
+		setInspectorGroup(group);
+	}
+	if (dom.inspector.classList.contains("is-hidden")) {
+		toggleInspector();
 	}
 	section.open = true;
 	section.scrollIntoView({ block: "nearest", behavior: "smooth" });
@@ -1883,13 +2010,34 @@ async function closeDocument(): Promise<void> {
 	state.busy = true;
 	setStatus("Closing the document…");
 	try {
+		// The workspace forgets the document AND draws the empty workspace.
+		// Forgetting it alone leaves the pages on the screen, which is a
+		// document that is still open with no way to reach it: the reader
+		// presses Close and the pages stay.
+		const client = await engine();
+		if (state.doc !== 0) {
+			client.close(state.doc);
+			state.doc = 0;
+		}
 		state.bytes = null;
 		state.name = "document.pdf";
 		state.page = 0;
+		state.pages = 0;
+		state.pageSizes = [];
 		state.dirty = false;
+		state.kept = false;
+		state.image = null;
+		state.matches = [];
+		state.matchIndex = 0;
 		state.history.reset("Closed the document", new Uint8Array(0));
 		state.annotations = [];
+		state.geometry.clear();
+		releaseThumbnails();
 		await forgetDocument();
+		// The document is drawn empty: the pages go, the rail goes, and the
+		// workspace shows its invitation to open a file again.
+		renderDocument(client);
+		renderPageList();
 		renderDirty();
 		renderHistory();
 		renderDocumentState();
@@ -2171,6 +2319,7 @@ function openInlineAt(
 			button.addEventListener("click", () => {
 				state.boxStyle = withStyle(state.boxStyle, flag, !state.boxStyle[flag]);
 				button.setAttribute("aria-pressed", state.boxStyle[flag] ? "true" : "false");
+				renderTextGroup();
 			});
 			tools.appendChild(button);
 		}
@@ -2191,6 +2340,7 @@ function openInlineAt(
 				return;
 			}
 			state.boxSize = chosen;
+			renderTextGroup();
 			fontSize = (chosen * 96) / 72;
 			textarea.style.fontSize = `${fontSize}px`;
 			mirror.style.fontSize = `${fontSize}px`;
@@ -2209,7 +2359,9 @@ function openInlineAt(
 			button.style.background = swatch.css;
 			button.addEventListener("click", () => {
 				state.boxColor = swatch.rgb;
+				state.boxColorName = swatch.name;
 				textarea.style.color = swatch.css;
+				renderTextGroup();
 				for (const other of tools.querySelectorAll("button[data-color]")) {
 					other.setAttribute(
 						"aria-pressed",
@@ -2490,6 +2642,8 @@ async function lineChanged(
  * what followed it or by an image that was covered rather than removed.
  */
 const TOOL_HINTS: Record<EditorTool, string> = {
+	select:
+		"Drag over the words to select them, then press Ctrl+C to copy. This is the tool for reading a document rather than changing it — nothing you select is written into the file.",
 	text: "Click a line of text to change it. The text is replaced where it is drawn — the line does not re-flow, so a much longer replacement runs over what follows it.",
 	box: "Click where the text should start, then type it. The text is drawn on top of the page.",
 	image:
@@ -2508,6 +2662,95 @@ const TOOL_HINTS: Record<EditorTool, string> = {
 /** The line height the stamp's font uses, as a multiple of its size. */
 const BOX_LINE_LEADING = 1.25;
 
+/**
+ * The reader's own selection, when it is in the workspace.
+ *
+ * With the Select tool armed the text layer's lines are selectable and the
+ * browser's own selection does the work: the words are picked out, painted
+ * with the shell's selection colour, and Ctrl+C copies them. Nothing is
+ * written into the document - this is the tool for READING a PDF, and the
+ * competitors offer it for the same reason.
+ */
+function selectionInWorkspace(): Selection | null {
+	const selection = window.getSelection();
+	if (selection === null || selection.rangeCount === 0) {
+		return null;
+	}
+	const anchor = selection.anchorNode;
+	if (anchor === null || !dom.doc.contains(anchor)) {
+		return null;
+	}
+	return selection;
+}
+
+/**
+ * Say what is selected, and offer the copy.
+ *
+ * The copy button is there for the reader who does not know that Ctrl+C
+ * does it; the shortcut is there for the reader who does.
+ */
+function renderSelection(): void {
+	const selection = state.tool === "select" ? selectionInWorkspace() : null;
+	const text = selection === null ? "" : selection.toString().trim();
+	dom.copy.hidden = text === "";
+	if (text !== "") {
+		dom.copy.textContent = `Copy ${text.length} characters`;
+		dom.copy.title = "Copy the selected text (Ctrl+C does it too)";
+	}
+}
+
+/**
+ * Put the selected text on the clipboard.
+ *
+ * The clipboard API needs a user gesture, and the button is one. A browser
+ * that refuses the API is not a failure the reader has to hear about: the
+ * text is selected, and the browser's own Ctrl+C still works.
+ */
+async function copySelection(): Promise<void> {
+	const selection = selectionInWorkspace();
+	if (selection === null) {
+		return;
+	}
+	const text = selection.toString();
+	try {
+		await navigator.clipboard.writeText(text);
+		setStatus(`Copied ${text.length} characters.`);
+	} catch {
+		setStatus("The browser would not take the text. Ctrl+C copies it too.");
+	}
+}
+
+/**
+ * The Text group: the formatting the reader chooses BEFORE the text is placed.
+ *
+ * Foxit puts the text formatting in the Edit tab's Text group and Acrobat
+ * puts it in a floating bar over the text; NEITHER has a Text tab of its
+ * own, so neither do we - the formatting lives where the tools live.
+ *
+ * It is the same state the inline editor's row edits, so the two always
+ * agree: the reader sets the style in the ribbon, places a box, and the box
+ * carries it.
+ */
+function renderTextGroup(): void {
+	for (const button of dom.textTools.querySelectorAll<HTMLButtonElement>(
+		"button[data-style]",
+	)) {
+		const flag = button.dataset.style as "bold" | "italic" | "underline";
+		button.setAttribute("aria-pressed", state.boxStyle[flag] ? "true" : "false");
+	}
+	dom.textTools.querySelectorAll<HTMLSelectElement>("select").forEach((select) => {
+		select.value = String(state.boxSize);
+	});
+	for (const swatch of dom.textTools.querySelectorAll<HTMLButtonElement>(
+		"button[data-color]",
+	)) {
+		swatch.setAttribute(
+			"aria-pressed",
+			swatch.dataset.color === state.boxColorName ? "true" : "false",
+		);
+	}
+}
+
 /** Arm the workspace for a tool. */
 function setTool(tool: EditorTool): void {
 	state.tool = tool;
@@ -2519,6 +2762,13 @@ function setTool(tool: EditorTool): void {
 	}
 	dom.toolHint.textContent = TOOL_HINTS[tool];
 	dom.doc.dataset.tool = tool;
+	// A selection made with the Select tool is not a selection any more once
+	// the reader picks up a placement tool: the words would stay painted while
+	// the reader draws a box over them.
+	if (tool !== "select") {
+		window.getSelection()?.removeAllRanges();
+	}
+	renderSelection();
 	// The measurement and the signature belong to the tool that drew them.
 	if (tool !== "measure") {
 		clearMeasurement();
@@ -2577,7 +2827,10 @@ function pointerOnCanvas(
 
 /** Start a placement drag. */
 function startDrag(event: PointerEvent): void {
-	if (state.tool === "text") {
+	// The text tool and the select tool are the two that place nothing: the
+	// first opens an editor over a line, the second lets the browser's own
+	// selection do its work. Neither draws a rubber band.
+	if (state.tool === "text" || state.tool === "select") {
 		return;
 	}
 	const hit = pointerOnCanvas(event);
@@ -4675,6 +4928,7 @@ function wire(): void {
 			return;
 		}
 		if (
+			tool === "select" ||
 			tool === "text" ||
 			tool === "box" ||
 			tool === "redact" ||
@@ -4999,9 +5253,57 @@ function wire(): void {
 	// same on every surface.
 	renderThemeButton(startTheme());
 
+	// The Text group: the formatting the reader chooses before the text.
+	dom.textTools.addEventListener("click", (event) => {
+		const target = event.target;
+		if (!(target instanceof Element)) {
+			return;
+		}
+		const button = target.closest<HTMLButtonElement>("button[data-style]");
+		if (button !== null) {
+			const flag = button.dataset.style as "bold" | "italic" | "underline";
+			state.boxStyle = withStyle(state.boxStyle, flag, !state.boxStyle[flag]);
+			renderTextGroup();
+			return;
+		}
+		const swatch = target.closest<HTMLButtonElement>("button[data-color]");
+		if (swatch !== null) {
+			const colour = BOX_COLORS.find((entry) => entry.name === swatch.dataset.color);
+			if (colour !== undefined) {
+				state.boxColor = colour.rgb;
+				state.boxColorName = colour.name;
+				renderTextGroup();
+			}
+		}
+	});
+	dom.textTools.addEventListener("change", (event) => {
+		const target = event.target;
+		if (!(target instanceof HTMLSelectElement)) {
+			return;
+		}
+		const chosen = Number(target.value);
+		if (Number.isFinite(chosen) && chosen > 0) {
+			state.boxSize = chosen;
+			renderTextGroup();
+		}
+	});
+
 	// The inspector can be put away when the reader wants the whole canvas.
 	dom.inspectorToggle.addEventListener("click", () => {
 		toggleInspector();
+	});
+
+	// The inspector's filter: the panels of one group, or all of them.
+	dom.inspectorFilter.addEventListener("change", () => {
+		setInspectorGroup(dom.inspectorFilter.value);
+	});
+
+	// The selection: the browser's own, and the copy that takes it away.
+	document.addEventListener("selectionchange", () => {
+		renderSelection();
+	});
+	dom.copy.addEventListener("click", () => {
+		void copySelection();
 	});
 
 	// Dragging a file onto the page opens it, the way the reader does.
@@ -5024,8 +5326,14 @@ async function boot(): Promise<void> {
 	document.documentElement.dataset.noUpload = "watching";
 	hydrateIcons();
 	wire();
-	setTool("text");
+	// The inspector's panels are marked with the group they belong to before
+	// the first tab is shown, so the pane starts with the Home tab's panels
+	// and not with all twenty.
+	applyInspectorGroups();
+	renderTextGroup();
+	setTool("select");
 	selectTab("selis-editor-tab-home");
+	renderSelection();
 	renderExportButtons();
 	renderZoom();
 	renderHistory();

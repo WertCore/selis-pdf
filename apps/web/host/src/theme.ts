@@ -60,6 +60,32 @@ function root(): HTMLElement | null {
 }
 
 /**
+ * Put the colours in place, with the transitions off for the moment.
+ *
+ * The switch turns the transitions off while the theme's tokens change: a
+ * transition on a colour that comes from a token does not always run when
+ * the token changes, and a button that was dark would stay dark in the
+ * light theme.
+ *
+ * Two frames are needed: one for the browser to apply the new values, and
+ * one to take the switch off again.
+ */
+function applyThemeNow(preferences: ThemePreferences, element: HTMLElement): void {
+	element.setAttribute("data-theme-switching", "true");
+	applyTheme(preferences, element);
+	const frame = globalThis.requestAnimationFrame;
+	if (typeof frame !== "function") {
+		element.removeAttribute("data-theme-switching");
+		return;
+	}
+	frame(() => {
+		frame(() => {
+			element.removeAttribute("data-theme-switching");
+		});
+	});
+}
+
+/**
  * Put the page in the right theme, and keep it there, and wire the switch.
  *
  * The reader's choice is applied immediately. The system's preference is
@@ -77,7 +103,7 @@ export function startTheme(): ThemeName {
 	const storage = browserStorage();
 	const query = browserPreference();
 	const preferences = resolvePreferences(storage, query?.matches === true);
-	applyTheme(preferences, element);
+	applyThemeNow(preferences, element);
 
 	if (!hasChosenTheme(storage) && query !== null) {
 		const listener = (event: MediaQueryListEvent): void => {
@@ -85,7 +111,7 @@ export function startTheme(): ThemeName {
 				return;
 			}
 			const next = resolvePreferences(browserStorage(), event.matches);
-			applyTheme(next, element);
+			applyThemeNow(next, element);
 		};
 		if (typeof query.addEventListener === "function") {
 			query.addEventListener("change", listener);
@@ -142,7 +168,7 @@ export function toggleTheme(): ThemeName {
 	const query = browserPreference();
 	const current = resolvePreferences(storage, query?.matches === true);
 	const next = withToggledTheme(current);
-	applyTheme(next, element);
+	applyThemeNow(next, element);
 	writeStoredPreferences(next, storage);
 	return next.theme;
 }

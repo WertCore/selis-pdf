@@ -780,6 +780,24 @@
 	pointer-events: none;
 }
 
+/*
+ * The Select tool: the words are selectable.
+ *
+ * The text layer is a scaffold for the clickable lines, and its text is
+ * transparent so the page's own ink shows through. With the Select tool
+ * armed the reader wants the OTHER thing - to pick the words out and copy
+ * them - so the lines take the pointer again and the browser's own
+ * selection does the work. The shell's ::selection paints it.
+ *
+ * This rule comes AFTER the one above on purpose: the two have the same
+ * specificity, so the later one is the one that counts.
+ */
+.selis-editor-doc[data-tool="select"] .selis-editor-line {
+	pointer-events: auto;
+	user-select: text;
+	cursor: text;
+}
+
 /* The line being edited: the reader can see where they are without the
  * editor being a box around the text. */
 .selis-editor-line.is-editing {
@@ -1057,6 +1075,19 @@
 	white-space: nowrap;
 }
 
+/*
+ * The copy button: the reader who does not know that Ctrl+C copies.
+ *
+ * It sits in the status band, next to the words that say what is selected,
+ * and it is there only while something IS selected.
+ */
+.selis-editor-btn--small {
+	height: 24px;
+	padding: 0 var(--selis-space-3);
+	font-size: var(--selis-text-xs);
+	flex: none;
+}
+
 .selis-editor-status[data-kind="error"] {
 	color: var(--selis-color-danger-fg);
 }
@@ -1123,6 +1154,23 @@
 	width: 300px;
 	background: var(--selis-color-bg-raised);
 	border-left: var(--selis-border-hairline) solid var(--selis-color-border);
+}
+
+/*
+ * The filter: which panels to show.
+ *
+ * The pane follows the ribbon's tab by default, and the filter is the way
+ * to see the whole list - or one group of it - when the reader wants it.
+ */
+.selis-editor-inspector__filter {
+	height: 26px;
+	padding: 0 var(--selis-space-2);
+	border: var(--selis-border-hairline) solid var(--selis-color-border);
+	border-radius: var(--selis-radius-sm);
+	background: var(--selis-color-bg);
+	color: var(--selis-color-fg);
+	font: inherit;
+	font-size: var(--selis-text-xs);
 }
 
 .selis-editor-inspector__head {
@@ -1639,6 +1687,58 @@
 	text-decoration: underline;
 }
 
+/*
+ * The Text group: bold, italic and underline, and the size and the colour.
+ *
+ * Foxit puts the text formatting in the Edit tab's Text group and Acrobat
+ * puts it in a floating bar over the text; neither has a Text TAB of its
+ * own, so neither do we. The letters are the marks, because a letter IS
+ * the mark: "B" is what bold looks like everywhere else on the screen.
+ */
+.selis-editor-textgroup {
+	display: flex;
+	align-items: center;
+	gap: var(--selis-space-2);
+	flex-wrap: wrap;
+	max-width: 21rem;
+}
+
+.selis-editor-textmark {
+	width: 26px;
+	height: 26px;
+	padding: 0;
+	border: 1px solid transparent;
+	border-radius: var(--selis-radius-sm);
+	background: transparent;
+	color: var(--selis-color-fg);
+	font: inherit;
+	font-size: var(--selis-text-sm);
+	line-height: 1;
+	cursor: pointer;
+}
+
+.selis-editor-textmark:hover {
+	background: var(--selis-color-bg-inset);
+}
+
+.selis-editor-textmark[aria-pressed="true"] {
+	border-color: var(--selis-color-accent);
+	background: var(--selis-color-accent-subtle);
+	color: var(--selis-color-accent);
+}
+
+.selis-editor-textmark[data-style="bold"] {
+	font-weight: 700;
+}
+
+.selis-editor-textmark[data-style="italic"] {
+	font-style: italic;
+}
+
+.selis-editor-textmark[data-style="underline"] {
+	text-decoration: underline;
+}
+
 /* The size: the ladder every other editor offers. */
 .selis-editor-inline__size {
 	height: 22px;
@@ -1665,6 +1765,24 @@
 .selis-editor-inline__swatch[aria-pressed="true"] {
 	border-color: var(--selis-color-accent);
 	box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.18), 0 0 0 2px var(--selis-color-bg-raised);
+}
+
+/*
+ * A label only a screen reader sees.
+ *
+ * The text group and the filter carry marks a sighted reader reads at a
+ * glance, so each needs a name that says what it is.
+ */
+.selis-editor-sr-only {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	margin: -1px;
+	padding: 0;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
+	border: 0;
 }
 
 /* The hint: a hint, not a paragraph. */

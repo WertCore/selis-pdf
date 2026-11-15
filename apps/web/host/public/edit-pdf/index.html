@@ -27,13 +27,13 @@
 		<link
 			rel="stylesheet"
 			href="/assets/style.css"
-			integrity="sha384-fJ9XK/6aYKmCujaOyDDPDuvE7XCbNrw9jgNvMYz1eIlO3jCuS9YD3NJVJtnhYrn1"
+			integrity="sha384-12hi88RYFteIKIEnYiVh8Bi2SPYMf9++NsRPDydxgotjCvHuFxYPVZZkft/bgO8p"
 			crossorigin="anonymous"
 		/>
 		<link
 			rel="stylesheet"
 			href="/assets/editor.css"
-			integrity="sha384-A0jLD4c2Ks1Y0uVKZN2ru+ZuIjiDQkFit2BBGB/sg0tU4GdEDeoZQ+MhsmjiNoeE"
+			integrity="sha384-prkFg/9cMwIa7iAr8PMa4EB9iEnEGj3yVY/dI0p2PW/xkEIH9Gmuhdj2xLq/49eu"
 			crossorigin="anonymous"
 		/>
 	</head>
@@ -395,9 +395,18 @@
 						<button
 							type="button"
 							class="selis-editor-tool"
+							data-tool="select"
+							data-icon="select"
+							aria-pressed="true"
+						>
+							<span class="selis-editor-tool__label">Select</span>
+						</button>
+						<button
+							type="button"
+							class="selis-editor-tool"
 							data-tool="text"
 							data-icon="text"
-							aria-pressed="true"
+							aria-pressed="false"
 						>
 							<span class="selis-editor-tool__label">Edit text</span>
 						</button>
@@ -454,6 +463,90 @@
 						hidden
 					/>
 					<p class="selis-editor-group__label">On the page</p>
+				</div>
+				<div class="selis-editor-group">
+					<div
+						id="selis-editor-text-tools"
+						class="selis-editor-group__buttons selis-editor-textgroup"
+						role="group"
+						aria-label="How the new text is set"
+					>
+						<button
+							type="button"
+							class="selis-editor-textmark"
+							data-style="bold"
+							aria-pressed="false"
+							title="Bold"
+						>
+							B
+						</button>
+						<button
+							type="button"
+							class="selis-editor-textmark"
+							data-style="italic"
+							aria-pressed="false"
+							title="Italic"
+						>
+							I
+						</button>
+						<button
+							type="button"
+							class="selis-editor-textmark"
+							data-style="underline"
+							aria-pressed="false"
+							title="Underline"
+						>
+							U
+						</button>
+						<label class="selis-editor-sr-only" for="selis-editor-text-size">
+							The size of the new text
+						</label>
+						<select id="selis-editor-text-size" class="selis-editor-inline__size">
+							<option value="8">8</option>
+							<option value="10">10</option>
+							<option value="12">12</option>
+							<option value="14">14</option>
+							<option value="18">18</option>
+							<option value="24">24</option>
+						</select>
+						<button
+							type="button"
+							class="selis-editor-inline__swatch"
+							data-color="Black"
+							title="Black"
+							aria-label="The text in black"
+							aria-pressed="true"
+							style="background: #0d0d1f"
+						></button>
+						<button
+							type="button"
+							class="selis-editor-inline__swatch"
+							data-color="Blue"
+							title="Blue"
+							aria-label="The text in blue"
+							aria-pressed="false"
+							style="background: #0000ff"
+						></button>
+						<button
+							type="button"
+							class="selis-editor-inline__swatch"
+							data-color="Red"
+							title="Red"
+							aria-label="The text in red"
+							aria-pressed="false"
+							style="background: #ff0000"
+						></button>
+						<button
+							type="button"
+							class="selis-editor-inline__swatch"
+							data-color="Green"
+							title="Green"
+							aria-label="The text in green"
+							aria-pressed="false"
+							style="background: #008000"
+						></button>
+					</div>
+					<p class="selis-editor-group__label">Text</p>
 				</div>
 				<div class="selis-editor-group">
 					<div class="selis-editor-group__buttons">
@@ -919,6 +1012,22 @@
 			>
 				<div class="selis-editor-inspector__head">
 					<h2 class="selis-editor-inspector__title">Document</h2>
+					<label class="selis-editor-sr-only" for="selis-editor-inspector-filter">
+						Which panels to show
+					</label>
+					<select
+						id="selis-editor-inspector-filter"
+						class="selis-editor-inspector__filter"
+						title="Which panels to show"
+					>
+						<option value="home">Home</option>
+						<option value="edit">Edit</option>
+						<option value="organize">Organize</option>
+						<option value="document">Document</option>
+						<option value="protect">Protect</option>
+						<option value="export">Export</option>
+						<option value="all">All panels</option>
+					</select>
 					<button
 						type="button"
 						id="selis-editor-inspector-toggle"
@@ -1113,7 +1222,15 @@
 						</div>
 						<div class="selis-editor-actions">
 							<button type="button" id="selis-editor-numbers-apply">
-								Number the pages, and choose where the number sits.</p>
+								Number the pages
+							</button>
+						</div>
+					</details>
+
+<details class="selis-editor-details" id="selis-editor-section-header">
+						<summary>Header and footer</summary>
+						<p class="selis-editor-hint">
+							A header and a footer on every page. {page} and {pages} become the number.</p>
 						<div class="selis-editor-grid">
 							<label for="selis-editor-header-left">Header left</label>
 							<input id="selis-editor-header-left" type="text" />
@@ -1359,6 +1476,12 @@
 
 		<footer class="selis-editor-statusbar">
 			<p id="selis-editor-status" class="selis-editor-status" role="status" aria-live="polite"></p>
+			<button
+				type="button"
+				id="selis-editor-copy"
+				class="selis-editor-btn selis-editor-btn--small"
+				hidden
+			></button>
 			<div class="selis-editor-statusbar__right">
 				<span id="selis-page-indicator" class="selis-editor-statusbar__pageno" hidden></span>
 				<span class="selis-editor-statusbar__rule" aria-hidden="true"></span>
