@@ -2332,9 +2332,41 @@
         const resolved = await readPanel();
 
         const produced = await download(doc, win);
+
+        // And the conversation can leave as XFDF: a standard file another
+        // annotation tool can read, written from the engine's own model.
+        // The export writes its file AFTER an await, so the download must be
+        // caught from BEFORE the click — the ordinary download() helper arms
+        // itself just around a click and would miss it.
+        const captured = {};
+        const originalClick = win.HTMLAnchorElement.prototype.click;
+        win.HTMLAnchorElement.prototype.click = function () {
+          captured.href = this.href;
+          captured.download = this.download;
+        };
+        doc.getElementById("selis-editor-comments-xfdf").click();
+        await waitFor(
+          () => {
+            const status = statusText(doc);
+            return !status.endsWith("…") && status.includes("Exported");
+          },
+          30_000,
+          "the XFDF to be exported (" + label + ")",
+        );
+        win.HTMLAnchorElement.prototype.click = originalClick;
+        if (!captured.href) throw new Error("the XFDF export produced no file (" + label + ")");
+        const xfdfBlob = await win.fetch(captured.href).then((r) => r.blob());
+        const xfdf = new Uint8Array(await xfdfBlob.arrayBuffer());
+        const xfdfText = new TextDecoder("latin1").decode(xfdf);
+
         return {
           status: statusText(doc),
           bytes: produced.bytes,
+          xfdfBytes: xfdf.byteLength,
+          xfdfName: captured.download || "",
+          xfdfCarriesMark: xfdfText.indexOf("<highlight") >= 0,
+          xfdfCarriesReply: xfdfText.indexOf("irt=\"0\"") >= 0,
+          xfdfCarriesState: xfdfText.indexOf("state=\"Accepted\"") >= 0,
           marked: before.includes("Highlight"),
           carriesReply: replied.includes("A reply from the check"),
           carriesReopen: resolved.includes("Reopen"),

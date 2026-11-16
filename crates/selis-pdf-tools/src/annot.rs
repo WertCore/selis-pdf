@@ -243,6 +243,19 @@ pub fn update_annotation(
     Ok(verification)
 }
 
+/// All the annotations in a document, as XFDF.
+///
+/// The result is XML, not a PDF: the caller writes it as a downloadable
+/// document. It is a READ-ONLY view — no bytes change in the input.
+pub fn export_xfdf(path: &str) -> ToolResult<String> {
+    let src = read_file(path)?;
+    let budget = Budget::unlimited();
+    let clock = crate::shell_clock();
+    let mut g = crate::runtime::cli_guard(&budget, &clock);
+    selis_pdf_annot::xfdf::export_xfdf(&src, &budget, &mut g)
+        .map_err(|e| CliError(format!("{path}: {e}")))
+}
+
 /// The annotations a page carries, as a JSON report.
 ///
 /// The report is a READ-ONLY view: it changes nothing and writes nothing.

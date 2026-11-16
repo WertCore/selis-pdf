@@ -104,6 +104,7 @@ enum Op {
     Annotate,
     Annotations,
     AnnotateUpdate,
+    XfdfExport,
 }
 
 impl Op {
@@ -146,6 +147,7 @@ impl Op {
             35 => Some(Self::Annotate),
             36 => Some(Self::Annotations),
             37 => Some(Self::AnnotateUpdate),
+            38 => Some(Self::XfdfExport),
             _ => None,
         }
     }
@@ -595,6 +597,7 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
             }]
         }
         Op::Annotations => return run_annotations(&options, &stem, first_input_len),
+        Op::XfdfExport => return run_xfdf_export(&stem, first_input_len),
         Op::Crop => {
             let pages = option_str(&options, "pages");
             let margins = selis_pdf_tools::CropMargins {
@@ -1211,6 +1214,39 @@ fn run_annotations(
         "verdict": verification.verdict,
     })];
     Ok((verification, reports, vec![(name, json.into_bytes())], None))
+}
+
+/// Export the document's annotations as an XFDF file.
+fn run_xfdf_export(stem: &str, bytes_in: usize) -> Result<RunOutput, ToolError> {
+    let xml = selis_pdf_tools::export_xfdf("in/0")?;
+    let verification = Verification {
+        pages_in: None,
+        pages_out: 0,
+        annotations_in: None,
+        annotations_out: 0,
+        fields_in: None,
+        fields_out: 0,
+        ocgs_in: None,
+        ocgs_out: 0,
+        outline_entries_in: None,
+        outline_entries_out: 0,
+        embedded_files_in: None,
+        embedded_files_out: 0,
+        bytes_in: u64::try_from(bytes_in).unwrap_or(u64::MAX),
+        bytes_out: u64::try_from(xml.len()).unwrap_or(u64::MAX),
+        verdict: "read".to_string(),
+        checked: Vec::new(),
+        repair_mode: None,
+    };
+    let name = format!("{stem}-annotations.xfdf");
+    let reports = vec![serde_json::json!({
+        "name": name,
+        "kind": "report",
+        "pages": 0,
+        "bytes": xml.len(),
+        "verdict": verification.verdict,
+    })];
+    Ok((verification, reports, vec![(name, xml.into_bytes())], None))
 }
 
 /// Run one tool across every selected document, each file on its own.
@@ -1925,9 +1961,21 @@ mod tests {
             "the XMP stream is removed"
         );
 
-        // Op 37 is the annotation update, so the probe moves past it.
-        let response = run_request(&request(38, b"", &[("doc.pdf", &pdf)]));
+        // Op 38 is the XFDF export, so the probe moves past it.
+        let response = run_request(&request(39, b"", &[("doc.pdf", &pdf)]));
         assert!(error_text(&response).contains("unknown tool operation"));
+    }
+
+    #[test]
+    fn xfdf_export_operation_is_dispatched() {
+        let pdf = metadata_pdf();
+        let response = run_request(&request(38, b"", &[("doc.pdf", &pdf)]));
+        let (status, message, outputs) = parse_response(&response);
+        assert_eq!(status, 0, "XFDF export failed: {message}");
+        assert_eq!(outputs[0].0, "doc-annotations.xfdf");
+        let xml = String::from_utf8_lossy(&outputs[0].1).to_string();
+        assert!(xml.contains("<xfdf"), "the file is XFDF: {xml}");
+        assert!(message["verdict"] == "read");
     }
 
     #[test]

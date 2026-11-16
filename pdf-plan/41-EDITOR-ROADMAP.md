@@ -463,8 +463,17 @@ a list of panels and not a list of engine work.
       with `/StateModel /Review` on the mark itself — a dictionary entry, not
       a note in the editor's own panel. A reply never carries Reply or Resolve
       of its own: it answers its parent, and the panel says so by omission.
-- [ ] **I1e — Flattening through the model, and XFDF.** `SL-5.ANNOT.05`,
-      `SL-5.ANNOT.06`.
+- [x] **I1e — XFDF export.** `SL-5.ANNOT.06`. The annotation MODEL writes
+      every mark in the document as Adobe's XML: subtype, page, rect, colour,
+      comment, author, quads, reply back-reference and review state. The
+      engine's own writer serves the CLI, the tools chunk and the editor — the
+      Comments panel has an Export XFDF button, and the browser check reads the
+      returned file back. The write carries `/NM` on every mark so a reply
+      exported from here still names its parent in another reader.
+- [ ] **I1f — Flattening through the model.** `SL-5.ANNOT.05`. The engine and
+      CLI already flatten annotations; the missing part is doing it through
+      this crate's model and exposing it on the web. A follow-on slice, split
+      out here rather than left as a half-done item.
 
 ### Slice 8b — the workspace a reader comes back to (shipped)
 

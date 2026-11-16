@@ -431,6 +431,7 @@ const dom = {
 	accessibility: el<HTMLDivElement>("selis-editor-accessibility"),
 	comments: el<HTMLDivElement>("selis-editor-comments"),
 	commentsRead: el<HTMLButtonElement>("selis-editor-comments-read"),
+	commentsXfdf: el<HTMLButtonElement>("selis-editor-comments-xfdf"),
 	accessibilityCheck: el<HTMLButtonElement>("selis-editor-accessibility-check"),
 	attachments: el<HTMLDivElement>("selis-editor-attachments"),
 	attachmentsRead: el<HTMLButtonElement>("selis-editor-attachments-read"),
@@ -4935,6 +4936,38 @@ function openReplyForm(
 	input.focus();
 }
 
+/** Export the document's marks as XFDF, in the engine's own format. */
+async function exportXfdf(): Promise<void> {
+	const bytes = state.bytes;
+	if (bytes === null) {
+		setStatus("Open a PDF first.", "error");
+		return;
+	}
+	state.busy = true;
+	dom.download.disabled = true;
+	setStatus("Exporting the comments…");
+	try {
+		const chunk = await tools();
+		const result = runTool(chunk, {
+			op: "xfdf",
+			options: {},
+			files: [{ name: state.name, bytes }],
+		});
+		const output = result.outputs[0];
+		if (output === undefined) {
+			throw new Error("the engine produced no XFDF");
+		}
+		const name = `${state.name.replace(/\.pdf$/i, "")}-annotations.xfdf`;
+		downloadBytes(name, output.bytes, "application/xml");
+		setStatus(`Exported the comments to ${name}.`);
+	} catch (error) {
+		setStatus(`The comments could not be exported: ${messageOf(error)}`, "error");
+	} finally {
+		state.busy = false;
+		dom.download.disabled = state.bytes === null;
+	}
+}
+
 /** Post a reply to a mark on the page. */
 async function replyToMark(
 	page: number,
@@ -5971,6 +6004,9 @@ function wire(): void {
 	});
 	dom.commentsRead.addEventListener("click", () => {
 		void readComments();
+	});
+	dom.commentsXfdf.addEventListener("click", () => {
+		void exportXfdf();
 	});
 	dom.attachmentsRead.addEventListener("click", () => {
 		void readAttachments();

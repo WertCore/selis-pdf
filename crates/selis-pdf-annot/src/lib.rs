@@ -52,6 +52,8 @@ use selis_pdf_cos::doc_writer::write_incremental_update;
 use selis_pdf_cos::{Obj, Ref};
 use selis_sandbox::{Budget, BudgetGuard};
 
+pub mod xfdf;
+
 #[cfg(test)]
 mod tests;
 
@@ -181,6 +183,9 @@ pub struct PageAnnotation {
     pub state: Option<String>,
     /// The state model (`/StateModel`) the state belongs to.
     pub state_model: Option<String>,
+    /// The annotation's name (`/NM`), when it carries one. XFDF replies
+    /// reference their parent by this name.
+    pub name: Option<String>,
 }
 
 /// What a write produced, beyond the bytes.
@@ -362,6 +367,12 @@ pub fn annotate(
     if spec.kind == AnnotKind::Ink {
         annot.push((Bytes::copy_from_slice(b"InkList"), ink_list(&spec.points)));
     }
+    // A name is what an XFDF reply references. Write one on every mark so
+    // a conversation exported from this document stays a conversation.
+    annot.push((
+        Bytes::copy_from_slice(b"NM"),
+        text_string(&format!("selis-{}", annot_num)),
+    ));
     if let Some(index) = spec.reply_to {
         let parent = existing.get(index).copied().ok_or_else(|| {
             err!(
@@ -494,6 +505,7 @@ pub fn list_annotations(
         };
         let state = name_of(&pairs, b"State");
         let state_model = name_of(&pairs, b"StateModel");
+        let name = text_of(&pairs, b"NM").into();
         out.push(PageAnnotation {
             subtype,
             rect,
@@ -504,6 +516,7 @@ pub fn list_annotations(
             irt,
             state,
             state_model,
+            name,
         });
     }
     Ok(out)

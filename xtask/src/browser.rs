@@ -7416,6 +7416,15 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
     if conversation.get("carriesModel").and_then(Json::as_bool) != Some(true) {
         return Err("the review state has no /StateModel in the file".into());
     }
+    if conversation.get("xfdfCarriesMark").and_then(Json::as_bool) != Some(true) {
+        return Err("the XFDF export does not carry the mark".into());
+    }
+    if conversation.get("xfdfCarriesReply").and_then(Json::as_bool) != Some(true) {
+        return Err("the XFDF export does not carry the reply".into());
+    }
+    if conversation.get("xfdfCarriesState").and_then(Json::as_bool) != Some(true) {
+        return Err("the XFDF export does not carry the review state".into());
+    }
 
     // The markup: the marks a reader leaves on a document.
     let markup = report

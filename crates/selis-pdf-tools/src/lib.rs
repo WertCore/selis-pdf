@@ -63,7 +63,7 @@ mod zip;
 use selis_sandbox::Clock;
 
 pub use annot::{
-    annotate, annotations, update_annotation, AnnotateOptions, UpdateAnnotationOptions,
+    annotate, annotations, export_xfdf, update_annotation, AnnotateOptions, UpdateAnnotationOptions,
 };
 pub use batch::{run_batch, BatchFile, BatchJob, BatchOutcome, BatchTool, MAX_BATCH_FILES};
 #[cfg(feature = "text")]

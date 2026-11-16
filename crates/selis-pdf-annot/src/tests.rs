@@ -84,6 +84,28 @@ fn highlight() -> AnnotSpec {
 }
 
 #[test]
+fn an_export_carries_the_mark_as_xfdf() {
+    let src = build_pdf();
+    let (out, _) = run(&src, &highlight()).expect("the mark");
+    let budget = Budget::unlimited();
+    let mut g = budget.guard();
+    let xml = xfdf::export_xfdf(&out, &budget, &mut g).expect("the export");
+    assert!(
+        xml.contains("<xfdf xmlns=\"http://ns.adobe.com/xfdf/\""),
+        "the XML is XFDF: {xml}"
+    );
+    assert!(
+        xml.contains("<highlight page=\"0\""),
+        "the mark is there: {xml}"
+    );
+    assert!(xml.contains("name=\"selis-"), "the mark has a name: {xml}");
+    assert!(
+        xml.contains("color=\"#FFEB3B\""),
+        "the colour is there: {xml}"
+    );
+}
+
+#[test]
 fn a_reply_points_back_at_the_mark_it_answers() {
     let src = build_pdf();
     let (out, _) = run(&src, &highlight()).expect("the mark");
