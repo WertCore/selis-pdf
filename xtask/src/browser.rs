@@ -7682,6 +7682,30 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
         return Err("the double-click picked the whole line, not the word".into());
     }
 
+    // THE WIDTH AFTER AN EDIT AND A STAMP.
+    //
+    // The markup work turned up a defect here: after an edit and then a
+    // stamp, the OTHER text on the page measured a fraction of its real
+    // width, and the line became invisible and unclickable. The cause was
+    // the stamp's object numbering - it overwrote the page's font, and the
+    // font's widths went with it - and this is the check that keeps it
+    // fixed.
+    let widths = report
+        .get("widthsLeg")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the page reported no width measurement (widthsLeg = None)".to_string())?;
+    let width_before = widths.get("before").and_then(Json::as_u64).unwrap_or(0);
+    let width_after = widths.get("after").and_then(Json::as_u64).unwrap_or(0);
+    if width_before < 40 {
+        return Err("the line had no width to begin with".into());
+    }
+    if width_after * 2 < width_before {
+        return Err(format!(
+            "after an edit and a stamp the line measured {width_after}px, and it measured \
+             {width_before}px before: the stamp took the page's font away"
+        ));
+    }
+
     // THE PICKER, THE MENU, AND THE DRAW TOOL.
     let extras = report
         .get("extras")

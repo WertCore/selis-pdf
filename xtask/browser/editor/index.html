@@ -194,6 +194,7 @@
         out.online = await driveLeg(onlineDoc, onlineWin, fixtureBytes, "edit.pdf", "online");
         out.before = out.online.before;
         out.selection = out.online.selection;
+        out.widths = out.widthsLeg;
         out.after = out.online.after;
         out.undone = out.online.undone;
         out.redone = out.online.redone;
@@ -233,6 +234,7 @@
 
         // The session leg RELOADS the frame, so it runs after every leg
         // that holds the frame's document.
+        out.widthsLeg = await widthsLeg(onlineDoc, onlineWin, fixtureBytes, "online");
         out.extras = await extrasLeg(onlineDoc, onlineWin, fixtureBytes, "online");
         out.session = await sessionLeg(onlineDoc, onlineWin, "online");
         // The session leg RELOADED the frame, so the close leg works on
@@ -2077,6 +2079,98 @@
           restoredName: filename,
           restoredStatus: status,
         };
+      }
+
+      /**
+       * An edit, and then a stamp.
+       *
+       * This is the sequence the markup work turned up a defect in: an edit
+       * and then a stamp left the OTHER text on the page with a measured
+       * width of a fraction of its real one, so the line became invisible
+       * and unclickable.
+       *
+       * The cause was the stamp's object numbering: an incremental update
+       * writes only the objects it changes, so the newest revision's table
+       * held one entry, and the stamp was numbered with the number after
+       * it — which was the page's FONT. The stamp overwrote the font, the
+       * font's /Widths went with it, and every line measured the width of
+       * nothing.
+       */
+      async function widthsLeg(doc, win, fixtureBytes, label) {
+        const file = new File([fixtureBytes], "widths.pdf", { type: "application/pdf" });
+        const transfer = new DataTransfer();
+        transfer.items.add(file);
+        const input = doc.getElementById("selis-open-file");
+        input.files = transfer.files;
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+        await waitFor(
+          () => statusText(doc).startsWith("Opened widths.pdf"),
+          30_000,
+          "the document to be opened (" + label + ")",
+        );
+        // The SAME line before and after: the stamp adds a line of its
+        // own, and the first line on the page is then the stamp's.
+        const widthOf = () => {
+          const target = [...doc.querySelectorAll(".selis-editor-line")].find(
+            (candidate) => (candidate.textContent || "").includes("Invoice"),
+          );
+          return target === undefined ? 0 : Math.round(target.getBoundingClientRect().width);
+        };
+        const before = widthOf();
+
+        // The edit.
+        useTool(doc, "text");
+        const editLine = [...doc.querySelectorAll(".selis-editor-line")].find(
+          (candidate) => (candidate.textContent || "").trim() !== "",
+        );
+        if (!editLine) throw new Error("the document drew no clickable text");
+        editLine.click();
+        await waitFor(
+          () => doc.querySelector(".selis-editor-inline__text") !== null,
+          10_000,
+          "the inline text editor (" + label + ")",
+        );
+        const editArea = doc.querySelector(".selis-editor-inline__text");
+        editArea.value = editArea.value.replace("900", "1200");
+        editArea.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+        );
+        await waitForSettled(doc, "Changed", "the text to change (" + label + ")");
+
+        // And then a stamp: a text box, which is the sign chunk's stamp.
+        useTool(doc, "box");
+        const stampCanvas = doc.querySelector("canvas");
+        const stampBox = stampCanvas.getBoundingClientRect();
+        const stampAt = (x, y, buttons, type) =>
+          new PointerEvent(type, {
+            clientX: x,
+            clientY: y,
+            bubbles: true,
+            cancelable: true,
+            button: 0,
+            buttons,
+            pointerId: 77,
+            isPrimary: true,
+          });
+        stampCanvas.dispatchEvent(
+          stampAt(stampBox.left + 30, stampBox.top + 30, 1, "pointerdown"),
+        );
+        stampCanvas.dispatchEvent(
+          stampAt(stampBox.left + 30, stampBox.top + 30, 0, "pointerup"),
+        );
+        await waitFor(
+          () => doc.querySelector(".selis-editor-inline__text") !== null,
+          10_000,
+          "the text box editor (" + label + ")",
+        );
+        const stampArea = doc.querySelector(".selis-editor-inline__text");
+        stampArea.value = "Added by the editor";
+        stampArea.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+        );
+        await waitForSettled(doc, "Added a text box", "the stamp to be placed (" + label + ")");
+
+        return { before: before, after: widthOf() };
       }
 
       /**

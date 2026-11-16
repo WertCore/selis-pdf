@@ -199,6 +199,18 @@ The sign crate has a test that reproduces the collision
 document, stamps it, and asks whether object 5 is still a font. It fails
 without the fix and passes with it.
 
+And the editor's own check now makes the SEQUENCE — an edit, then a stamp —
+and measures the line that was not involved:
+
+```json
+{"before": 234, "after": 247}
+```
+
+The line's measured width is still real (it grew by the width of the
+character the edit added), and the check fails if it is less than half of
+what it was. The check no longer picks a line whose measured width is
+real, either: it measures the line it is about to edit.
+
 And the editor's own check measures what the reader can click, before the
 stamp and after it:
 
