@@ -26,6 +26,8 @@ export interface AnnotateOptions {
 	readonly contents?: string;
 	/** Who left the mark. */
 	readonly author?: string;
+	/** The annotation this one replies to, as its /Annots position. */
+	readonly replyTo?: number;
 }
 
 /** One annotation, as the engine's report describes it. */
@@ -42,6 +44,12 @@ export interface PageAnnotation {
 	readonly author: string;
 	/** How many text lines it covers. */
 	readonly quads: number;
+	/** The annotation this one replies to, as its /Annots position. */
+	readonly irt: number | null;
+	/** The review state, when the mark carries one. */
+	readonly state: string | null;
+	/** The state model the state belongs to. */
+	readonly stateModel: string | null;
 }
 
 /** The report the engine's annotations operation returns. */
@@ -96,6 +104,9 @@ export function readAnnotationsReport(json: string): AnnotationsReport {
 			contents: typeof entry.contents === "string" ? entry.contents : "",
 			author: typeof entry.author === "string" ? entry.author : "",
 			quads: typeof entry.quads === "number" ? entry.quads : 0,
+			irt: typeof entry.irt === "number" ? entry.irt : null,
+			state: typeof entry.state === "string" ? entry.state : null,
+			stateModel: typeof entry.stateModel === "string" ? entry.stateModel : null,
 		});
 	}
 	const page = typeof record.page === "number" ? record.page : 0;

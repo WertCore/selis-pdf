@@ -1063,6 +1063,43 @@
 	color: var(--selis-color-fg-subtle);
 }
 
+/* The conversation on a mark: Reply, Resolve/Reopen, and the reply box. */
+.selis-editor-comment__action {
+	margin-left: 0.5rem;
+	padding: 0.1rem 0.35rem;
+	border: 1px solid var(--selis-color-border);
+	border-radius: 0.3rem;
+	background: none;
+	color: var(--selis-color-accent);
+	font: inherit;
+	font-size: 0.8rem;
+	cursor: pointer;
+}
+
+.selis-editor-comment__action:hover {
+	background: var(--selis-color-bg-raised);
+}
+
+.selis-editor-comment__reply {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.35rem;
+	margin-top: 0.35rem;
+}
+
+.selis-editor-comment__input {
+	flex: 1 1 100%;
+	box-sizing: border-box;
+	padding: 0.35rem;
+	border: 1px solid var(--selis-color-border);
+	border-radius: 0.3rem;
+	background: var(--selis-color-bg);
+	color: var(--selis-color-fg);
+	font: inherit;
+	font-size: 0.85rem;
+	resize: vertical;
+}
+
 /* ── the status bar ─────────────────────────────────────────────────────────── */
 
 /*

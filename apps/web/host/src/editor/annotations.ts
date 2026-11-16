@@ -16,6 +16,10 @@ export interface EditorAnnotation {
 	readonly contents: string;
 	/** What kind of mark it is. */
 	readonly subtype: string;
+	/** The annotation this one replies to, as its /Annots position. */
+	readonly irt: number | null;
+	/** The review state, when the mark carries one. */
+	readonly state: string | null;
 }
 
 /**

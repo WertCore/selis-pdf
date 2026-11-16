@@ -7392,6 +7392,31 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
         return Err("the signature is not in the produced file".into());
     }
 
+    // A conversation on a mark: a reply must be a PDF annotation with an
+    // /IRT back-reference, and a review state must be /State + /StateModel.
+    let conversation = report
+        .get("conversation")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the page reported no conversation leg (conversation = None)".to_string())?;
+    if conversation.get("marked").and_then(Json::as_bool) != Some(true) {
+        return Err("the mark to answer was not placed".into());
+    }
+    if conversation.get("carriesReply").and_then(Json::as_bool) != Some(true) {
+        return Err("the reply is not in the comments panel".into());
+    }
+    if conversation.get("carriesReopen").and_then(Json::as_bool) != Some(true) {
+        return Err("the resolved mark cannot be reopened".into());
+    }
+    if conversation.get("carriesIrt").and_then(Json::as_bool) != Some(true) {
+        return Err("the reply has no /IRT back-reference in the file".into());
+    }
+    if conversation.get("carriesState").and_then(Json::as_bool) != Some(true) {
+        return Err("the review state is not in the file".into());
+    }
+    if conversation.get("carriesModel").and_then(Json::as_bool) != Some(true) {
+        return Err("the review state has no /StateModel in the file".into());
+    }
+
     // The markup: the marks a reader leaves on a document.
     let markup = report
         .get("markup")

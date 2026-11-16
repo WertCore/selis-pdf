@@ -234,6 +234,7 @@
 
         // The session leg RELOADS the frame, so it runs after every leg
         // that holds the frame's document.
+        out.conversation = await conversationLeg(onlineDoc, onlineWin, fixtureBytes, "online");
         out.reflow = await reflowLeg(onlineDoc, onlineWin, "online");
         out.redactImage = await redactImageLeg(onlineDoc, onlineWin, "online");
         out.widthsLeg = await widthsLeg(onlineDoc, onlineWin, fixtureBytes, "online");
@@ -2069,7 +2070,11 @@
           30_000,
           "the comments to be read again (" + label + ")",
         );
-        const remove = doc.querySelector("#selis-editor-comments button");
+        // A comment now has Reply and Resolve buttons beside Remove, so the
+        // check asks for the remove button by name rather than by position.
+        const remove = [...doc.querySelectorAll("#selis-editor-comments button")].find(
+          (button) => button.title === "Remove this mark",
+        );
         if (!remove) throw new Error("the comments panel offers no way to remove a mark");
         remove.click();
         await waitFor(
@@ -2196,6 +2201,146 @@
           bytes: produced.bytes,
           shift,
           carriesPush: /\d+(?:\.\d+)? 0 Td 80 0 Td \(USD\)/.test(newest),
+        };
+      }
+
+      /**
+       * A conversation on a mark: a reply, and a review state.
+       *
+       * A reply must be a PDF annotation with an /IRT back-reference, and a
+       * review state must be /State + /StateModel on the mark - both IN the
+       * file, so a reader in another viewer sees the same conversation.
+       */
+      async function conversationLeg(doc, win, fixtureBytes, label) {
+        const file = new File([fixtureBytes], "conversation.pdf", { type: "application/pdf" });
+        const transfer = new DataTransfer();
+        transfer.items.add(file);
+        const input = doc.getElementById("selis-open-file");
+        input.files = transfer.files;
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+        await waitFor(
+          () => statusText(doc).startsWith("Opened conversation.pdf"),
+          30_000,
+          "the document to be opened (" + label + ")",
+        );
+
+        // Place one mark on the page: the conversation needs something to
+        // answer. The highlight is a drag over the words.
+        const line = [...doc.querySelectorAll(".selis-editor-line")].find((candidate) => {
+          if ((candidate.textContent || "").trim() === "") return false;
+          return candidate.getBoundingClientRect().width > 4;
+        });
+        if (!line) throw new Error("the document drew no clickable text (" + label + ")");
+        doc.getElementById("selis-editor-tab-edit").click();
+        doc.querySelector('button[data-markup="highlight"]').click();
+        const canvas = doc.querySelector("canvas");
+        const canvasBox = canvas.getBoundingClientRect();
+        const lineBox = line.getBoundingClientRect();
+        const point = (x, y, buttons, type) =>
+          new PointerEvent(type, {
+            clientX: x,
+            clientY: y,
+            bubbles: true,
+            cancelable: true,
+            button: 0,
+            buttons,
+            pointerId: 91,
+            isPrimary: true,
+          });
+        const start = {
+          x: lineBox.left - canvasBox.left,
+          y: lineBox.top - canvasBox.top,
+        };
+        canvas.dispatchEvent(
+          point(canvasBox.left + start.x, canvasBox.top + start.y, 1, "pointerdown"),
+        );
+        canvas.dispatchEvent(
+          point(
+            canvasBox.left + start.x + lineBox.width,
+            canvasBox.top + start.y + lineBox.height,
+            1,
+            "pointermove",
+          ),
+        );
+        canvas.dispatchEvent(
+          point(
+            canvasBox.left + start.x + lineBox.width,
+            canvasBox.top + start.y + lineBox.height,
+            0,
+            "pointerup",
+          ),
+        );
+        await waitFor(
+          () => {
+            const status = statusText(doc);
+            return !status.endsWith("…") && status.includes("mark");
+          },
+          30_000,
+          "the mark to answer (" + label + ")",
+        );
+
+        const readPanel = async () => {
+          doc.getElementById("selis-editor-comments-read").click();
+          await waitFor(
+            () => {
+              const status = statusText(doc);
+              return !status.endsWith("…") && status.includes("comment");
+            },
+            30_000,
+            "the comments to be read (" + label + ")",
+          );
+          return doc.getElementById("selis-editor-comments").textContent.trim();
+        };
+        const before = await readPanel();
+
+        // Reply to the first mark.
+        const reply = [...doc.querySelectorAll("#selis-editor-comments button")].find(
+          (button) => button.textContent === "Reply",
+        );
+        if (!reply) throw new Error("the comments panel offers no reply (" + label + ")");
+        reply.click();
+        const box = doc.querySelector(".selis-editor-comment__input");
+        if (!box) throw new Error("the reply box did not open (" + label + ")");
+        box.value = "A reply from the check";
+        [...doc.querySelectorAll(".selis-editor-comment__action")]
+          .find((button) => button.textContent === "Post reply")
+          .click();
+        await waitFor(
+          () => {
+            const status = statusText(doc);
+            return !status.endsWith("…") && status.includes("Replied");
+          },
+          30_000,
+          "the reply to be posted (" + label + ")",
+        );
+        const replied = await readPanel();
+
+        // Resolve the original mark, then read its state back.
+        const resolve = [...doc.querySelectorAll("#selis-editor-comments button")].find(
+          (button) => button.textContent === "Resolve",
+        );
+        if (!resolve) throw new Error("the comments panel cannot resolve a mark (" + label + ")");
+        resolve.click();
+        await waitFor(
+          () => {
+            const status = statusText(doc);
+            return !status.endsWith("…") && status.includes("Resolved");
+          },
+          30_000,
+          "the mark to be resolved (" + label + ")",
+        );
+        const resolved = await readPanel();
+
+        const produced = await download(doc, win);
+        return {
+          status: statusText(doc),
+          bytes: produced.bytes,
+          marked: before.includes("Highlight"),
+          carriesReply: replied.includes("A reply from the check"),
+          carriesReopen: resolved.includes("Reopen"),
+          carriesIrt: produced.carriesText.indexOf("/IRT") >= 0,
+          carriesState: produced.carriesText.indexOf("/State /Accepted") >= 0,
+          carriesModel: produced.carriesText.indexOf("/StateModel /Review") >= 0,
         };
       }
 

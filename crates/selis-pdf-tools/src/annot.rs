@@ -13,8 +13,8 @@ use crate::write_gate::{self, PRESERVE_ON_APPEND};
 use crate::{read_file, CliError, ToolResult};
 
 pub use selis_pdf_annot::{
-    AnnotKind, AnnotSpec, PageAnnotation, HIGHLIGHT_COLOUR, INK_COLOUR, NOTE_COLOUR, SQUARE_COLOUR,
-    STRIKEOUT_COLOUR, UNDERLINE_COLOUR,
+    AnnotKind, AnnotSpec, PageAnnotation, ReviewState, HIGHLIGHT_COLOUR, INK_COLOUR, NOTE_COLOUR,
+    SQUARE_COLOUR, STRIKEOUT_COLOUR, UNDERLINE_COLOUR,
 };
 
 /// Options for the browser/CLI annotate tool, deserialized from the tools
@@ -48,6 +48,10 @@ pub struct AnnotateOptions {
     /// The width of a stroke, in points.
     #[serde(default)]
     pub width: Option<f64>,
+    /// The annotation this one replies to, as its position in the page's
+    /// `/Annots` order. The browser sends this as `replyTo`.
+    #[serde(default, alias = "replyTo")]
+    pub reply_to: Option<usize>,
 }
 
 /// The kind a wire name asks for.
@@ -116,6 +120,7 @@ pub fn annotate(path: &str, options: &AnnotateOptions, output: &str) -> ToolResu
     if let Some(width) = options.width {
         spec.width = width;
     }
+    spec.reply_to = options.reply_to;
     let (bytes, report) = selis_pdf_annot::annotate(&src, &spec, &budget, &mut g)
         .map_err(|e| CliError(format!("{path}: {e}")))?;
     let observed = selis_pdf_cos::verify::survey(&src, &budget, &mut g)
@@ -158,6 +163,9 @@ pub struct UpdateAnnotationOptions {
     /// Whether the annotation is taken off the page instead of changed.
     #[serde(default)]
     pub remove: bool,
+    /// The review state: `resolved` or `reopened`.
+    #[serde(default)]
+    pub state: Option<String>,
 }
 
 /// Move an annotation, or change what it says, and write the verified result
@@ -183,6 +191,24 @@ pub fn update_annotation(
             &src,
             options.page.saturating_add(1),
             options.index,
+            &budget,
+            &mut g,
+        )
+    } else if let Some(state) = &options.state {
+        let state = match state.as_str() {
+            "resolved" => ReviewState::Resolved,
+            "reopened" => ReviewState::Reopened,
+            other => {
+                return Err(CliError(format!(
+                    "{path}: {other:?} is not a review state; say resolved or reopened"
+                )))
+            }
+        };
+        selis_pdf_annot::set_review_state(
+            &src,
+            options.page.saturating_add(1),
+            options.index,
+            state,
             &budget,
             &mut g,
         )
@@ -242,6 +268,9 @@ pub fn annotations(path: &str, page: u32) -> ToolResult<String> {
                 "contents": annotation.contents,
                 "author": annotation.author,
                 "quads": annotation.quads.len(),
+                "irt": annotation.irt,
+                "state": annotation.state,
+                "stateModel": annotation.state_model,
             })
         })
         .collect();

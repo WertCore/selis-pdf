@@ -4881,6 +4881,150 @@ async function placeMarkup(
 }
 
 /**
+ * The reply box, in the comment it answers.
+ *
+ * A reply is written into the document as its own annotation with a /IRT
+ * back-reference, so it travels with the PDF and another reader's viewer
+ * shows the conversation. The box lives in the comments panel rather than
+ * over the page: the words being answered are in the panel already.
+ */
+function openReplyForm(
+	item: HTMLElement,
+	button: HTMLButtonElement,
+	page: number,
+	index: number,
+	rect: readonly [number, number, number, number],
+): void {
+	for (const existing of item.querySelectorAll(".selis-editor-comment__reply")) {
+		existing.remove();
+	}
+	button.hidden = true;
+	const form = document.createElement("div");
+	form.className = "selis-editor-comment__reply";
+	const input = document.createElement("textarea");
+	input.className = "selis-editor-comment__input";
+	input.rows = 2;
+	input.placeholder = "Write a reply…";
+	input.setAttribute("aria-label", "Write a reply");
+	form.appendChild(input);
+	const post = document.createElement("button");
+	post.type = "button";
+	post.className = "selis-editor-comment__action";
+	post.textContent = "Post reply";
+	post.addEventListener("click", () => {
+		if (input.value.trim() === "") {
+			button.hidden = false;
+			form.remove();
+			return;
+		}
+		form.remove();
+		button.hidden = false;
+		void replyToMark(page, index, input.value.trim(), rect);
+	});
+	form.appendChild(post);
+	const cancel = document.createElement("button");
+	cancel.type = "button";
+	cancel.className = "selis-editor-comment__action";
+	cancel.textContent = "Cancel";
+	cancel.addEventListener("click", () => {
+		button.hidden = false;
+		form.remove();
+	});
+	form.appendChild(cancel);
+	item.appendChild(form);
+	input.focus();
+}
+
+/** Post a reply to a mark on the page. */
+async function replyToMark(
+	page: number,
+	index: number,
+	contents: string,
+	rect: readonly [number, number, number, number],
+): Promise<void> {
+	const bytes = state.bytes;
+	if (bytes === null) {
+		setStatus("Open a PDF first.", "error");
+		return;
+	}
+	state.busy = true;
+	dom.download.disabled = true;
+	setStatus("Posting the reply…");
+	try {
+		const chunk = await tools();
+		const options: AnnotateOptions = {
+			page,
+			kind: "note",
+			rect,
+			quads: [],
+			colour: MARKUP_COLOURS.note,
+			contents,
+			replyTo: index,
+		};
+		const result = runTool(chunk, {
+			op: "annotate",
+			options: options as unknown as Record<string, unknown>,
+			files: [{ name: state.name, bytes }],
+		});
+		const output = result.outputs[0];
+		if (output === undefined) {
+			throw new Error("the engine produced no document");
+		}
+		await commit(output.bytes, `Replied to a mark on page ${page + 1}`);
+		await readComments();
+		setStatus(`Replied on page ${page + 1}.`);
+	} catch (error) {
+		setStatus(`The reply could not be posted: ${messageOf(error)}`, "error");
+	} finally {
+		state.busy = false;
+		dom.download.disabled = state.bytes === null;
+	}
+}
+
+/** Resolve a mark, or reopen it, in the PDF's own review state model. */
+async function setMarkState(
+	page: number,
+	index: number,
+	review: "resolved" | "reopened",
+): Promise<void> {
+	const bytes = state.bytes;
+	if (bytes === null) {
+		setStatus("Open a PDF first.", "error");
+		return;
+	}
+	state.busy = true;
+	dom.download.disabled = true;
+	setStatus(review === "resolved" ? "Resolving the mark…" : "Reopening the mark…");
+	try {
+		const chunk = await tools();
+		const result = runTool(chunk, {
+			op: "annotate_update",
+			options: { page, index, state: review },
+			files: [{ name: state.name, bytes }],
+		});
+		const output = result.outputs[0];
+		if (output === undefined) {
+			throw new Error("the engine produced no document");
+		}
+		await commit(
+			output.bytes,
+			`${review === "resolved" ? "Resolved" : "Reopened"} a mark on page ${page + 1}`,
+		);
+		await readComments();
+		setStatus(
+			review === "resolved"
+				? `Resolved a mark on page ${page + 1}.`
+				: `Reopened a mark on page ${page + 1}.`,
+		);
+	} catch (error) {
+		setStatus(`The mark's state could not be changed: ${messageOf(error)}`, "error");
+	} finally {
+		state.busy = false;
+		dom.download.disabled = state.bytes === null;
+	}
+}
+
+/**
  * Read the annotations the document carries.
  *
  * The engine's report is a read-only view: it changes nothing and writes
@@ -4951,6 +5095,30 @@ function renderComments(annotations: readonly PageAnnotation[]): void {
 			who.textContent = ` (${annotation.author})`;
 			item.appendChild(who);
 		}
+		// A reply is a note of its own, with a /IRT back-reference to the
+		// mark it answers. The review state is a dictionary entry on the
+		// mark, so another reader's viewer sees it too.
+		const resolved = annotation.state === "Accepted";
+		if (annotation.irt === null) {
+			const reply = document.createElement("button");
+			reply.type = "button";
+			reply.className = "selis-editor-comment__action";
+			reply.textContent = "Reply";
+			reply.title = "Reply to this mark";
+			reply.addEventListener("click", () => {
+				openReplyForm(item, reply, state.page, index, annotation.rect);
+			});
+			item.appendChild(reply);
+			const stateButton = document.createElement("button");
+			stateButton.type = "button";
+			stateButton.className = "selis-editor-comment__action";
+			stateButton.textContent = resolved ? "Reopen" : "Resolve";
+			stateButton.title = resolved ? "Reopen this mark" : "Resolve this mark";
+			stateButton.addEventListener("click", () => {
+				void setMarkState(state.page, index, resolved ? "reopened" : "resolved");
+			});
+			item.appendChild(stateButton);
+		}
 		// The mark can be taken off. A comment the reader cannot remove is
 		// a comment they have to live with.
 		const remove = document.createElement("button");
@@ -4992,6 +5160,8 @@ function editorAnnotations(
 		}),
 		contents: annotation.contents,
 		subtype: annotation.subtype,
+		irt: annotation.irt,
+		state: annotation.state,
 	}));
 }
 

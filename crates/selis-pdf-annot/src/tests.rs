@@ -84,6 +84,67 @@ fn highlight() -> AnnotSpec {
 }
 
 #[test]
+fn a_reply_points_back_at_the_mark_it_answers() {
+    let src = build_pdf();
+    let (out, _) = run(&src, &highlight()).expect("the mark");
+    let mut reply = AnnotSpec::new(AnnotKind::Text, 1, [10.0, 90.0, 120.0, 112.0], NOTE_COLOUR);
+    reply.contents = "I have fixed this.".to_string();
+    reply.reply_to = Some(0);
+    let (out, _) = run(&out, &reply).expect("the reply");
+    let bytes = String::from_utf8_lossy(&out).to_string();
+    assert!(
+        bytes.contains("/IRT"),
+        "the reply carries a back-reference: {bytes}"
+    );
+    let found = read(&out, 1).expect("the read");
+    assert_eq!(found.len(), 2, "both marks are in the document");
+    assert_eq!(found.get(1).and_then(|a| a.irt), Some(0));
+    assert_eq!(
+        found.get(1).map(|a| a.contents.as_str()),
+        Some("I have fixed this.")
+    );
+}
+
+#[test]
+fn a_review_state_is_written_and_read_back() {
+    let src = build_pdf();
+    let (out, _) = run(&src, &highlight()).expect("the mark");
+    let budget = Budget::unlimited();
+    let mut g = budget.guard();
+    let (out, report) =
+        set_review_state(&out, 1, 0, ReviewState::Resolved, &budget, &mut g).expect("the resolve");
+    assert_eq!(report.kind, "state");
+    let found = read(&out, 1).expect("the read");
+    assert_eq!(
+        found.first().and_then(|a| a.state.as_deref()),
+        Some("Accepted")
+    );
+    assert_eq!(
+        found.first().and_then(|a| a.state_model.as_deref()),
+        Some("Review")
+    );
+
+    let mut g = budget.guard();
+    let (out, _) =
+        set_review_state(&out, 1, 0, ReviewState::Reopened, &budget, &mut g).expect("the reopen");
+    let found = read(&out, 1).expect("the read");
+    assert_eq!(found.first().and_then(|a| a.state.as_deref()), Some("None"));
+    let bytes = String::from_utf8_lossy(&out).to_string();
+    assert!(
+        bytes.contains("/StateModel /Review"),
+        "the model is in the FILE: {bytes}"
+    );
+}
+
+#[test]
+fn a_reply_to_an_annotation_that_is_not_there_is_refused() {
+    let src = build_pdf();
+    let mut reply = AnnotSpec::new(AnnotKind::Text, 1, [10.0, 90.0, 120.0, 112.0], NOTE_COLOUR);
+    reply.reply_to = Some(3);
+    assert!(run(&src, &reply).is_err());
+}
+
+#[test]
 fn a_highlight_is_written_into_the_document() {
     let src = build_pdf();
     let (out, report) = run(&src, &highlight()).expect("the highlight");

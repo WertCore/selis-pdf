@@ -456,8 +456,13 @@ a list of panels and not a list of engine work.
       position in the page's `/Annots` order — an annotation has no name of
       its own that a reader could use, and a name we invented would be a name
       the reader never sees.
-- [ ] **I1d — Replies and review state.** `SL-5.ANNOT.04`. A reply to
-      a mark, and the review state (resolved, reopened) that goes with it.
+- [x] **I1d — Replies and review state.** `SL-5.ANNOT.04`. A reply to
+      a mark is its own annotation with a PDF `/IRT` back-reference, so the
+      conversation travels with the document and another reader's viewer shows
+      it. The review state is `/State /Accepted` (or `/None` when reopened)
+      with `/StateModel /Review` on the mark itself — a dictionary entry, not
+      a note in the editor's own panel. A reply never carries Reply or Resolve
+      of its own: it answers its parent, and the panel says so by omission.
 - [ ] **I1e — Flattening through the model, and XFDF.** `SL-5.ANNOT.05`,
       `SL-5.ANNOT.06`.
 

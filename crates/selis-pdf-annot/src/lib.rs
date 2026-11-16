@@ -135,6 +135,9 @@ pub struct AnnotSpec {
     pub points: Vec<(f64, f64)>,
     /// The width of a stroke, in points.
     pub width: f64,
+    /// The annotation this one replies to, as its position in the page's
+    /// `/Annots` order. A reply carries a PDF `/IRT` back-reference.
+    pub reply_to: Option<usize>,
 }
 
 impl AnnotSpec {
@@ -151,6 +154,7 @@ impl AnnotSpec {
             author: String::new(),
             points: Vec::new(),
             width: 1.0,
+            reply_to: None,
         }
     }
 }
@@ -170,6 +174,13 @@ pub struct PageAnnotation {
     pub author: String,
     /// The text lines it covers, when it covers any.
     pub quads: Vec<[f64; 4]>,
+    /// The annotation this one replies to, as its position in the page's
+    /// `/Annots` order.
+    pub irt: Option<usize>,
+    /// The review state (`/State`), when the annotation carries one.
+    pub state: Option<String>,
+    /// The state model (`/StateModel`) the state belongs to.
+    pub state_model: Option<String>,
 }
 
 /// What a write produced, beyond the bytes.
@@ -185,6 +196,30 @@ pub struct AnnotReport {
     pub bytes_in: u64,
     /// The output size in bytes.
     pub bytes_out: u64,
+}
+
+/// The review state a reader sets on a mark.
+///
+/// The PDF review state model names the states `Accepted` and `None`:
+/// a mark the reader has dealt with, and a mark that is open again. The
+/// editor calls these Resolved and Reopened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewState {
+    /// The mark has been dealt with: `/State /Accepted`.
+    Resolved,
+    /// The mark is open again: `/State /None`.
+    Reopened,
+}
+
+impl ReviewState {
+    /// The PDF name written into `/State`.
+    #[must_use]
+    pub const fn state_name(self) -> &'static str {
+        match self {
+            Self::Resolved => "Accepted",
+            Self::Reopened => "None",
+        }
+    }
 }
 
 /// The annotation flags this crate writes: `Print` (4).
@@ -327,6 +362,20 @@ pub fn annotate(
     if spec.kind == AnnotKind::Ink {
         annot.push((Bytes::copy_from_slice(b"InkList"), ink_list(&spec.points)));
     }
+    if let Some(index) = spec.reply_to {
+        let parent = existing.get(index).copied().ok_or_else(|| {
+            err!(
+                Code::ObjUnexpected,
+                during = "annot-reply",
+                detail = format!(
+                    "the page carries {} annotation(s); there is no #{} to reply to",
+                    existing.len(),
+                    index
+                )
+            )
+        })?;
+        annot.push((Bytes::copy_from_slice(b"IRT"), Obj::Ref(parent)));
+    }
 
     // The page's own `/Annots`: ours is appended to whatever was there.
     let mut annots: Vec<Obj> = existing.iter().map(|r| Obj::Ref(*r)).collect();
@@ -426,7 +475,7 @@ pub fn list_annotations(
     };
     let refs = annotation_refs(src, &doc, &page_dict, budget, g)?;
     let mut out = Vec::new();
-    for annot_ref in refs {
+    for &annot_ref in &refs {
         let Ok(Obj::Dict(pairs)) = resolve_ref(src, &doc, annot_ref, budget, g) else {
             continue;
         };
@@ -436,6 +485,15 @@ pub fn list_annotations(
         let contents = text_of(&pairs, b"Contents");
         let author = text_of(&pairs, b"T");
         let quads = quads_of(&pairs);
+        // An /IRT names the annotation being replied to by REFERENCE; the
+        // report lists annotations by their position in /Annots, so resolve
+        // one into the other for the caller.
+        let irt = match name_ref_of(&pairs, b"IRT") {
+            Some(target) => refs.iter().position(|candidate| *candidate == target),
+            None => None,
+        };
+        let state = name_of(&pairs, b"State");
+        let state_model = name_of(&pairs, b"StateModel");
         out.push(PageAnnotation {
             subtype,
             rect,
@@ -443,6 +501,9 @@ pub fn list_annotations(
             contents,
             author,
             quads,
+            irt,
+            state,
+            state_model,
         });
     }
     Ok(out)
@@ -517,6 +578,104 @@ pub fn remove_annotation(
             page,
             kind: "removed",
             annots: kept.len(),
+            bytes_in,
+            bytes_out,
+        },
+    ))
+}
+
+/// Set a mark's review state, and write the verified result to the caller.
+///
+/// A review state is the PDF `/State` and `/StateModel` pair: `Accepted` or
+/// `None` in the `Review` model. The editor shows these as Resolved and
+/// Reopened; a reader in another viewer sees the state too, because it is a
+/// dictionary entry on the annotation, not a note in the editor's own panel.
+///
+/// # Budget
+///
+/// The caller's budget bounds the parse, the walk and the bytes written.
+///
+/// # Malformed Input
+///
+/// A document that cannot be parsed is refused with `MALFORMED`. A page that
+/// does not exist, or an index the page does not carry, is refused with
+/// `OBJ_UNEXPECTED`.
+pub fn set_review_state(
+    src: &[u8],
+    page: u32,
+    index: usize,
+    state: ReviewState,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<(Vec<u8>, AnnotReport)> {
+    let (doc, pages) = open(src, budget, g)?;
+    let page_ref = page_reference(&pages, page)?;
+    let page_obj = resolve_ref(src, &doc, page_ref, budget, g).map_err(|e| {
+        err!(
+            Code::ObjUnexpected,
+            during = "annot-state",
+            detail = format!("the page cannot be read: {e}")
+        )
+    })?;
+    let Obj::Dict(page_dict) = page_obj else {
+        return Err(err!(
+            Code::ObjUnexpected,
+            during = "annot-state",
+            detail = "the page is not a dictionary"
+        ));
+    };
+    let refs = annotation_refs(src, &doc, &page_dict, budget, g)?;
+    let Some(annot_ref) = refs.get(index).copied() else {
+        return Err(err!(
+            Code::ObjUnexpected,
+            during = "annot-state",
+            detail = format!(
+                "the page carries {} annotation(s); there is no #{index}",
+                refs.len()
+            )
+        ));
+    };
+    let annot_obj = resolve_ref(src, &doc, annot_ref, budget, g).map_err(|e| {
+        err!(
+            Code::ObjUnexpected,
+            during = "annot-state",
+            detail = format!("the annotation cannot be read: {e}")
+        )
+    })?;
+    let Obj::Dict(mut annot) = annot_obj else {
+        return Err(err!(
+            Code::ObjUnexpected,
+            during = "annot-state",
+            detail = "the annotation is not a dictionary"
+        ));
+    };
+    set_entry(
+        &mut annot,
+        b"State",
+        Obj::Name(Bytes::copy_from_slice(state.state_name().as_bytes())),
+    );
+    set_entry(
+        &mut annot,
+        b"StateModel",
+        Obj::Name(Bytes::copy_from_slice(b"Review")),
+    );
+    let objects = vec![(annot_ref.num, Obj::Dict(annot))];
+    let trailer = carried_trailer(&doc)?;
+    let out = write_incremental_update(src, &objects, &trailer, budget, g).map_err(|e| {
+        err!(
+            Code::ObjUnexpected,
+            during = "annot-state",
+            detail = format!("the incremental revision failed: {e}")
+        )
+    })?;
+    let bytes_in = u64::try_from(src.len()).unwrap_or(u64::MAX);
+    let bytes_out = u64::try_from(out.len()).unwrap_or(u64::MAX);
+    Ok((
+        out,
+        AnnotReport {
+            page,
+            kind: "state",
+            annots: refs.len(),
             bytes_in,
             bytes_out,
         },
@@ -1037,6 +1196,17 @@ fn name_of(pairs: &[(Bytes, Obj)], key: &[u8]) -> Option<String> {
         .find(|(k, _)| k.as_slice() == key)
         .and_then(|(_, v)| match v {
             Obj::Name(name) => Some(String::from_utf8_lossy(name.as_slice()).into_owned()),
+            _ => None,
+        })
+}
+
+/// The reference value of an entry, when it holds a reference.
+fn name_ref_of(pairs: &[(Bytes, Obj)], key: &[u8]) -> Option<Ref> {
+    pairs
+        .iter()
+        .find(|(k, _)| k.as_slice() == key)
+        .and_then(|(_, value)| match value {
+            Obj::Ref(reference) => Some(*reference),
             _ => None,
         })
 }
