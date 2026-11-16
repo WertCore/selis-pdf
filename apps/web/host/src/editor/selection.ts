@@ -146,6 +146,42 @@ export function textBetween(
 }
 
 /**
+ * The word around a character.
+ *
+ * A double-click picks the word, the way every editor does it: the word is
+ * the run of characters between the spaces, and the spaces themselves are not
+ * part of it.
+ */
+export function wordAround(
+	lines: readonly SelectionLine[],
+	at: SelectionEnd,
+): { readonly from: SelectionEnd; readonly to: SelectionEnd } | null {
+	const row = lines[at.line];
+	if (row === undefined) {
+		return null;
+	}
+	const isSpace = (index: number): boolean => {
+		const code = row.text.charCodeAt(index);
+		return code === 32 || code === 9 || code === 10 || code === 13;
+	};
+	let start = at.char;
+	while (start > 0 && !isSpace(start - 1)) {
+		start -= 1;
+	}
+	let end = at.char;
+	while (end + 1 < row.text.length && !isSpace(end + 1)) {
+		end += 1;
+	}
+	if (start === end && start >= row.text.length) {
+		return null;
+	}
+	return {
+		from: { line: at.line, char: start },
+		to: { line: at.line, char: end },
+	};
+}
+
+/**
  * The boxes to paint, one run per line.
  *
  * The run is the box the selected characters cover, trimmed to the type's

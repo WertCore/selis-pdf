@@ -5,6 +5,7 @@ import {
 	compareEnds,
 	runsToPaint,
 	textBetween,
+	wordAround,
 	type SelectionLine,
 } from "./selection.js";
 
@@ -68,6 +69,20 @@ describe("the selection over a page's text", () => {
 		// baseline and reaches the ascent.
 		expect(run?.y).toBe(107.5);
 		expect(run?.height).toBe(10);
+	});
+
+	it("finds the word around a character", () => {
+		const word = wordAround(LINES, { line: 0, char: 1 });
+		expect(word?.from).toEqual({ line: 0, char: 0 });
+		expect(word?.to).toEqual({ line: 0, char: 4 });
+	});
+
+	it("finds the word in a line with spaces", () => {
+		const spaced: readonly SelectionLine[] = [line("one two three", 100)];
+		// The character at index 5 is the "w" of "two".
+		const word = wordAround(spaced, { line: 0, char: 5 });
+		expect(word?.from).toEqual({ line: 0, char: 4 });
+		expect(word?.to).toEqual({ line: 0, char: 6 });
 	});
 
 	it("leaves the spaces out of the painted run", () => {

@@ -1170,7 +1170,7 @@
 	display: flex;
 	flex-direction: column;
 	min-height: 0;
-	width: 320px;
+	width: 280px;
 	background: var(--selis-color-bg-raised);
 	border-left: var(--selis-border-hairline) solid var(--selis-color-border);
 }
@@ -1214,7 +1214,7 @@
 	min-height: 0;
 	overflow-y: auto;
 	scrollbar-width: thin;
-	padding: 0 var(--selis-space-6) var(--selis-space-8);
+	padding: 0 var(--selis-space-5) var(--selis-space-8);
 }
 
 /*
@@ -1245,7 +1245,7 @@
 }
 
 .selis-editor-limits .selis-editor-hint + .selis-editor-hint {
-	margin-top: var(--selis-space-3);
+	margin: var(--selis-space-2) 0 var(--selis-space-3);
 }
 
 .selis-editor-limits strong {
@@ -1324,6 +1324,11 @@
 .selis-editor-details {
 	border-bottom: var(--selis-border-hairline) solid var(--selis-color-border);
 	padding: var(--selis-space-5) 0;
+	/* The panel's own margin: the options inside it are not against the
+	 * pane's edge. */
+	margin: 0 var(--selis-space-4);
+	padding-left: var(--selis-space-2);
+	padding-right: var(--selis-space-2);
 }
 
 .selis-editor-details:last-of-type {
@@ -1390,9 +1395,15 @@
  */
 .selis-editor-grid {
 	display: grid;
-	grid-template-columns: minmax(76px, 40%) 1fr;
+	/*
+	 * The label is a LABEL, and a control wants room: the gap between
+	 * them is the margin the option needs, and the rows are set apart so
+	 * that one option's label is not read as the next option's.
+	 */
+	grid-template-columns: minmax(64px, 38%) 1fr;
 	align-items: center;
-	gap: var(--selis-space-3) var(--selis-space-5);
+	column-gap: var(--selis-space-4);
+	row-gap: var(--selis-space-3);
 	margin: var(--selis-space-4) 0;
 }
 
@@ -1408,6 +1419,7 @@
 	font: inherit;
 	font-size: var(--selis-text-sm);
 	padding: var(--selis-space-2) var(--selis-space-3);
+	margin: 0;
 	border-radius: var(--selis-radius-sm);
 	border: var(--selis-border-hairline) solid var(--selis-color-border);
 	background: var(--selis-color-bg-raised);

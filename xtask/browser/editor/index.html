@@ -351,7 +351,7 @@
         if (!freshLine) throw new Error("the document drew no line to select");
         const freshBox = freshLine.getBoundingClientRect();
         const freshCanvas = doc.querySelector("canvas");
-        const at = (x, y, buttons, type) =>
+        const at = (x, y, buttons, type, detail) =>
           new PointerEvent(type, {
             clientX: x,
             clientY: y,
@@ -361,12 +361,41 @@
             buttons,
             pointerId: 41,
             isPrimary: true,
+            detail: detail === undefined ? 1 : detail,
           });
         // The drag lands on the WORDS, not on the canvas: with the Select
         // tool armed the text layer takes the pointer, and a reader who
         // selects the words is clicking on the words.
         const freshSpan = freshLine.querySelector(".selis-editor-line__text");
         const spanBox = freshSpan.getBoundingClientRect();
+
+        // A CLICK is not a selection: the reader clicked, thought about it,
+        // and nothing was picked out.
+        freshSpan.dispatchEvent(
+          at(spanBox.left + 20, spanBox.top + spanBox.height / 2, 1, "pointerdown", 1),
+        );
+        freshSpan.dispatchEvent(
+          at(spanBox.left + 20, spanBox.top + spanBox.height / 2, 0, "pointerup", 1),
+        );
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        const afterClick = {
+          painted: doc.querySelector(".selis-editor-selection") !== null,
+          copyShown: doc.getElementById("selis-editor-copy").offsetParent !== null,
+        };
+
+        // A DOUBLE-CLICK picks the WORD, the way every editor does it.
+        freshSpan.dispatchEvent(
+          at(spanBox.left + 20, spanBox.top + spanBox.height / 2, 1, "pointerdown", 2),
+        );
+        freshSpan.dispatchEvent(
+          at(spanBox.left + 20, spanBox.top + spanBox.height / 2, 0, "pointerup", 2),
+        );
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        const afterDouble = {
+          painted: doc.querySelector(".selis-editor-selection") !== null,
+          copyLabel: doc.getElementById("selis-editor-copy").textContent,
+        };
+
         freshSpan.dispatchEvent(
           at(spanBox.left + 2, spanBox.top + spanBox.height / 2, 1, "pointerdown"),
         );
@@ -390,6 +419,8 @@
           inkBottom: ink.length > 0 ? ink[0][1] : null,
           copyShown: copy !== null && copy.offsetParent !== null,
           copyLabel: copy === null ? "" : copy.textContent,
+          afterClick: afterClick,
+          afterDouble: afterDouble,
           status: statusText(doc),
         };
 

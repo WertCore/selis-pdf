@@ -7637,6 +7637,51 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
         return Err("the selection offers no way to copy what was selected".into());
     }
 
+    // A CLICK is not a selection. The reader clicked, thought about it, and
+    // nothing was picked out — so nothing is painted and there is nothing to
+    // copy.
+    let after_click = selection
+        .get("afterClick")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the page reported no click measurement".to_string())?;
+    if after_click.get("painted").and_then(Json::as_bool) != Some(false) {
+        return Err("a single click selected something".into());
+    }
+    if after_click.get("copyShown").and_then(Json::as_bool) != Some(false) {
+        return Err("a single click offered to copy something".into());
+    }
+
+    // A DOUBLE-CLICK picks the WORD: fewer characters than the line, and
+    // more than none.
+    let after_double = selection
+        .get("afterDouble")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the page reported no double-click measurement".to_string())?;
+    if after_double.get("painted").and_then(Json::as_bool) != Some(true) {
+        return Err("a double-click selected nothing".into());
+    }
+    let word_label = after_double
+        .get("copyLabel")
+        .and_then(Json::as_str)
+        .unwrap_or("");
+    let word_characters: u64 = word_label
+        .split_whitespace()
+        .nth(1)
+        .and_then(|count| count.parse::<u64>().ok())
+        .unwrap_or(0);
+    let line_characters: u64 = selection
+        .get("copyLabel")
+        .and_then(Json::as_str)
+        .and_then(|label| label.split_whitespace().nth(1))
+        .and_then(|count| count.parse::<u64>().ok())
+        .unwrap_or(0);
+    if word_characters < 1 {
+        return Err("the double-click did not pick a word".into());
+    }
+    if line_characters > 0 && word_characters >= line_characters {
+        return Err("the double-click picked the whole line, not the word".into());
+    }
+
     // THE PICKER, THE MENU, AND THE DRAW TOOL.
     let extras = report
         .get("extras")

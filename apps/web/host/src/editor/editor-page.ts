@@ -87,6 +87,7 @@ import {
 	characterAt,
 	runsToPaint,
 	textBetween,
+	wordAround,
 	type SelectionEnd,
 	type SelectionLine,
 } from "./selection.js";
@@ -2837,6 +2838,11 @@ function renderTextGroup(): void {
  * wherever the pointer goes. The characters are the engine's, so the
  * selection is drawn on the ink rather than on the browser's idea of where
  * the words are.
+ *
+ * A click is NOT a selection: the anchor is only recorded, and nothing is
+ * selected until the pointer MOVES. A reader who clicks on a word and
+ * thinks about it has not asked for a selection, and every editor that
+ * behaves that way is one the reader trusts.
  */
 function startSelection(event: PointerEvent): void {
 	const hit = pointerOnCanvas(event);
@@ -2851,9 +2857,25 @@ function startSelection(event: PointerEvent): void {
 	if (character === null) {
 		return;
 	}
-	state.selection = { from: character, to: character };
+	// A double-click picks the WORD, the way every editor does it.
+	if (event.detail >= 2) {
+		const word = wordAround(lines, character);
+		if (word !== null) {
+			state.selection = { from: word.from, to: word.to };
+			paintSelection();
+			renderSelection();
+			const text = selectedText().trim();
+			if (text !== "") {
+				setStatus(`${text.length} characters selected. Ctrl+C copies them.`);
+			}
+			selectionDrag = null;
+			return;
+		}
+	}
+	state.selection = null;
 	selectionDrag = { page: hit.page, anchor: character };
 	paintSelection();
+	renderSelection();
 }
 
 /**
@@ -2882,6 +2904,7 @@ function moveSelection(event: PointerEvent): void {
 	}
 	state.selection = { from: drag.anchor, to: character };
 	paintSelection();
+	renderSelection();
 }
 
 /** Finish the selection. */
@@ -2891,6 +2914,9 @@ function endSelection(): void {
 	renderSelection();
 	if (text !== "") {
 		setStatus(`${text.length} characters selected. Ctrl+C copies them.`);
+	} else {
+		// A click that never moved selected nothing, and it says so.
+		setStatus("");
 	}
 }
 

@@ -558,6 +558,21 @@ writing down.
       ellipse and the arrow, in the group that appears when the tool is in
       hand.
 
+### Slice 8e — the selection, the way a reader uses it (shipped)
+
+- [x] **A click is not a selection.** The reader clicked, thought about it,
+      and nothing was picked out: nothing is painted and there is nothing to
+      copy. The anchor is only recorded, and the selection appears when the
+      pointer MOVES.
+- [x] **A double-click picks the WORD**, the way every editor does it: the
+      run of characters between the spaces, and not the spaces themselves.
+- [x] **A drag picks the RANGE**, in the reading order — a selection
+      dragged backwards is the same selection as one dragged forwards.
+- [x] **The pane is narrower and the options have their margin.** The room
+      a reader needs is around the option, not around the pane: the pane
+      went back to 280px, the label column is a column, the gap between a
+      label and its control is 8px, and each panel carries its own margin.
+
 ### Slice 9 — what still needs the engine
 
 These are the blockers named above, in the order they unlock the most.
