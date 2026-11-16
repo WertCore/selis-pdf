@@ -69,7 +69,8 @@ export type ToolOp =
 	| "annotate"
 	| "annotations"
 	| "annotate_update"
-	| "xfdf";
+	| "xfdf"
+	| "flatten_annotations";
 
 /** The wire operation number for each operation. */
 const OP_CODE: Record<ToolOp, number> = {
@@ -111,6 +112,7 @@ const OP_CODE: Record<ToolOp, number> = {
 	annotations: 36,
 	annotate_update: 37,
 	xfdf: 38,
+	flatten_annotations: 39,
 };
 
 /** One input file on the wire. */

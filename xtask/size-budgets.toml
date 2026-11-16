@@ -85,6 +85,11 @@ budget = 900000
 # own font, and this is the engine's arithmetic, not a second table in the
 # web layer. The budget moves one 20 KB step to 420 000 and the baseline moves
 # to the measurement; the 2% rule gates the next slice.
+#
+# I1f linked the engine's existing annotation flattener into this chunk so the
+# web editor can bake marks into the page: +8 KB brotli to 411761, still under
+# the 420000 ceiling. The baseline moves with it; the 2% rule gates the next
+# slice.
 [[budget]]
 chunk = "tools"
 artifact = "selis_pdf_wasm_tools"

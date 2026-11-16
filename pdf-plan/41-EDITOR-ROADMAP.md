@@ -470,10 +470,14 @@ a list of panels and not a list of engine work.
       Comments panel has an Export XFDF button, and the browser check reads the
       returned file back. The write carries `/NM` on every mark so a reply
       exported from here still names its parent in another reader.
-- [ ] **I1f — Flattening through the model.** `SL-5.ANNOT.05`. The engine and
-      CLI already flatten annotations; the missing part is doing it through
-      this crate's model and exposing it on the web. A follow-on slice, split
-      out here rather than left as a half-done item.
+- [x] **I1f — Flattening on the web.** `SL-5.ANNOT.05`. The Comments
+      panel has a Flatten marks button: it calls the ENGINE's own flattener —
+      the one the CLI uses, so there is one implementation of the bake — and
+      commits the resulting PDF. The browser check proves the appearance stream
+      is baked into the page, the annotation is gone from `/Annots`, and the
+      comments panel lists no marks afterwards. Writing a SECOND flattener in
+      the annotation crate would be two copies of the ISO §12.5.5 placement
+      arithmetic, so the web reuses the engine's instead.
 
 ### Slice 8b — the workspace a reader comes back to (shipped)
 

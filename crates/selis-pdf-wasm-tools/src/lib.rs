@@ -105,6 +105,7 @@ enum Op {
     Annotations,
     AnnotateUpdate,
     XfdfExport,
+    FlattenAnnotations,
 }
 
 impl Op {
@@ -148,6 +149,7 @@ impl Op {
             36 => Some(Self::Annotations),
             37 => Some(Self::AnnotateUpdate),
             38 => Some(Self::XfdfExport),
+            39 => Some(Self::FlattenAnnotations),
             _ => None,
         }
     }
@@ -598,6 +600,12 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
         }
         Op::Annotations => return run_annotations(&options, &stem, first_input_len),
         Op::XfdfExport => return run_xfdf_export(&stem, first_input_len),
+        Op::FlattenAnnotations => vec![Produced {
+            output: "out.pdf".to_string(),
+            name: format!("{stem}-flattened.pdf"),
+            verification: selis_pdf_tools::flatten_annotations("in/0", "out.pdf")?,
+            over_target: false,
+        }],
         Op::Crop => {
             let pages = option_str(&options, "pages");
             let margins = selis_pdf_tools::CropMargins {
@@ -1961,8 +1969,8 @@ mod tests {
             "the XMP stream is removed"
         );
 
-        // Op 38 is the XFDF export, so the probe moves past it.
-        let response = run_request(&request(39, b"", &[("doc.pdf", &pdf)]));
+        // Op 39 is the annotation flatten, so the probe moves past it.
+        let response = run_request(&request(40, b"", &[("doc.pdf", &pdf)]));
         assert!(error_text(&response).contains("unknown tool operation"));
     }
 

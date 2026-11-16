@@ -432,6 +432,7 @@ const dom = {
 	comments: el<HTMLDivElement>("selis-editor-comments"),
 	commentsRead: el<HTMLButtonElement>("selis-editor-comments-read"),
 	commentsXfdf: el<HTMLButtonElement>("selis-editor-comments-xfdf"),
+	commentsFlatten: el<HTMLButtonElement>("selis-editor-comments-flatten"),
 	accessibilityCheck: el<HTMLButtonElement>("selis-editor-accessibility-check"),
 	attachments: el<HTMLDivElement>("selis-editor-attachments"),
 	attachmentsRead: el<HTMLButtonElement>("selis-editor-attachments-read"),
@@ -4936,6 +4937,38 @@ function openReplyForm(
 	input.focus();
 }
 
+/** Bake the marks into the page, so every viewer draws them. */
+async function flattenMarks(): Promise<void> {
+	const bytes = state.bytes;
+	if (bytes === null) {
+		setStatus("Open a PDF first.", "error");
+		return;
+	}
+	state.busy = true;
+	dom.download.disabled = true;
+	setStatus("Flattening the marks…");
+	try {
+		const chunk = await tools();
+		const result = runTool(chunk, {
+			op: "flatten_annotations",
+			options: {},
+			files: [{ name: state.name, bytes }],
+		});
+		const output = result.outputs[0];
+		if (output === undefined) {
+			throw new Error("the engine produced no document");
+		}
+		await commit(output.bytes, "Flattened the marks into the page");
+		await readComments();
+		setStatus("The marks are part of the page now.");
+	} catch (error) {
+		setStatus(`The marks could not be flattened: ${messageOf(error)}`, "error");
+	} finally {
+		state.busy = false;
+		dom.download.disabled = state.bytes === null;
+	}
+}
+
 /** Export the document's marks as XFDF, in the engine's own format. */
 async function exportXfdf(): Promise<void> {
 	const bytes = state.bytes;
@@ -6007,6 +6040,9 @@ function wire(): void {
 	});
 	dom.commentsXfdf.addEventListener("click", () => {
 		void exportXfdf();
+	});
+	dom.commentsFlatten.addEventListener("click", () => {
+		void flattenMarks();
 	});
 	dom.attachmentsRead.addEventListener("click", () => {
 		void readAttachments();

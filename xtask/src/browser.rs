@@ -7425,6 +7425,27 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
     if conversation.get("xfdfCarriesState").and_then(Json::as_bool) != Some(true) {
         return Err("the XFDF export does not carry the review state".into());
     }
+    if conversation
+        .get("flattenCarriesAppearance")
+        .and_then(Json::as_bool)
+        != Some(true)
+    {
+        return Err("flattening did not bake the appearance into the page".into());
+    }
+    if conversation
+        .get("flattenDroppedAnnotation")
+        .and_then(Json::as_bool)
+        != Some(true)
+    {
+        return Err("flattening left the annotation in the file".into());
+    }
+    if conversation
+        .get("flattenNoComments")
+        .and_then(Json::as_bool)
+        != Some(true)
+    {
+        return Err("the comments panel still lists a mark after flattening".into());
+    }
 
     // The markup: the marks a reader leaves on a document.
     let markup = report

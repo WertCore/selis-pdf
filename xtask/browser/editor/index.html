@@ -2359,6 +2359,19 @@
         const xfdf = new Uint8Array(await xfdfBlob.arrayBuffer());
         const xfdfText = new TextDecoder("latin1").decode(xfdf);
 
+        // Flattening bakes the mark into the page content: every viewer draws
+        // it. The annotation itself is gone from /Annots.
+        doc.getElementById("selis-editor-comments-flatten").click();
+        await waitFor(
+          () => {
+            const status = statusText(doc);
+            return !status.endsWith("…") && status.includes("part of the page");
+          },
+          30_000,
+          "the marks to be flattened (" + label + ")",
+        );
+        const flattened = await download(doc, win);
+
         return {
           status: statusText(doc),
           bytes: produced.bytes,
@@ -2367,6 +2380,9 @@
           xfdfCarriesMark: xfdfText.indexOf("<highlight") >= 0,
           xfdfCarriesReply: xfdfText.indexOf("irt=\"0\"") >= 0,
           xfdfCarriesState: xfdfText.indexOf("state=\"Accepted\"") >= 0,
+          flattenCarriesAppearance: flattened.carriesText.indexOf("/Subtype /Form") >= 0,
+          flattenDroppedAnnotation: flattened.carriesText.indexOf("/Subtype /Highlight") < 0,
+          flattenNoComments: (doc.getElementById("selis-editor-comments").textContent || "").includes("no comments"),
           marked: before.includes("Highlight"),
           carriesReply: replied.includes("A reply from the check"),
           carriesReopen: resolved.includes("Reopen"),
