@@ -15,9 +15,12 @@
 //! What this first slice does **not** do, and says so by refusing rather than
 //! guessing:
 //!
-//! * it does not reflow — the replacement is spliced into the existing string,
-//!   so a very different length will not re-break lines (that is the Phase-5
-//!   reconstruction half, built on this);
+//! * it reflows the LINE, not the page: the replacement is spliced into the
+//!   existing string, and the text that follows it on the same line is pushed
+//!   along by the width the edit added, measured in the page's own font. It
+//!   does not re-break the paragraph — a line that grows past the margin
+//!   still runs off it (that is the Phase-5 reconstruction half, built on
+//!   this);
 //! * it edits single-byte (WinAnsi/ASCII) text directly, AND — for a Type0/CID
 //!   subset whose glyph codes are not its characters (the common Chrome/Office
 //!   export) — it reads and rewrites through the font's own `/ToUnicode` map
@@ -39,6 +42,9 @@
 //! caller hands it and returns the bytes the caller hands out.
 
 #![forbid(unsafe_code)]
+
+mod font;
+mod reflow;
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -191,18 +197,30 @@ pub fn edit_text(
     // the embedded font's own codes — no new face is shipped or embedded, the
     // glyphs the page already carries are reused (SL-5.TEXTEDIT.02).
     let fonts = resolve_page_fonts(src, &doc, &page_dict, budget, g);
+    // The re-flow measures the replacement in the page's OWN font. A font
+    // this cannot measure (one with no usable widths) is left out, and the
+    // edit then leaves the following text where it was rather than guessing.
+    let page_fonts = font::page_fonts(src, &doc, &page_dict, budget, g);
 
     // Find the first show-text operand that carries `find` and rewrite it,
     // decoding through the active font's codec when it has one.
-    let Some((span, new_operand)) = find_show_text(&decoded, &fonts, find, replace, g)? else {
+    let Some(found) = find_show_text(&decoded, &fonts, find, replace, g)? else {
         return Err(EditError::Unsupported(format!(
             "the text {find:?} was not found in a single show-text operator on page {page_index}"
         )));
     };
-    let mut rewritten = Vec::with_capacity(decoded.len());
-    rewritten.extend_from_slice(decoded.get(..span.start).unwrap_or_default());
-    rewritten.extend_from_slice(&new_operand);
-    rewritten.extend_from_slice(decoded.get(span.end..).unwrap_or_default());
+    // The width the edit added, in unscaled text space units. A non-zero
+    // delta pushes the text that follows on the same line along by it.
+    let delta = reflow_delta(&page_fonts, &found);
+    let rewritten = if delta.abs() > EPSILON {
+        reflow::apply(&decoded, found.span, &found.operand, delta)
+    } else {
+        let mut plain = Vec::with_capacity(decoded.len());
+        plain.extend_from_slice(decoded.get(..found.span.start).unwrap_or_default());
+        plain.extend_from_slice(&found.operand);
+        plain.extend_from_slice(decoded.get(found.span.end..).unwrap_or_default());
+        plain
+    };
 
     // Re-encode in the stream's original filter and rebuild the object.
     let (encoded, filter_name) = encode_content(filter, &rewritten);
@@ -442,29 +460,60 @@ fn carried_trailer(doc: &selis_pdf_cos::Doc) -> Result<Vec<(Vec<u8>, Obj)>, Edit
     Ok(out)
 }
 
-/// A show-text string operand found in the content: its byte span (the `(…)` or
-/// `<…>` literal, delimiters included) and its decoded text.
+/// A show-text operand found in the content, and the text state it was
+/// drawn in.
+struct ShowMatch {
+    /// The operand's byte span (the `(…)` or `<…>` literal, delimiters
+    /// included).
+    span: Range<usize>,
+    /// The re-encoded replacement operand, delimiters included.
+    operand: Vec<u8>,
+    /// The original operand's codes, in the page's font.
+    codes: Vec<u8>,
+    /// The replacement's codes, in the page's font.
+    replacement: Vec<u8>,
+    /// The font the operand was drawn in, by resource name.
+    font: Option<Vec<u8>>,
+    /// The font size (`Tf`).
+    size: f64,
+    /// The character spacing (`Tc`).
+    char_spacing: f64,
+    /// The word spacing (`Tw`).
+    word_spacing: f64,
+    /// The horizontal scaling (`Tz`, a percentage).
+    h_scale: f64,
+}
+
 /// Find the first show-text (`Tj`/`TJ`/`'`/`"`) string operand whose text —
 /// decoded through the active font's `/ToUnicode` codec when it has one —
-/// carries `find`, and return the operand's span (delimiters included) with
-/// its fully re-encoded replacement.
+/// carries `find`, and return the operand's span (delimiters included), its
+/// fully re-encoded replacement, and the text state it was drawn in.
 ///
 /// The scanner tracks the font the most recent `Tf` selected so that a
 /// subset/CID operand (2-byte codes that are not characters) can be read and
-/// rewritten through the embedded font instead of matched as raw bytes.
+/// rewritten through the embedded font instead of matched as raw bytes. It
+/// tracks the size and spacing too, because the re-flow needs to know how
+/// much WIDER the replacement is than what it replaced.
 fn find_show_text(
     content: &[u8],
     fonts: &BTreeMap<Vec<u8>, FontCodec>,
     find: &str,
     replace: &str,
     _g: &mut BudgetGuard<'_>,
-) -> Result<Option<(Range<usize>, Vec<u8>)>, EditError> {
+) -> Result<Option<ShowMatch>, EditError> {
     let mut cur = Cursor::new(content);
     // String operands collected since the last operator, with their spans.
     let mut pending: Vec<(Range<usize>, Vec<u8>)> = Vec::new();
     // The most recent `/Name` token, and the font the most recent `Tf` chose.
     let mut last_name: Option<Vec<u8>> = None;
     let mut current_font: Option<Vec<u8>> = None;
+    // The text state an edit's width depends on.
+    let mut size = 0.0f64;
+    let mut char_spacing = 0.0f64;
+    let mut word_spacing = 0.0f64;
+    let mut h_scale = 100.0f64;
+    // The numeric operands of the operator being read.
+    let mut numbers: Vec<f64> = Vec::new();
     loop {
         cur.skip_ws_and_comments();
         let start = cur.pos();
@@ -488,24 +537,43 @@ fn find_show_text(
             // A `/Name` binds the font on the next `Tf`; keep the latest.
             b'/' => last_name = Some(cur.read_name_token()),
             b'%' => cur.skip_comment(),
+            b if b.is_ascii_digit() || b == b'+' || b == b'-' || b == b'.' => {
+                numbers.push(cur.read_number());
+            }
             b if is_regular_start(b) => {
                 let word = cur.read_word();
-                if word == b"Tf" {
-                    current_font.clone_from(&last_name);
+                match word.as_slice() {
+                    b"Tf" => {
+                        current_font.clone_from(&last_name);
+                        size = numbers.first().copied().unwrap_or(0.0);
+                    }
+                    b"Tc" => char_spacing = numbers.first().copied().unwrap_or(0.0),
+                    b"Tw" => word_spacing = numbers.first().copied().unwrap_or(0.0),
+                    b"Tz" => h_scale = numbers.first().copied().unwrap_or(100.0),
+                    _ => {}
                 }
                 if is_show_text_operator(&word) {
                     let codec = current_font.as_deref().and_then(|n| fonts.get(n));
                     let take_all = word == b"TJ";
                     for (span, raw) in select_operands(&pending, take_all) {
                         let delim = content.get(span.start).copied();
-                        if let Some(new_operand) =
-                            rewrite_operand(&raw, delim, codec, find, replace)?
-                        {
-                            return Ok(Some((span, new_operand)));
+                        if let Some(rewrite) = rewrite_operand(&raw, delim, codec, find, replace)? {
+                            return Ok(Some(ShowMatch {
+                                span,
+                                operand: rewrite.operand,
+                                codes: raw,
+                                replacement: rewrite.codes,
+                                font: current_font.clone(),
+                                size,
+                                char_spacing,
+                                word_spacing,
+                                h_scale,
+                            }));
                         }
                     }
                 }
                 pending.clear();
+                numbers.clear();
             }
             _ => {
                 cur.bump();
@@ -513,6 +581,65 @@ fn find_show_text(
         }
     }
     Ok(None)
+}
+
+/// How far apart two positions must be before the re-flow acts on them.
+const EPSILON: f64 = 1e-6;
+
+/// The width the edit added, in unscaled text space units.
+///
+/// The page's font carries the advances; the text state carries the size and
+/// the spacing. Word spacing applies to a simple font's code 32 only, and the
+/// horizontal scaling applies to the whole advance.
+fn reflow_delta(page_fonts: &font::PageFonts, found: &ShowMatch) -> f64 {
+    let Some(page_font) = found.font.as_ref().and_then(|name| page_fonts.get(name)) else {
+        return 0.0;
+    };
+    let before = advance_of(
+        page_font,
+        &found.codes,
+        found.size,
+        found.char_spacing,
+        found.word_spacing,
+    );
+    let after = advance_of(
+        page_font,
+        &found.replacement,
+        found.size,
+        found.char_spacing,
+        found.word_spacing,
+    );
+    (after - before) * (found.h_scale / 100.0)
+}
+
+/// The advance of a run of codes, in unscaled text space units.
+fn advance_of(
+    font: &font::PageFont,
+    codes: &[u8],
+    size: f64,
+    char_spacing: f64,
+    word_spacing: f64,
+) -> f64 {
+    let mut total = 0.0f64;
+    let mut at = 0usize;
+    while at < codes.len() {
+        let width = font.code_width();
+        let code = if width >= 2 {
+            let hi = u32::from(codes.get(at).copied().unwrap_or(0));
+            let lo = u32::from(codes.get(at.saturating_add(1)).copied().unwrap_or(0));
+            at = at.saturating_add(2);
+            (hi << 8) | lo
+        } else {
+            let code = u32::from(codes.get(at).copied().unwrap_or(0));
+            at = at.saturating_add(1);
+            code
+        };
+        total = total + font.advance(code) / 1000.0 * size + char_spacing;
+        if !font.is_cid() && code == 32 {
+            total += word_spacing;
+        }
+    }
+    total
 }
 
 /// The string operands a show-text operator draws: all of them for `TJ` (the
@@ -906,7 +1033,7 @@ pub fn strip_content_in_regions(content: &[u8], regions: &[(f64, f64, f64, f64)]
 }
 
 /// Copy the input up to the cursor's position.
-fn copy_to(out: &mut Vec<u8>, cur: &Cursor<'_>, copied: &mut usize) {
+pub(crate) fn copy_to(out: &mut Vec<u8>, cur: &Cursor<'_>, copied: &mut usize) {
     let end = cur.pos();
     if end > *copied {
         out.extend_from_slice(cur.b.get(*copied..end).unwrap_or(&[]));
@@ -983,7 +1110,7 @@ fn image_inside_any(regions: &[(f64, f64, f64, f64)], ctm: Matrix6) -> bool {
 }
 
 /// A content-stream byte that begins a regular (non-delimiter, non-ws) token.
-fn is_regular_start(b: u8) -> bool {
+pub(crate) fn is_regular_start(b: u8) -> bool {
     !matches!(
         b,
         0x00 | 0x09
@@ -1383,7 +1510,7 @@ fn resolve_page_fonts(
 }
 
 /// Resolve a dictionary-valued entry (direct or a reference) to its pairs.
-fn resolve_dict_entry(
+pub(crate) fn resolve_dict_entry(
     src: &[u8],
     doc: &selis_pdf_cos::Doc,
     dict: &[(Bytes, Obj)],
@@ -1396,7 +1523,7 @@ fn resolve_dict_entry(
 }
 
 /// Resolve an object (direct dict or a reference to one) to its pairs.
-fn as_dict(
+pub(crate) fn as_dict(
     src: &[u8],
     doc: &selis_pdf_cos::Doc,
     value: &Obj,
@@ -1431,8 +1558,16 @@ fn as_stream(
     }
 }
 
+/// An operand after the edit: its encoded bytes, and the codes it draws.
+struct Rewrite {
+    /// The fully re-encoded operand, delimiters included.
+    operand: Vec<u8>,
+    /// The codes the operand draws, in the page's font.
+    codes: Vec<u8>,
+}
+
 /// Rewrite one show-text operand if it carries `find`. Returns the fully
-/// re-encoded operand (delimiters included), `None` when `find` is absent, or
+/// re-encoded operand and the codes it draws, `None` when `find` is absent, or
 /// an error when the match is real but cannot be re-encoded through the
 /// embedded font (a replacement character it has no glyph for).
 fn rewrite_operand(
@@ -1441,7 +1576,7 @@ fn rewrite_operand(
     codec: Option<&FontCodec>,
     find: &str,
     replace: &str,
-) -> Result<Option<Vec<u8>>, EditError> {
+) -> Result<Option<Rewrite>, EditError> {
     match codec {
         Some(c) if c.code_width >= 2 => rewrite_cid(raw, c, find, replace),
         _ => Ok(rewrite_simple(raw, delim, find, replace)),
@@ -1451,14 +1586,17 @@ fn rewrite_operand(
 /// The single-byte path: match literal ASCII bytes and splice, preserving the
 /// operand's delimiter. A wider character cannot be matched or encoded here
 /// without the font's byte encoding, so it is left for the CID path.
-fn rewrite_simple(raw: &[u8], delim: Option<u8>, find: &str, replace: &str) -> Option<Vec<u8>> {
+fn rewrite_simple(raw: &[u8], delim: Option<u8>, find: &str, replace: &str) -> Option<Rewrite> {
     if !find.is_ascii() || !replace.is_ascii() || !contains(raw, find.as_bytes()) {
         return None;
     }
-    let new_text = replace_first(raw, find.as_bytes(), replace.as_bytes());
-    Some(match delim {
-        Some(b'<') => encode_pdf_hex(&new_text),
-        _ => encode_pdf_literal(&new_text),
+    let codes = replace_first(raw, find.as_bytes(), replace.as_bytes());
+    Some(Rewrite {
+        operand: match delim {
+            Some(b'<') => encode_pdf_hex(&codes),
+            _ => encode_pdf_literal(&codes),
+        },
+        codes,
     })
 }
 
@@ -1469,7 +1607,7 @@ fn rewrite_cid(
     codec: &FontCodec,
     find: &str,
     replace: &str,
-) -> Result<Option<Vec<u8>>, EditError> {
+) -> Result<Option<Rewrite>, EditError> {
     let codes = codec.split_codes(raw);
     // Operand text, plus the code index each character came from, so a text
     // match maps back to a whole-code range.
@@ -1524,7 +1662,10 @@ fn rewrite_cid(
     for code in new_codes {
         bytes.extend_from_slice(&codec.code_bytes(code));
     }
-    Ok(Some(encode_pdf_hex(&bytes)))
+    Ok(Some(Rewrite {
+        operand: encode_pdf_hex(&bytes),
+        codes: bytes,
+    }))
 }
 
 /// The character index (not byte offset) at which `find` begins in `text`.
@@ -1534,7 +1675,16 @@ fn find_char_index(text: &str, find: &str) -> Option<usize> {
 }
 
 /// Look a value up by key in a dictionary.
-fn dict_get<'a>(pairs: &'a [(Bytes, Obj)], key: &[u8]) -> Option<&'a Obj> {
+///
+/// # Budget
+///
+/// A linear scan of one dictionary; nothing is allocated.
+///
+/// # Malformed Input
+///
+/// A missing key is `None`, and the value is returned unresolved for the
+/// caller to resolve in the document's own terms.
+pub(crate) fn dict_get<'a>(pairs: &'a [(Bytes, Obj)], key: &[u8]) -> Option<&'a Obj> {
     pairs
         .iter()
         .find(|(k, _)| k.as_slice() == key)
@@ -1542,7 +1692,7 @@ fn dict_get<'a>(pairs: &'a [(Bytes, Obj)], key: &[u8]) -> Option<&'a Obj> {
 }
 
 /// A forward byte cursor over a content stream.
-struct Cursor<'a> {
+pub(crate) struct Cursor<'a> {
     b: &'a [u8],
     i: usize,
 }
@@ -1552,8 +1702,13 @@ impl<'a> Cursor<'a> {
         Self { b, i: 0 }
     }
 
-    fn pos(&self) -> usize {
+    pub(crate) fn pos(&self) -> usize {
         self.i
+    }
+
+    /// Move the cursor to a position, clamped to the input's length.
+    pub(crate) fn seek(&mut self, pos: usize) {
+        self.i = pos.min(self.b.len());
     }
 
     fn peek(&self) -> Option<u8> {
@@ -1939,6 +2094,118 @@ mod tests {
             out.removed_images.is_empty(),
             "the image is not reported as removed: {:?}",
             out.removed_images
+        );
+    }
+
+    /// A longer replacement pushes the text that follows it on the SAME
+    /// line along, so the edit does not run over it. The lines BELOW stay
+    /// where they were.
+    #[test]
+    fn a_longer_replacement_pushes_the_following_text_along() {
+        let src = page_with_content(
+            b"BT /F1 12 Tf 20 160 Td (Total:) Tj 30 0 Td (USD) Tj 0 -20 Td (Below) Tj ET",
+        );
+        let (out, report) = run(&src, "Total:", "Total amount:").expect("the edit");
+        assert_eq!(report.replaced, 1);
+        // The incremental update keeps the original as a prefix, so the
+        // check must read the NEW content stream - not the old one that is
+        // still in the file.
+        let produced = String::from_utf8_lossy(&page_content_text(&out)).into_owned();
+        // The new text is in the stream.
+        assert!(produced.contains("(Total amount:)"), "the edit: {produced}");
+        // And the text that was drawn after it was pushed right by a
+        // translation, before its own positioning operator.
+        assert!(
+            produced.contains("0 Td 30 0 Td (USD)"),
+            "the following text is pushed along: {produced}"
+        );
+        let shift: f64 = produced
+            .split("(Total amount:) Tj")
+            .nth(1)
+            .unwrap_or_default()
+            .split(" 0 Td")
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .parse()
+            .unwrap_or(0.0);
+        // The shift is a real width in the page's font, not a fudge: "a
+        // mount:" in Helvetica at 12pt is tens of points, not zero.
+        assert!(
+            shift > 10.0 && shift < 100.0,
+            "the push-along is a real width: {shift} in {produced}"
+        );
+        // The line below takes the shift back out: it starts where it did
+        // before the edit.
+        assert!(
+            !produced.contains("0 -20 Td (Below)") && produced.contains(" -20 Td (Below)"),
+            "the line below takes the shift back out: {produced}"
+        );
+    }
+
+    /// A shorter replacement pulls the text that follows back, by the
+    /// width it took away.
+    #[test]
+    fn a_shorter_replacement_pulls_the_following_text_back() {
+        let src =
+            page_with_content(b"BT /F1 12 Tf 20 160 Td (Total amount:) Tj 30 0 Td (USD) Tj ET");
+        let (out, _) = run(&src, "Total amount:", "Total:").expect("the edit");
+        let produced = String::from_utf8_lossy(&page_content_text(&out)).into_owned();
+        let shift: f64 = produced
+            .split("(Total:) Tj")
+            .nth(1)
+            .unwrap_or_default()
+            .split(" 0 Td")
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .parse()
+            .unwrap_or(0.0);
+        assert!(
+            shift < -10.0 && shift > -100.0,
+            "the following text is pulled back: {shift} in {produced}"
+        );
+    }
+
+    /// A replacement of the SAME width leaves the following text alone:
+    /// there is nothing to push along.
+    #[test]
+    fn a_same_width_replacement_leaves_the_following_text_alone() {
+        // Colon and semicolon have the same advance in Helvetica.
+        let src = page_with_content(b"BT /F1 12 Tf 20 160 Td (Total:) Tj 30 0 Td (USD) Tj ET");
+        let (out, _) = run(&src, "Total:", "Total;").expect("the edit");
+        let produced = String::from_utf8_lossy(&page_content_text(&out)).into_owned();
+        assert!(
+            produced.contains("(Total;) Tj 30 0 Td (USD)"),
+            "no shift was needed: {produced}"
+        );
+    }
+
+    /// A line positioned with an ABSOLUTE `Tm` carries the shift in its own
+    /// coordinates, because a `Tm` discards the line matrix the translation
+    /// was written into.
+    #[test]
+    fn an_absolute_line_position_carries_the_shift() {
+        let src = page_with_content(
+            b"BT /F1 12 Tf 1 0 0 1 20 160 Tm (Total:) Tj 1 0 0 1 90 160 Tm (USD) Tj ET",
+        );
+        let (out, _) = run(&src, "Total:", "Total amount:").expect("the edit");
+        let produced = String::from_utf8_lossy(&page_content_text(&out)).into_owned();
+        // The USD line moved right from x=90: the absolute position carries
+        // the width the edit added.
+        let moved_to: f64 = produced
+            .split("(USD)")
+            .next()
+            .unwrap_or_default()
+            .split_whitespace()
+            .rev()
+            .nth(2)
+            .unwrap_or_default()
+            .parse()
+            .unwrap_or(0.0);
+        assert!(
+            moved_to > 100.0 && moved_to < 200.0,
+            "the absolute position carries the shift: {moved_to} in {produced}"
         );
     }
 

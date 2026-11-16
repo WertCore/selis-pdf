@@ -190,7 +190,7 @@ The verdicts:
 | Feature | Where it is now | Verdict |
 |---|---|---|
 | Edit text | Click a line, type. The text is replaced **where it is drawn**. | **SHIPPED** |
-| Edit text with re-flow | Nowhere. A longer replacement runs over what follows it. | **BLOCKED** — `SL-5.TEXTEDIT.02` |
+| Edit text with re-flow | The text follows the edit along the line, pushed by the width the edit added in the page's own font. The paragraph does not re-flow. | **SHIPPED** — the line, not the page |
 | Add a text box | The sign chunk's typed stamp. | **SHIPPED** |
 | Add an image | The tools chunk's image overlay. | **SHIPPED** |
 | Replace or move an existing image or box | Nowhere. There is no operation that **addresses** an existing object. | **BLOCKED** — `SL-5.ANNOT.*` |
@@ -607,8 +607,14 @@ These are the blockers named above, in the order they unlock the most.
       keeps its resource: the draw that was KEPT would otherwise name an
       object the file no longer holds. A line of vector art is still covered
       rather than erased, and the page says so.
-- [ ] **I3 — Text that re-flows (`SL-5.TEXTEDIT.02`).** The edit splices a
-      string; a longer replacement runs over what follows it.
+- [x] **I3 — Text that re-flows (`SL-5.TEXTEDIT.02`).** The LINE does: the
+      rewriter measures the replacement in the page's own font — the engine's
+      width resolution, not a second table in the web layer — and writes the
+      difference as a translation of the text matrix after the edited show
+      operation. The first positioning operator that starts a new line takes
+      the shift back out, so the lines below stay where they were. An absolute
+      `Tm` carries the shift in its own coordinates. The PARAGRAPH does not
+      re-flow: a line that grows past the margin still runs off it.
 - [ ] **I4 — The mutation journal (`SL-5.EDIT.01`).** The spec's own model.
       The workspace's undo is a stack of bytes, which is exact but keeps a
       copy of the document per step.
@@ -765,10 +771,11 @@ These have all cost time. They are not obvious.
 If a new capability changes one of these, change the page's copy in the same
 commit.
 
-> The text is replaced where it is drawn — the line does not re-flow, so a
-> much longer replacement runs over what follows it. Not every line can be
-> changed: a line drawn as several separate runs can only have one of them
-> replaced, and a line whose words the engine cannot address is left alone.
+> The text is replaced where it is drawn, and what follows it on the same
+> line is pushed along to make room. The paragraph does not re-flow, so a line
+> that grows past the margin still runs off it. Not every line can be changed:
+> a line drawn as several separate runs can only have one of them replaced,
+> and a line whose words the engine cannot address is left alone.
 
 > New text and images are drawn on top of the page. A redaction removes the
 > text under the region and covers it with a black box; anything else under

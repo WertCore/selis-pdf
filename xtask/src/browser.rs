@@ -7503,6 +7503,22 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
         return Err("the redacted region is not covered by an opaque box".into());
     }
 
+    // A LONGER REPLACEMENT must push the text that follows it on the same
+    // line along, by the width the edit added in the page's own font.
+    let reflow = report
+        .get("reflow")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the page reported no reflow leg (reflow = None)".to_string())?;
+    let reflow_shift = reflow.get("shift").and_then(Json::as_f64).unwrap_or(0.0);
+    if !(10.0..=200.0).contains(&reflow_shift) {
+        return Err(format!(
+            "the text after the edit was not pushed along by a real width: {reflow_shift}"
+        ));
+    }
+    if reflow.get("carriesPush").and_then(Json::as_bool) != Some(true) {
+        return Err("the text that followed the edit did not move in the file".into());
+    }
+
     // A REDACTION OF AN IMAGE must take the image out of the file, not cover
     // it. A black box over a picture leaves the picture in the file, and
     // anyone with a file reader has it.

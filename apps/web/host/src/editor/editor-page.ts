@@ -23,9 +23,11 @@
  *
  * ## What it will not pretend to do
  *
- * Changing text replaces the text **where it is drawn**. The line does not
- * re-flow: a longer replacement runs over what follows it. The page says so,
- * in the copy, because a document editor that silently reflowed would be
+ * Changing text replaces the text **where it is drawn**, and the text that
+ * follows it on the same line is pushed along by the width the edit added,
+ * measured in the page's own font. The paragraph does not re-flow: a line
+ * that grows past the margin still runs off it. The page says so, in the
+ * copy, because a document editor that promised a full re-flow would be
  * promising something this engine cannot do (`SL-5.TEXTEDIT.02`).
  *
  * The other limit is honest too: the engine replaces the first run of text on
@@ -2720,7 +2722,7 @@ async function lineChanged(
 const TOOL_HINTS: Record<EditorTool, string> = {
 	select:
 		"Drag over the words to select them, then press Ctrl+C to copy. This is the tool for reading a document rather than changing it — nothing you select is written into the file.",
-	text: "Click a line of text to change it. The text is replaced where it is drawn — the line does not re-flow, so a much longer replacement runs over what follows it.",
+	text: "Click a line of text to change it. The text is replaced where it is drawn, and what follows it on the same line is pushed along to make room. The paragraph does not re-flow, so a line that grows past the margin still runs off it.",
 	draw:
 		"Drag on the page to draw. The pen follows the pointer; the line, the rectangle, the ellipse and the arrow are drawn from where you start to where you stop. What you draw is a mark on the page, so you can pick it up and take it off again.",
 	erase:

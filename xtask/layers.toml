@@ -108,6 +108,17 @@ to = "selis-pdf-filter"
 why = "The writer re-encodes streams it emits (object streams, recompression)."
 
 [[edge]]
+from = "selis-pdf-edit"
+to = "selis-font"
+why = """
+SL-5.TEXTEDIT.02: the re-flow measures the text it replaces in the PAGE's own
+font, so it can push the text that follows on the same line along by the width
+the edit added. The arithmetic is the font engine's own (width::resolve:
+/Widths, the standard-14 table, /W + /DW, /MissingWidth) rather than a second
+width table in the web layer. selis-font is a leaf L2 with no reverse
+dependency on the edit crate."""
+
+[[edge]]
 from = "selis-pdf-optimize"
 to = "selis-pdf-cos"
 why = "Deduplication and GC operate on the object graph directly."

@@ -16,6 +16,7 @@ default = []
 rng = ["selis-pdf-cos/rng", "selis-pdf-doc/rng"]
 
 [dependencies]
+selis-font = { workspace = true }
 selis-error = { workspace = true }
 selis-bytes = { workspace = true }
 selis-sandbox = { workspace = true }

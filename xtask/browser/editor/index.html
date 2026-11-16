@@ -234,6 +234,7 @@
 
         // The session leg RELOADS the frame, so it runs after every leg
         // that holds the frame's document.
+        out.reflow = await reflowLeg(onlineDoc, onlineWin, "online");
         out.redactImage = await redactImageLeg(onlineDoc, onlineWin, "online");
         out.widthsLeg = await widthsLeg(onlineDoc, onlineWin, fixtureBytes, "online");
         out.extras = await extrasLeg(onlineDoc, onlineWin, fixtureBytes, "online");
@@ -2135,6 +2136,66 @@
           restoredPages: pages,
           restoredName: filename,
           restoredStatus: status,
+        };
+      }
+
+      /**
+       * A longer replacement pushes the text that follows it on the same
+       * line along, by the width the edit added in the page's own font.
+       *
+       * The fixture draws its line in TWO show operations: the words that
+       * are edited, and the currency that follows them, both on the same
+       * baseline. If the edit only spliced its string, the currency would
+       * be drawn over the new words. The check reads the produced file
+       * back and asks whether the following text was pushed right.
+       */
+      async function reflowLeg(doc, win, label) {
+        const binary = atob("JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCAzMDAgMjAwXSAvQ29udGVudHMgNCAwIFIgL1Jlc291cmNlcyA8PCAvRm9udCA8PCAvRjEgNSAwIFIgPj4gPj4gPj4KZW5kb2JqCjQgMCBvYmoKPDwgL0xlbmd0aCA2MiA+PgpzdHJlYW0KQlQgL0YxIDEyIFRmIDIwIDE2MCBUZCAoSW52b2ljZSB0b3RhbDopIFRqIDgwIDAgVGQgKFVTRCkgVGogRVQKZW5kc3RyZWFtCmVuZG9iago1IDAgb2JqCjw8IC9UeXBlIC9Gb250IC9TdWJ0eXBlIC9UeXBlMSAvQmFzZUZvbnQgL0hlbHZldGljYSA+PgplbmRvYmoKeHJlZgowIDYKMDAwMDAwMDAwMCA2NTUzNSBmIAowMDAwMDAwMDA5IDAwMDAwIG4gCjAwMDAwMDAwNTggMDAwMDAgbiAKMDAwMDAwMDExNSAwMDAwMCBuIAowMDAwMDAwMjQxIDAwMDAwIG4gCjAwMDAwMDAzNTMgMDAwMDAgbiAKdHJhaWxlcgo8PCAvU2l6ZSA2IC9Sb290IDEgMCBSID4+CnN0YXJ0eHJlZgo0MjMKJSVFT0YK");
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+        const file = new File([bytes], "reflow.pdf", { type: "application/pdf" });
+        const transfer = new DataTransfer();
+        transfer.items.add(file);
+        const input = doc.getElementById("selis-open-file");
+        input.files = transfer.files;
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+        await waitFor(
+          () => statusText(doc).startsWith("Opened reflow.pdf"),
+          30_000,
+          "the document to be opened (" + label + ")",
+        );
+
+        useTool(doc, "text");
+        const line = [...doc.querySelectorAll(".selis-editor-line")].find((candidate) =>
+          (candidate.textContent || "").includes("Invoice"),
+        );
+        if (!line) throw new Error("the document drew no clickable text (" + label + ")");
+        line.click();
+        await waitFor(
+          () => doc.querySelector(".selis-editor-inline__text") !== null,
+          10_000,
+          "the inline text editor (" + label + ")",
+        );
+        const area = doc.querySelector(".selis-editor-inline__text");
+        area.value = "Invoice total: 1200 USD";
+        area.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+        );
+        await waitForSettled(doc, "Changed", "the text to change (" + label + ")");
+
+        const produced = await download(doc, win);
+        const streams = [
+          ...produced.carriesText.matchAll(/stream\n([\s\S]*?)\nendstream/g),
+        ].map((match) => match[1]);
+        const newest = streams.at(-1) || "";
+        // The numbers written right after the edited show operation are the
+        // push-along and the following text's own position.
+        const shift = Number.parseFloat(newest.split("Tj")[1] || "0") || 0;
+        return {
+          status: statusText(doc),
+          bytes: produced.bytes,
+          shift,
+          carriesPush: /\d+(?:\.\d+)? 0 Td 80 0 Td \(USD\)/.test(newest),
         };
       }
 

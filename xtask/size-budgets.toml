@@ -75,14 +75,20 @@ budget = 900000
 # The editor's own engine work then carried it past that ceiling: the
 # annotation writer (SL-5.ANNOT.*), the ink marks the eraser takes off, the
 # stamp's object numbering, the CID-aware replacement's faces, and the Word
-# export's page picture — a measured 387 705 B brotli. The budget moves one
-# more 20 KB step to 400 000 rather than the work being cut; the 2% rule still
-# gates every later slice, and the baseline moves to the same measurement so
-# the gate counts from here.
+# export's page picture — a measured 387 705 B brotli. The budget moved one
+# 20 KB step to 400 000 rather than the work being cut.
+#
+# The re-flow (SL-5.TEXTEDIT.02) then linked the font engine's OWN width
+# resolution into this chunk: the standard-14 metric table, the /W + /DW CID
+# reader, and the embedded TrueType advance reader — a measured 403 650 B
+# brotli, +14 KB. The delta the re-flow shifts by has to come from the page's
+# own font, and this is the engine's arithmetic, not a second table in the
+# web layer. The budget moves one 20 KB step to 420 000 and the baseline moves
+# to the measurement; the 2% rule gates the next slice.
 [[budget]]
 chunk = "tools"
 artifact = "selis_pdf_wasm_tools"
-budget = 400000
+budget = 420000
 
 # The raster page's lazy chunk (PDF → PNG, JPG, TIFF and WebP). It carries the
 # whole render walk, tiny-skia, the built-in Liberation fallback faces, the owned
