@@ -362,14 +362,19 @@
             pointerId: 41,
             isPrimary: true,
           });
-        freshCanvas.dispatchEvent(
-          at(freshBox.left + 2, freshBox.top + freshBox.height / 2, 1, "pointerdown"),
+        // The drag lands on the WORDS, not on the canvas: with the Select
+        // tool armed the text layer takes the pointer, and a reader who
+        // selects the words is clicking on the words.
+        const freshSpan = freshLine.querySelector(".selis-editor-line__text");
+        const spanBox = freshSpan.getBoundingClientRect();
+        freshSpan.dispatchEvent(
+          at(spanBox.left + 2, spanBox.top + spanBox.height / 2, 1, "pointerdown"),
         );
-        freshCanvas.dispatchEvent(
-          at(freshBox.right - 2, freshBox.top + freshBox.height / 2, 1, "pointermove"),
+        freshSpan.dispatchEvent(
+          at(spanBox.right - 2, spanBox.top + spanBox.height / 2, 1, "pointermove"),
         );
-        freshCanvas.dispatchEvent(
-          at(freshBox.right - 2, freshBox.top + freshBox.height / 2, 0, "pointerup"),
+        freshSpan.dispatchEvent(
+          at(spanBox.right - 2, spanBox.top + spanBox.height / 2, 0, "pointerup"),
         );
         await new Promise((resolve) => setTimeout(resolve, 300));
         const run = doc.querySelector(".selis-editor-selection");
@@ -2137,6 +2142,35 @@
         await new Promise((resolve) => setTimeout(resolve, 200));
         const menuClosed = menu.hidden;
 
+        // ── the tabs: the classification, and how long each one is ───────
+        const tabWidths = {};
+        for (const tab of ["home", "edit", "comment", "organize", "document"]) {
+          doc.getElementById("selis-editor-tab-" + tab).click();
+          const panel = doc.getElementById("selis-editor-panel-" + tab);
+          if (!panel) {
+            throw new Error(
+              "the page has no " +
+                tab +
+                " panel; the panels are " +
+                [...doc.querySelectorAll("[id]")]
+                  .map((node) => node.id)
+                  .filter((id) => id.indexOf("panel") >= 0)
+                  .join(", "),
+            );
+          }
+          const controls = [
+            ...panel.querySelectorAll(
+              ".selis-editor-tool, .selis-editor-textmark, .selis-editor-inline__size, .selis-editor-colour, .selis-editor-inline__swatch",
+            ),
+          ];
+          let width = 0;
+          for (const control of controls) {
+            const box = control.getBoundingClientRect();
+            width = Math.max(width, Math.round(box.right - panel.getBoundingClientRect().left));
+          }
+          tabWidths[tab] = width;
+        }
+
         // ── the Draw tool ─────────────────────────────────────────────────
         useTool(doc, "draw");
         await new Promise((resolve) => setTimeout(resolve, 200));
@@ -2157,7 +2191,8 @@
         drawCanvas.dispatchEvent(at(drawBox.left + 40, drawBox.top + 60, 1, "pointerdown"));
         drawCanvas.dispatchEvent(at(drawBox.left + 90, drawBox.top + 100, 1, "pointermove"));
         drawCanvas.dispatchEvent(at(drawBox.left + 140, drawBox.top + 70, 1, "pointermove"));
-        const preview = doc.querySelector(".selis-editor-drawing") !== null;
+        const preview = doc.querySelector(".selis-editor-drawing");
+        const previewBox = preview === null ? null : preview.getBoundingClientRect();
         drawCanvas.dispatchEvent(at(drawBox.left + 140, drawBox.top + 70, 0, "pointerup"));
         await waitForSettled(doc, "Drew", "the drawing to be placed (" + label + ")");
         // The status BEFORE the download: the download has a status of its own.
@@ -2171,10 +2206,17 @@
           buttonColour: buttonColour,
           pickerClosed: pickerClosed,
           menuShown: menuShown,
+          tabWidths: tabWidths,
           menuItems: items,
           menuClosed: menuClosed,
           kindsShown: kindsShown,
-          drewPreview: preview,
+          drewPreview: preview !== null,
+          // The preview is where the pointer is: the drawing follows the
+          // pointer, and the pointer is where the reader is looking.
+          previewLeft: previewBox === null ? null : Math.round(previewBox.left),
+          previewTop: previewBox === null ? null : Math.round(previewBox.top),
+          pointerLeft: Math.round(drawBox.left + 40),
+          pointerTop: Math.round(drawBox.top + 60),
           drewStatus: drewStatus,
           drewBytes: drawn.bytes,
           drewCarriesTheStroke: drawn.carriesText.indexOf(" re") >= 0 ||

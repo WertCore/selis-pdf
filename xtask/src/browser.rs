@@ -7697,6 +7697,46 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
         return Err("the right-click menu does not close".into());
     }
 
+    // The drawing's preview is where the pointer is.
+    //
+    // The preview is drawn in the canvas's own coordinates, so it sits
+    // exactly where the reader is pointing — and the shape that is stamped
+    // lands in the same place.
+    let preview_left = extras.get("previewLeft").and_then(Json::as_u64);
+    let pointer_left = extras.get("pointerLeft").and_then(Json::as_u64);
+    if let (Some(preview), Some(pointer)) = (preview_left, pointer_left) {
+        let difference = if preview > pointer {
+            preview - pointer
+        } else {
+            pointer - preview
+        };
+        if difference > 8 {
+            return Err(format!(
+                "the drawing's preview is {difference}px away from the pointer"
+            ));
+        }
+    }
+
+    // The tabs: the classification, and how long each one is.
+    //
+    // The Edit tab holds the TOOLS and the text's formatting; the marks a
+    // reader leaves on a document are a Comment tab of their own, the way
+    // Acrobat and Foxit have one. And a tab whose commands run off the edge
+    // is a tab the reader cannot read.
+    let tab_widths = extras
+        .get("tabWidths")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the page reported no tab widths".to_string())?;
+    let edit_width = tab_widths.get("edit").and_then(Json::as_u64).unwrap_or(0);
+    if edit_width > 1000 {
+        return Err(format!(
+            "the Edit tab's commands are {edit_width}px wide; they run off the edge"
+        ));
+    }
+    if !tab_widths.contains_key("comment") {
+        return Err("the marks have no tab of their own".into());
+    }
+
     // The Draw tool: the kinds, a preview, and a drawing IN the document.
     if extras.get("kindsShown").and_then(Json::as_bool) != Some(true) {
         return Err("the Draw tool offers no kinds".into());

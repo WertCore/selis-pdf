@@ -33,7 +33,7 @@
 		<link
 			rel="stylesheet"
 			href="/assets/editor.css"
-			integrity="sha384-nI5uh4FMXLbC6Nfi4NDc8uU7rNL01sCkiU/JOnb1/sIVggEFjjQHJTJKRpM/oz/7"
+			integrity="sha384-IWdWFFt3gcqoL9W/eezZbN3Jj4GgKfpJUF50Ff+OHcIYPjg6mbB4cF2lyXjr1yMy"
 			crossorigin="anonymous"
 		/>
 	</head>
@@ -226,6 +226,16 @@
 				aria-controls="selis-editor-panel-edit"
 			>
 				Edit
+			</button>
+			<button
+				type="button"
+				role="tab"
+				id="selis-editor-tab-comment"
+				class="selis-editor-tab"
+				aria-selected="false"
+				aria-controls="selis-editor-panel-comment"
+			>
+				Comment
 			</button>
 			<button
 				type="button"
@@ -619,6 +629,28 @@
 					</div>
 					<p class="selis-editor-group__label">Draw</p>
 				</div>
+				<div class="selis-editor-group selis-editor-group--wide">
+					<p class="selis-editor-ribbon__note">
+						Pick a tool, then click the page. Every change can be undone from
+						Home, and nothing leaves this device.
+					</p>
+				</div>
+			</div>
+
+			<!--
+				COMMENT
+
+				Acrobat has a Comments tab and Foxit has a Comment tab: the marks
+				a reader leaves on a document are their own work, and they do
+				not belong among the tools that change the document itself.
+			-->
+			<div
+				class="selis-editor-ribbon__panel"
+				id="selis-editor-panel-comment"
+				role="tabpanel"
+				aria-labelledby="selis-editor-tab-comment"
+				hidden
+			>
 				<div class="selis-editor-group">
 					<div class="selis-editor-group__buttons">
 						<button
@@ -660,31 +692,10 @@
 					</div>
 					<p class="selis-editor-group__label">Markup</p>
 				</div>
-				<div class="selis-editor-group">
-					<div class="selis-editor-group__buttons">
-						<button
-							type="button"
-							class="selis-editor-tool"
-							data-action="undo"
-							data-icon="undo"
-						>
-							<span class="selis-editor-tool__label">Undo</span>
-						</button>
-						<button
-							type="button"
-							class="selis-editor-tool"
-							data-action="redo"
-							data-icon="redo"
-						>
-							<span class="selis-editor-tool__label">Redo</span>
-						</button>
-					</div>
-					<p class="selis-editor-group__label">History</p>
-				</div>
 				<div class="selis-editor-group selis-editor-group--wide">
 					<p class="selis-editor-ribbon__note">
-						Pick a tool, then click the page. Every change can be undone, and
-						nothing leaves this device.
+						Drag over the words to mark them up. Every mark is a standard PDF
+						annotation, so every other reader sees it too.
 					</p>
 				</div>
 			</div>
@@ -792,15 +803,7 @@
 							data-action="section:size"
 							data-icon="crop"
 						>
-							<span class="selis-editor-tool__label">Crop</span>
-						</button>
-						<button
-							type="button"
-							class="selis-editor-tool"
-							data-action="section:size"
-							data-icon="resize"
-						>
-							<span class="selis-editor-tool__label">Resize</span>
+							<span class="selis-editor-tool__label">Page size</span>
 						</button>
 						<button
 							type="button"

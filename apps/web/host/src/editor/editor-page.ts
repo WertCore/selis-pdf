@@ -446,6 +446,7 @@ interface RibbonTab {
 const TABS: readonly RibbonTab[] = [
 	{ tab: "selis-editor-tab-home", panel: "selis-editor-panel-home", group: "home" },
 	{ tab: "selis-editor-tab-edit", panel: "selis-editor-panel-edit", group: "edit" },
+	{ tab: "selis-editor-tab-comment", panel: "selis-editor-panel-comment", group: "comment" },
 	{ tab: "selis-editor-tab-organize", panel: "selis-editor-panel-organize", group: "organize" },
 	{ tab: "selis-editor-tab-document", panel: "selis-editor-panel-document", group: "document" },
 	{ tab: "selis-editor-tab-protect", panel: "selis-editor-panel-protect", group: "protect" },
@@ -465,7 +466,7 @@ const INSPECTOR_SECTION_GROUPS: Readonly<Record<string, string>> = {
 	"selis-editor-section-properties": "home",
 	"selis-editor-section-history": "home",
 	// Edit: what the reader does to the page.
-	"selis-editor-section-comments": "edit",
+	"selis-editor-section-comments": "comment",
 	"selis-editor-section-sign": "edit",
 	// Organize: the pages.
 	"selis-editor-section-split": "organize",
@@ -3385,19 +3386,27 @@ function pointerOnCanvas(
 	event: PointerEvent,
 ): { canvas: HTMLCanvasElement; page: number; x: number; y: number } | null {
 	const target = event.target;
-	if (!(target instanceof HTMLCanvasElement)) {
+	if (!(target instanceof Element)) {
 		return null;
 	}
+	// The pointer's TARGET is not always the canvas: with the Select tool
+	// armed the text layer's lines take the pointer, so the event lands on a
+	// line — and a reader who selects the words is clicking ON the words.
+	// So the page is found first, and the canvas with it.
 	const wrap = target.closest(".selis-editor-page");
 	if (!(wrap instanceof HTMLElement)) {
+		return null;
+	}
+	const canvas = wrap.querySelector("canvas");
+	if (!(canvas instanceof HTMLCanvasElement)) {
 		return null;
 	}
 	const page = Number(wrap.dataset.page);
 	if (!Number.isInteger(page)) {
 		return null;
 	}
-	const box = target.getBoundingClientRect();
-	return { canvas: target, page, x: event.clientX - box.left, y: event.clientY - box.top };
+	const box = canvas.getBoundingClientRect();
+	return { canvas, page, x: event.clientX - box.left, y: event.clientY - box.top };
 }
 
 /** Start a placement drag. */
@@ -4523,6 +4532,13 @@ async function stampDrawing(
 	}
 	const width = Math.max(right - left, 1);
 	const height = Math.max(bottom - top, 1);
+	// The stamp writer refuses a rectangle smaller than four points, and a
+	// reader who clicked rather than dragged would otherwise get an error
+	// from the engine instead of an answer.
+	if (width < 4 || height < 4) {
+		setStatus("That drawing is too small to place. Draw it a little bigger.");
+		return;
+	}
 	state.busy = true;
 	dom.download.disabled = true;
 	setStatus("Drawing…");
@@ -4584,7 +4600,6 @@ function drawDrawingPath(
 	if (!(canvas instanceof HTMLElement)) {
 		return;
 	}
-	const box = canvas.getBoundingClientRect();
 	const path =
 		kind === "pen" || points.length < 2
 			? points
@@ -4602,18 +4617,34 @@ function drawDrawingPath(
 		top = Math.min(top, point.y);
 		bottom = Math.max(bottom, point.y);
 	}
+	// The drawing's box is over the canvas, and the points are the
+	// CANVAS's own points: the preview has to sit exactly where the reader
+	// is pointing, and the shape is scaled into the box it is drawn in.
+	//
+	// The canvas's own box is the frame the points are already in, so
+	// nothing is subtracted from them: the drag reports where the pointer
+	// is ON THE PAGE, and the page wrap starts at the canvas.
+	const boxLeft = Math.min(left, right);
+	const boxTop = Math.min(top, bottom);
+	const boxWidth = Math.max(1, Math.abs(right - left));
+	const boxHeight = Math.max(1, Math.abs(bottom - top));
 	const made = document.createElement("div");
 	made.className = "selis-editor-drawing";
-	made.style.left = `${Math.min(left, right) - box.left}px`;
-	made.style.top = `${Math.min(top, bottom) - box.top}px`;
-	made.style.width = `${Math.max(1, Math.abs(right - left))}px`;
-	made.style.height = `${Math.max(1, Math.abs(bottom - top))}px`;
+	made.style.left = `${boxLeft}px`;
+	made.style.top = `${boxTop}px`;
+	made.style.width = `${boxWidth}px`;
+	made.style.height = `${boxHeight}px`;
 	made.style.borderColor = toHex(state.drawColour);
 	const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-	svg.setAttribute("viewBox", `${left} ${top} ${Math.max(1, right - left)} ${Math.max(1, bottom - top)}`);
+	svg.setAttribute("viewBox", `0 0 ${boxWidth} ${boxHeight}`);
 	svg.style.overflow = "visible";
 	const line = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
-	line.setAttribute("points", path.map((point) => `${point.x},${point.y}`).join(" "));
+	line.setAttribute(
+		"points",
+		path
+			.map((point) => `${point.x - Math.min(left, right)},${point.y - Math.min(top, bottom)}`)
+			.join(" "),
+	);
 	line.setAttribute("fill", "none");
 	line.setAttribute("stroke", toHex(state.drawColour));
 	line.setAttribute("stroke-width", String(state.drawWidth));

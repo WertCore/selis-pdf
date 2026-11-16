@@ -395,6 +395,10 @@
 .selis-editor-ribbon__panel {
 	display: flex;
 	align-items: stretch;
+	/* The commands FOLD rather than run off the edge: a ribbon whose
+	 * commands are cut off is a ribbon the reader cannot use, and one that
+	 * scrolls sideways is a ribbon they have to hunt in. */
+	flex-wrap: wrap;
 	gap: 0;
 	min-height: 74px;
 	padding: var(--selis-space-3) var(--selis-space-5);
@@ -460,7 +464,7 @@
 	align-items: center;
 	justify-content: flex-start;
 	gap: var(--selis-space-2);
-	width: 76px;
+	width: 68px;
 	padding: var(--selis-space-2) var(--selis-space-1);
 	border: var(--selis-border-hairline) solid transparent;
 	border-radius: var(--selis-radius-sm);

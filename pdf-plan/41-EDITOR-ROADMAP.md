@@ -529,6 +529,35 @@ no right-click menu, and a PDF could not be drawn on.
       and opening a panel closes the others — which is what Acrobat's side
       panel and Foxit's properties pane both do.
 
+### Slice 8d — the fixes the reader found (shipped)
+
+Five things the reader found, and every one of them had a cause worth
+writing down.
+
+- [x] **The selection did not work when the reader clicked on the words.**
+      The hit test asked whether the pointer's TARGET was the canvas — and
+      with the Select tool armed the target is the text layer's line, which
+      is exactly where a reader who selects the words is clicking. The hit
+      test now finds the page first and the canvas with it.
+- [x] **The drawing's preview was somewhere else.** The preview was drawn
+      in the canvas's own points and then positioned by the canvas's place
+      ON THE SCREEN, so the two frames were mixed. The drawing is now drawn
+      in the canvas's own frame, and the preview is where the pointer is.
+- [x] **A drawing too small to place said so in the engine's words.** The
+      stamp writer refuses a rectangle under four points, and a reader who
+      clicked rather than dragged got an error instead of an answer. It now
+      says "That drawing is too small to place. Draw it a little bigger."
+- [x] **The ribbon's commands ran off the edge.** The Edit tab holds the
+      TOOLS and the text's formatting; the marks a reader leaves on a
+      document are a **Comment tab** of their own, the way Acrobat and
+      Foxit have one; the history lives on the Home tab, where it already
+      was; and the page's size is one button rather than two. The ribbon
+      now folds rather than running off, so a tab can never be wider than
+      the window.
+- [x] **The Draw tool's kinds.** The pen, the line, the rectangle, the
+      ellipse and the arrow, in the group that appears when the tool is in
+      hand.
+
 ### Slice 9 — what still needs the engine
 
 These are the blockers named above, in the order they unlock the most.
