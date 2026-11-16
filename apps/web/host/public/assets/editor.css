@@ -1303,22 +1303,31 @@
 	overflow-wrap: anywhere;
 }
 
+/*
+ * The tool panel: what the armed tool does, in the reader's own words.
+ *
+ * The hint has its own margin: it is a paragraph, and a paragraph that
+ * starts flush against the panel's edge is a caption, not a sentence.
+ */
 .selis-editor-panel {
-	padding-bottom: var(--selis-space-5);
+	margin: 0 var(--selis-space-4) var(--selis-space-4);
+	padding: var(--selis-space-4) var(--selis-space-4) var(--selis-space-5);
+	background: var(--selis-color-bg-inset);
+	border-radius: var(--selis-radius-md);
 	border-bottom: var(--selis-border-hairline) solid var(--selis-color-border);
-	margin-bottom: var(--selis-space-5);
 }
 
-.selis-editor-panel__title,
-.selis-editor-details summary {
-	margin: 0;
+.selis-editor-panel__title {
+	margin: 0 0 var(--selis-space-2);
 	font-size: var(--selis-text-sm);
 	font-weight: var(--selis-weight-semibold);
 	color: var(--selis-color-fg);
 }
 
-.selis-editor-panel__title {
-	margin-bottom: var(--selis-space-2);
+.selis-editor-panel__hint {
+	margin: 0;
+	line-height: 1.45;
+	color: var(--selis-color-fg-muted);
 }
 
 .selis-editor-details {

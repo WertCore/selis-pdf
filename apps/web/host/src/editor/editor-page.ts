@@ -203,6 +203,7 @@ const SURFACE_GUTTER = 72;
 export type EditorTool =
 	| "select"
 	| "draw"
+	| "erase"
 	| "text"
 	| "box"
 	| "image"
@@ -267,8 +268,12 @@ interface EditorState {
 	drawKind: DrawKind;
 	/** The colour the Draw tool draws in. */
 	drawColour: Colour;
+	/** The name of that colour, so a swatch can say it is the chosen one. */
+	drawColourName: string;
 	/** The width of the Draw tool's line, in points. */
 	drawWidth: number;
+	/** What the colour picker is changing: the text's colour or the pen's. */
+	pickerTarget: "box" | "draw";
 	/** The style of the text the reader is adding. */
 	boxStyle: TextStyle;
 	/** The annotations on the page the editor is showing. */
@@ -318,7 +323,9 @@ const state: EditorState = {
 	markupKind: "highlight",
 	drawKind: "pen",
 	drawColour: CLASSIC_COLOURS[0]?.colour ?? { red: 0, green: 0, blue: 0 },
+	drawColourName: "Black",
 	drawWidth: 2,
+	pickerTarget: "box",
 	boxStyle: PLAIN_STYLE,
 	annotations: [],
 	kept: false,
@@ -407,6 +414,8 @@ const dom = {
 	menu: el<HTMLElement>("selis-editor-menu"),
 	drawKinds: el<HTMLElement>("selis-editor-draw-kinds"),
 	drawGroup: el<HTMLElement>("selis-editor-draw-group"),
+	drawWidth: el<HTMLSelectElement>("selis-editor-draw-width"),
+	drawColour: el<HTMLButtonElement>("selis-editor-draw-colour"),
 	history: el<HTMLOListElement>("selis-editor-history"),
 	historyClear: el<HTMLButtonElement>("selis-editor-history-clear"),
 	labelsApply: el<HTMLButtonElement>("selis-editor-labels-apply"),
@@ -2713,7 +2722,9 @@ const TOOL_HINTS: Record<EditorTool, string> = {
 		"Drag over the words to select them, then press Ctrl+C to copy. This is the tool for reading a document rather than changing it — nothing you select is written into the file.",
 	text: "Click a line of text to change it. The text is replaced where it is drawn — the line does not re-flow, so a much longer replacement runs over what follows it.",
 	draw:
-		"Drag on the page to draw. The pen follows the pointer; the line, the rectangle, the ellipse and the arrow are drawn from where you start to where you stop. What you draw is part of the document.",
+		"Drag on the page to draw. The pen follows the pointer; the line, the rectangle, the ellipse and the arrow are drawn from where you start to where you stop. What you draw is a mark on the page, so you can pick it up and take it off again.",
+	erase:
+		"Drag over a mark to take it off. The marks you draw, the notes you write and the highlights you make are all marks, and the eraser takes them off.",
 	box: "Click where the text should start, then type it. The text is drawn on top of the page.",
 	image:
 		"Pick a PNG or JPEG, then drag a rectangle to place it. The image is drawn on top of the page.",
@@ -2784,6 +2795,30 @@ async function copySelection(): Promise<void> {
 		setStatus(`Copied ${text.length} characters.`);
 	} catch {
 		setStatus("The browser would not take the text. Ctrl+C copies it too.");
+	}
+}
+
+/**
+ * The Draw tool's own controls: the width of the line and its colour.
+ *
+ * A pen with one width is a pen with one width, and a reader who wants a
+ * thick line has to want it very badly. The widths are the ones a pen
+ * actually has — a hairline, a pen, a marker, a brush — and the colour is
+ * the same picker the text uses.
+ */
+function renderDrawControls(): void {
+	const width = dom.drawWidth;
+	if (width !== null) {
+		width.value = String(state.drawWidth);
+	}
+	const colour = dom.drawColour;
+	if (colour !== null) {
+		colour.style.background = toHex(state.drawColour);
+		colour.title = `The pen in ${state.drawColourName.toLowerCase()}`;
+		colour.setAttribute(
+			"aria-label",
+			`The pen in ${state.drawColourName.toLowerCase()}`,
+		);
 	}
 }
 
@@ -3108,10 +3143,16 @@ function buildPicker(): HTMLElement {
  * box is drawn in.
  */
 function chooseColour(colour: Colour, name: string): void {
-	state.boxColor = colour;
-	state.boxColorName = name;
+	if (state.pickerTarget === "draw") {
+		state.drawColour = colour;
+		state.drawColourName = name;
+	} else {
+		state.boxColor = colour;
+		state.boxColorName = name;
+	}
 	renderTextGroup();
 	renderColourButton();
+	renderDrawControls();
 	// The picker is a popover on the page, not inside the workspace.
 	const picker = document.querySelector(".selis-editor-picker");
 	if (picker !== null) {
@@ -3352,8 +3393,10 @@ function setTool(tool: EditorTool): void {
 	}
 	dom.toolHint.textContent = TOOL_HINTS[tool];
 	dom.doc.dataset.tool = tool;
-	// The Draw tool's kinds are only there when the Draw tool is in hand.
+	// The Draw tool's kinds and controls are only there when the Draw tool
+	// is in hand.
 	dom.drawGroup.hidden = tool !== "draw";
+	renderDrawControls();
 	for (const button of dom.drawKinds.querySelectorAll<HTMLButtonElement>(
 		"button[data-draw]",
 	)) {
@@ -3454,7 +3497,7 @@ function startDrag(event: PointerEvent): void {
 	// The measure tool draws a LINE, so it has no rubber band; the other
 	// placement tools do.
 	const band =
-		state.tool === "measure"
+		state.tool === "measure" || state.tool === "erase"
 			? null
 			: (() => {
 					const made = document.createElement("div");
@@ -3577,6 +3620,15 @@ function endDrag(event: PointerEvent): void {
 			x: current.x,
 			y: current.y,
 		});
+		return;
+	}
+	if (state.tool === "erase") {
+		// The marks under the eraser, in the canvas's own points.
+		const band = [
+			{ x: current.startX, y: current.startY },
+			{ x: current.x, y: current.y },
+		];
+		void eraseMarks(current.page, band);
 		return;
 	}
 	if (state.tool === "measure") {
@@ -4558,52 +4610,123 @@ async function stampDrawing(
 	}
 	const width = Math.max(right - left, 1);
 	const height = Math.max(bottom - top, 1);
-	// The stamp writer refuses a rectangle smaller than four points, and a
-	// reader who clicked rather than dragged would otherwise get an error
-	// from the engine instead of an answer.
+	// A mark under four points is a dot, not a drawing, and the engine
+	// refuses one; the reader is told so rather than shown an error.
 	if (width < 4 || height < 4) {
 		setStatus("That drawing is too small to place. Draw it a little bigger.");
 		return;
 	}
+	// The drawing is a MARK — an ink annotation — and not a stamp in the
+	// page's own ink.
+	//
+	// A mark can be picked up, taken off and read in the comments panel; a
+	// stamp in the page's ink can do none of those, and the reader is left
+	// with a drawing they cannot undo but with the undo button.
+	const inkPoints = path.map((point) => {
+		const user = userRect(geometry, { x: point.x, y: point.y, width: 0, height: 0 });
+		return [user.x, user.y];
+	});
+	const user = userRect(geometry, { x: left, y: top, width, height });
 	state.busy = true;
 	dom.download.disabled = true;
 	setStatus("Drawing…");
 	try {
-		const chunk = await signChunk();
-		const anchor = displayRect(geometry, { x: left, y: top, width, height });
-		const strokes = [
-			{
-				points: path.map((point) => [
-					(point.x - left) / width,
-					(bottom - point.y) / height,
-				]),
-			},
-		];
-		const options = {
-			page: page + 1,
-			rect: [anchor.x0, anchor.y0, anchor.x1, anchor.y1],
-			lines: [],
-			strokes,
-			color: [state.drawColour.red, state.drawColour.green, state.drawColour.blue],
-			strokeWidth: state.drawWidth,
-			fontSize: 11,
-			border: false,
-		};
-		const response = runSign(chunk, {
-			op: "stamp",
-			options,
-			file: { name: state.name, bytes },
+		const chunk = await tools();
+		const result = runTool(chunk, {
+			op: "annotate",
+			options: {
+				page,
+				kind: "ink",
+				rect: [user.x, user.y, user.x + user.width, user.y + user.height],
+				quads: [],
+				colour: [
+					state.drawColour.red,
+					state.drawColour.green,
+					state.drawColour.blue,
+				],
+				points: inkPoints,
+				width: state.drawWidth,
+			} as unknown as Record<string, unknown>,
+			files: [{ name: state.name, bytes }],
 		});
-		if (response.kind !== "document") {
-			throw new Error("the signing chunk returned no document");
+		const output = result.outputs[0];
+		if (output === undefined) {
+			throw new Error("the engine produced no document");
 		}
-		await commit(response.output.bytes, `Drew on page ${page + 1}`);
+		await commit(output.bytes, `Drew on page ${page + 1}`);
 	} catch (error) {
 		setStatus(`The drawing could not be placed: ${messageOf(error)}`, "error");
 	} finally {
 		state.busy = false;
 		dom.download.disabled = state.bytes === null;
 	}
+}
+
+/**
+ * Take off the marks the eraser is over.
+ *
+ * The marks are the annotations the document carries — the drawings, the
+ * notes, the highlights — and the eraser takes them off the page, the way
+ * Acrobat's and Foxit's erasers do.
+ */
+async function eraseMarks(
+	page: number,
+	points: readonly { x: number; y: number }[],
+): Promise<void> {
+	// The workspace may not have read the marks yet.
+	await readComments();
+	const band = bandOf(points);
+	const under = (): EditorAnnotation[] =>
+		state.annotations.filter((annotation) => {
+			const rect = annotation.rect;
+			return (
+				band.x0 <= rect.x + rect.width &&
+				band.x1 >= rect.x &&
+				band.y0 <= rect.y + rect.height &&
+				band.y1 >= rect.y
+			);
+		});
+	if (under().length === 0) {
+		setStatus("There is no mark there to take off.");
+		return;
+	}
+	// One mark at a time, the LAST one first, and the marks are read again
+	// after each: taking a mark off shifts the ones after it, and a mark
+	// taken off by an index that has moved is the WRONG mark.
+	let removed = 0;
+	while (removed < 64) {
+		const marks = under();
+		const last = marks[marks.length - 1];
+		if (last === undefined) {
+			break;
+		}
+		await removeAnnotation(page, last.index);
+		removed += 1;
+		await readComments();
+	}
+	setStatus(
+		`Took off ${removed} mark${removed === 1 ? "" : "s"} on page ${page + 1}.`,
+	);
+}
+
+/** The box a drag covers, in the canvas's own points. */
+function bandOf(points: readonly { x: number; y: number }[]): {
+	x0: number;
+	y0: number;
+	x1: number;
+	y1: number;
+} {
+	let x0 = points[0]?.x ?? 0;
+	let x1 = x0;
+	let y0 = points[0]?.y ?? 0;
+	let y1 = y0;
+	for (const point of points) {
+		x0 = Math.min(x0, point.x);
+		x1 = Math.max(x1, point.x);
+		y0 = Math.min(y0, point.y);
+		y1 = Math.max(y1, point.y);
+	}
+	return { x0, y0, x1, y1 };
 }
 
 /**
@@ -5785,6 +5908,7 @@ function wire(): void {
 		if (
 			tool === "select" ||
 			tool === "draw" ||
+			tool === "erase" ||
 			tool === "text" ||
 			tool === "box" ||
 			tool === "redact" ||
@@ -6157,6 +6281,18 @@ function wire(): void {
 	// The inspector can be put away when the reader wants the whole canvas.
 	dom.inspectorToggle.addEventListener("click", () => {
 		toggleInspector();
+	});
+
+	// The Draw tool's own controls: the width of the line and its colour.
+	dom.drawWidth.addEventListener("change", () => {
+		const chosen = Number(dom.drawWidth.value);
+		if (Number.isFinite(chosen) && chosen > 0) {
+			state.drawWidth = chosen;
+		}
+	});
+	dom.drawColour.addEventListener("click", () => {
+		state.pickerTarget = "draw";
+		togglePicker();
 	});
 
 	// The Draw tool's kinds: the pen, the line, the rectangle, the ellipse

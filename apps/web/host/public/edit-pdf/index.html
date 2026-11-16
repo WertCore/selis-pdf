@@ -33,7 +33,7 @@
 		<link
 			rel="stylesheet"
 			href="/assets/editor.css"
-			integrity="sha384-3XIAZLFzPAr+Y+54uJtKCrGZbyhfsXd6jPRIHG4gGdelwaInqD8fVTHnH1DaughQ"
+			integrity="sha384-yIj0Er9U1YAnY1Q1gfsi/2Oqy0p7woApwXuhYogrQRhlHNprinmIOpqhHcUyu/vT"
 			crossorigin="anonymous"
 		/>
 	</head>
@@ -423,6 +423,15 @@
 						<button
 							type="button"
 							class="selis-editor-tool"
+							data-tool="erase"
+							data-icon="erase"
+							aria-pressed="false"
+						>
+							<span class="selis-editor-tool__label">Erase</span>
+						</button>
+						<button
+							type="button"
+							class="selis-editor-tool"
 							data-tool="text"
 							data-icon="text"
 							aria-pressed="false"
@@ -626,6 +635,22 @@
 						>
 							<span class="selis-editor-tool__label">Arrow</span>
 						</button>
+						<label class="selis-editor-sr-only" for="selis-editor-draw-width">
+							The width of the line
+						</label>
+						<select id="selis-editor-draw-width" class="selis-editor-inline__size">
+							<option value="1">Hairline</option>
+							<option value="2">Pen</option>
+							<option value="4">Marker</option>
+							<option value="8">Brush</option>
+						</select>
+						<button
+							type="button"
+							id="selis-editor-draw-colour"
+							class="selis-editor-colour"
+							title="The colour of the pen"
+							aria-label="The colour of the pen"
+						></button>
 					</div>
 					<p class="selis-editor-group__label">Draw</p>
 				</div>
@@ -1113,7 +1138,7 @@
 				</div>
 				<section class="selis-editor-panel" id="selis-editor-panel-tool">
 						<h3 class="selis-editor-panel__title">Tool</h3>
-						<p id="selis-editor-tool-hint" class="selis-editor-hint"></p>
+						<p id="selis-editor-tool-hint" class="selis-editor-panel__hint"></p>
 					</section>
 
 <details

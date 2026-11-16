@@ -2206,6 +2206,12 @@
         useTool(doc, "draw");
         await new Promise((resolve) => setTimeout(resolve, 200));
         const kindsShown = !doc.getElementById("selis-editor-draw-group").hidden;
+        // The pen's own controls: the width of the line and its colour.
+        const drawWidth = doc.getElementById("selis-editor-draw-width");
+        const drawColour = doc.getElementById("selis-editor-draw-colour");
+        const widths = [...drawWidth.options].map((option) => option.value);
+        drawWidth.value = "8";
+        drawWidth.dispatchEvent(new Event("change", { bubbles: true }));
         const drawCanvas = doc.querySelector("canvas");
         const drawBox = drawCanvas.getBoundingClientRect();
         const at = (x, y, buttons, type) =>
@@ -2229,7 +2235,30 @@
         // The status BEFORE the download: the download has a status of its own.
         const drewStatus = statusText(doc);
         const drawn = await download(doc, win);
+
+        // The drawing is a MARK, so the eraser can take it off.
+        const freshCanvas = doc.querySelector("canvas");
+        const freshBox = freshCanvas.getBoundingClientRect();
+        useTool(doc, "erase");
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        freshCanvas.dispatchEvent(
+          at(freshBox.left + 50, freshBox.top + 80, 1, "pointerdown"),
+        );
+        freshCanvas.dispatchEvent(
+          at(freshBox.left + 50, freshBox.top + 80, 0, "pointerup"),
+        );
+        let erased = "";
+        try {
+          await waitForSettled(doc, "Took off", "the mark to be taken off (" + label + ")");
+          erased = statusText(doc);
+        } catch (error) {
+          erased = String(error);
+        }
+
         return {
+          drawWidths: widths,
+          drawColour: getComputedStyle(drawColour).backgroundColor,
+          erased: erased,
           classics: classics,
           colourBefore: before,
           colourAfterSquare: afterSquare,

@@ -7782,6 +7782,31 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
         return Err("the marks have no tab of their own".into());
     }
 
+    // The pen's own controls: the widths it offers and the colour it draws in.
+    let widths = extras
+        .get("drawWidths")
+        .and_then(Json::as_array)
+        .map(|rows| rows.len())
+        .unwrap_or(0);
+    if widths < 3 {
+        return Err(format!(
+            "the pen offers {widths} widths; a pen with one width is a pen with one width"
+        ));
+    }
+    let pen_colour = extras
+        .get("drawColour")
+        .and_then(Json::as_str)
+        .unwrap_or("");
+    if pen_colour.is_empty() {
+        return Err("the pen has no colour".into());
+    }
+
+    // The eraser takes a mark off.
+    let erased = extras.get("erased").and_then(Json::as_str).unwrap_or("");
+    if !erased.contains("Took off") {
+        return Err(format!("the eraser did not take the mark off: {erased:?}"));
+    }
+
     // The Draw tool: the kinds, a preview, and a drawing IN the document.
     if extras.get("kindsShown").and_then(Json::as_bool) != Some(true) {
         return Err("the Draw tool offers no kinds".into());

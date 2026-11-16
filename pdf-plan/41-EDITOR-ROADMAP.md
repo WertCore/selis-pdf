@@ -573,6 +573,23 @@ writing down.
       went back to 280px, the label column is a column, the gap between a
       label and its control is 8px, and each panel carries its own margin.
 
+### Slice 8f — the pen, the eraser, and the hint's margin (shipped)
+
+- [x] **What you draw is a MARK.** The drawing was a stamp in the page's
+      own ink, so it could not be picked up, could not be taken off and
+      could not be read in the comments panel. It is an **ink annotation**
+      now — the same thing Acrobat's Fill & Sign and Foxit's Draw make —
+      so the eraser and the comments panel can see it.
+- [x] **The pen has a width and a colour.** A hairline, a pen, a marker
+      and a brush, and the same colour picker the text uses.
+- [x] **An eraser.** Drag over a mark and it comes off — the drawings,
+      the notes and the highlights alike, the way Acrobat's and Foxit's
+      erasers do. The marks are taken off one at a time, the last one
+      first, because taking a mark off shifts the ones after it.
+- [x] **The tool's hint has its margin.** It is a paragraph, and a
+      paragraph that starts flush against the panel's edge is a caption,
+      not a sentence.
+
 ### Slice 9 — what still needs the engine
 
 These are the blockers named above, in the order they unlock the most.
