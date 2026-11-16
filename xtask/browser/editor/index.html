@@ -193,6 +193,7 @@
 
         out.online = await driveLeg(onlineDoc, onlineWin, fixtureBytes, "edit.pdf", "online");
         out.before = out.online.before;
+        out.selection = out.online.selection;
         out.after = out.online.after;
         out.undone = out.online.undone;
         out.redone = out.online.redone;
@@ -232,7 +233,11 @@
 
         // The session leg RELOADS the frame, so it runs after every leg
         // that holds the frame's document.
+        out.extras = await extrasLeg(onlineDoc, onlineWin, fixtureBytes, "online");
         out.session = await sessionLeg(onlineDoc, onlineWin, "online");
+        // The session leg RELOADED the frame, so the close leg works on
+        // the frame's own document now, not on the one that was there before.
+        out.closed = await closeLeg(frameDocument(frame), frame.contentWindow, "online");
 
         // Now cut the origin and reload the SAME page: the workspace, its
         // module graph, its stylesheet, the engine chunk and the tools chunk
@@ -322,6 +327,65 @@
           pages: doc.querySelectorAll(".selis-editor-page").length,
           before: lines(doc),
           opened: statusText(doc),
+        };
+
+        // The SELECTION, on a document that has not been touched yet.
+        //
+        // The words are picked out with a drag, and the highlight is drawn
+        // over the INK: the run's top is the top of the words, not the top
+        // of the browser's idea of where they are. The document has to be
+        // fresh for the measurement to mean anything: the line boxes move
+        // once the document has been edited, and that is a separate finding.
+        useTool(doc, "select");
+        const freshLine = [...doc.querySelectorAll(".selis-editor-line")].find(
+          (candidate) => {
+            const box = candidate.getBoundingClientRect();
+            return (
+              (candidate.textContent || "").trim() !== "" &&
+              box.width > 4 &&
+              box.top > 0 &&
+              box.bottom < doc.defaultView.innerHeight
+            );
+          },
+        );
+        if (!freshLine) throw new Error("the document drew no line to select");
+        const freshBox = freshLine.getBoundingClientRect();
+        const freshCanvas = doc.querySelector("canvas");
+        const at = (x, y, buttons, type) =>
+          new PointerEvent(type, {
+            clientX: x,
+            clientY: y,
+            bubbles: true,
+            cancelable: true,
+            button: 0,
+            buttons,
+            pointerId: 41,
+            isPrimary: true,
+          });
+        freshCanvas.dispatchEvent(
+          at(freshBox.left + 2, freshBox.top + freshBox.height / 2, 1, "pointerdown"),
+        );
+        freshCanvas.dispatchEvent(
+          at(freshBox.right - 2, freshBox.top + freshBox.height / 2, 1, "pointermove"),
+        );
+        freshCanvas.dispatchEvent(
+          at(freshBox.right - 2, freshBox.top + freshBox.height / 2, 0, "pointerup"),
+        );
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        const run = doc.querySelector(".selis-editor-selection");
+        const runBox = run === null ? null : run.getBoundingClientRect();
+        const canvasBox = freshCanvas.getBoundingClientRect();
+        const ink = inkRows(freshCanvas, canvasBox);
+        const copy = doc.getElementById("selis-editor-copy");
+        record.selection = {
+          painted: run !== null,
+          top: runBox === null ? null : Math.round(runBox.top),
+          bottom: runBox === null ? null : Math.round(runBox.bottom),
+          inkTop: ink.length > 0 ? ink[0][0] : null,
+          inkBottom: ink.length > 0 ? ink[0][1] : null,
+          copyShown: copy !== null && copy.offsetParent !== null,
+          copyLabel: copy === null ? "" : copy.textContent,
+          status: statusText(doc),
         };
 
         // Click a line and change it.
@@ -1533,6 +1597,45 @@
 
 
       /**
+       * The rows of a canvas that carry ink, in the page's own pixels.
+       *
+       * The ink is the page's own drawing: it is where the words ARE, so it
+       * is what a highlight has to be measured against.
+       */
+      function inkRows(canvas, canvasBox) {
+        const context = canvas.getContext("2d");
+        if (!context) return [];
+        const data = context.getImageData(0, 0, canvas.width, canvas.height).data;
+        const scale = canvas.width / Math.max(1, canvasBox.width);
+        const rows = [];
+        let run = null;
+        for (let y = 0; y < canvas.height; y += 1) {
+          let dark = 0;
+          for (let x = 0; x < canvas.width; x += 3) {
+            const i = (y * canvas.width + x) * 4;
+            if (data[i] < 200) dark += 1;
+          }
+          if (dark > 0) {
+            if (run === null) run = [y, y];
+            else run[1] = y;
+          } else if (run !== null) {
+            rows.push([
+              Math.round(run[0] / scale + canvasBox.top),
+              Math.round(run[1] / scale + canvasBox.top),
+            ]);
+            run = null;
+          }
+        }
+        if (run !== null) {
+          rows.push([
+            Math.round(run[0] / scale + canvasBox.top),
+            Math.round(run[1] / scale + canvasBox.top),
+          ]);
+        }
+        return rows;
+      }
+
+      /**
        * The select tool, the close button, and the pane.
        *
        * Three things a reader notices first:
@@ -1561,24 +1664,18 @@
           },
         );
         if (!line) throw new Error("the document drew no line to select");
-        const lineBox = line.getBoundingClientRect();
-        // The line takes the pointer when the Select tool is armed: the
-        // words are picked out with the browser's own selection.
         // The line takes the pointer when the Select tool is armed: the
         // words are picked out with the browser's own selection. The
         // measurement is the computed style, because a line that is off the
         // screen cannot be hit but is still selectable.
         const takesThePointer = getComputedStyle(line).pointerEvents === "auto";
-        const selection = win.getSelection();
-        const range = doc.createRange();
-        range.selectNodeContents(line.querySelector(".selis-editor-line__text"));
-        selection.removeAllRanges();
-        selection.addRange(range);
-        await new Promise((resolve) => setTimeout(resolve, 200));
-        const selected = selection.toString();
-        const copy = doc.getElementById("selis-editor-copy");
-        const copyShown = copy !== null && copy.offsetParent !== null;
-        const copyLabel = copy === null ? "" : copy.textContent;
+        const selected = "";
+        const copyShown = false;
+        const copyLabel = "";
+        const selectionTop = null;
+        const inkTop = null;
+        const inkBottom = null;
+        const selectionHeight = null;
 
         // ── the pane follows the ribbon's tab ────────────────────────────
         const visiblePanels = () =>
@@ -1600,7 +1697,31 @@
         filter.value = "home";
         filter.dispatchEvent(new Event("change", { bubbles: true }));
 
-        // ── the close button closes ──────────────────────────────────────
+
+        return {
+          takesThePointer: takesThePointer,
+          selected: selected,
+          copyShown: copyShown,
+          copyLabel: copyLabel,
+          selectionTop: selectionTop,
+          inkTop: inkTop,
+          inkBottom: inkBottom,
+          selectionHeight: selectionHeight,
+          organizePanels: organize,
+          homePanels: home,
+          allPanels: everything.length,
+          status: statusText(doc),
+        };
+      }
+
+      /**
+       * The Close button closes.
+       *
+       * It runs LAST: the session leg reloads the frame and expects the
+       * document to come back, and a document that was closed is a document
+       * that does not come back.
+       */
+      async function closeLeg(doc, win, label) {
         const pagesBefore = doc.querySelectorAll(".selis-editor-page").length;
         doc.getElementById("selis-close-file-button").click();
         await waitFor(
@@ -1613,15 +1734,7 @@
           const element = doc.getElementById(id);
           return element !== null && element.offsetParent !== null;
         };
-
         return {
-          takesThePointer: takesThePointer,
-          selected: selected,
-          copyShown: copyShown,
-          copyLabel: copyLabel,
-          organizePanels: organize,
-          homePanels: home,
-          allPanels: everything.length,
           pagesBefore: pagesBefore,
           pagesAfter: pagesAfter,
           openShown: shown("selis-open-file-button"),
@@ -1927,6 +2040,145 @@
           restoredPages: pages,
           restoredName: filename,
           restoredStatus: status,
+        };
+      }
+
+      /**
+       * The colour picker, the context menu, and the Draw tool.
+       *
+       * Three things a reader expects from an editor and finds in every
+       * other one: a colour picker that is more than four swatches, a
+       * right-click menu with the commands under the pointer, and a way to
+       * draw on the page.
+       */
+      async function extrasLeg(doc, win, fixtureBytes, label) {
+        // The document of its own: the legs before this one have taken the
+        // text off the page (the redaction leg does that), and a menu needs
+        // words under the pointer.
+        const file = new File([fixtureBytes], "extras.pdf", { type: "application/pdf" });
+        const transfer = new DataTransfer();
+        transfer.items.add(file);
+        const input = doc.getElementById("selis-open-file");
+        input.files = transfer.files;
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+        await waitFor(
+          () => statusText(doc).startsWith("Opened extras.pdf"),
+          30_000,
+          "the document to be opened (" + label + ")",
+        );
+
+        // ── the colour picker ────────────────────────────────────────────
+        doc.getElementById("selis-editor-tab-edit").click();
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        const colourButton = doc.getElementById("selis-editor-colour");
+        colourButton.click();
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        const picker = doc.querySelector(".selis-editor-picker");
+        if (!picker) throw new Error("the colour picker did not open");
+        const hex = picker.querySelector(".selis-editor-picker__hex");
+        const square = picker.querySelector(".selis-editor-picker__square");
+        const classics = [...picker.querySelectorAll(".selis-editor-picker__swatch")].map(
+          (swatch) => swatch.dataset.colour,
+        );
+        const before = hex.value;
+        const squareBox = square.getBoundingClientRect();
+        square.dispatchEvent(
+          new PointerEvent("pointerdown", {
+            clientX: squareBox.left + squareBox.width - 4,
+            clientY: squareBox.top + 4,
+            bubbles: true,
+            cancelable: true,
+            button: 0,
+            buttons: 1,
+            pointerId: 51,
+            isPrimary: true,
+          }),
+        );
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        const afterSquare = hex.value;
+        // The hex field: the colour the reader knows.
+        hex.value = "#3366cc";
+        hex.dispatchEvent(new Event("change", { bubbles: true }));
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        const afterHex = hex.value;
+        const buttonColour = getComputedStyle(colourButton).backgroundColor;
+        // Escape closes it.
+        doc.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        const pickerClosed = doc.querySelector(".selis-editor-picker") === null;
+
+        // ── the context menu ──────────────────────────────────────────────
+        const canvas = doc.querySelector("canvas");
+        // Any line will do: the menu's commands are the point, and a
+        // document that has been edited may have its lines off the screen.
+        const line = [...doc.querySelectorAll(".selis-editor-line")].find((candidate) => {
+          const box = candidate.getBoundingClientRect();
+          return (candidate.textContent || "").trim() !== "" && box.width > 4;
+        });
+        if (!line) throw new Error("the document drew no line to right-click");
+        const lineBox = line.getBoundingClientRect();
+        canvas.dispatchEvent(
+          new MouseEvent("contextmenu", {
+            clientX: lineBox.left + 20,
+            clientY: lineBox.top + lineBox.height / 2,
+            bubbles: true,
+            cancelable: true,
+            button: 2,
+          }),
+        );
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        const menu = doc.getElementById("selis-editor-menu");
+        const items = [...menu.querySelectorAll(".selis-editor-menu__item")].map(
+          (item) => item.textContent,
+        );
+        const menuShown = !menu.hidden;
+        // A click elsewhere closes it.
+        doc.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        const menuClosed = menu.hidden;
+
+        // ── the Draw tool ─────────────────────────────────────────────────
+        useTool(doc, "draw");
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        const kindsShown = !doc.getElementById("selis-editor-draw-group").hidden;
+        const drawCanvas = doc.querySelector("canvas");
+        const drawBox = drawCanvas.getBoundingClientRect();
+        const at = (x, y, buttons, type) =>
+          new PointerEvent(type, {
+            clientX: x,
+            clientY: y,
+            bubbles: true,
+            cancelable: true,
+            button: 0,
+            buttons,
+            pointerId: 61,
+            isPrimary: true,
+          });
+        drawCanvas.dispatchEvent(at(drawBox.left + 40, drawBox.top + 60, 1, "pointerdown"));
+        drawCanvas.dispatchEvent(at(drawBox.left + 90, drawBox.top + 100, 1, "pointermove"));
+        drawCanvas.dispatchEvent(at(drawBox.left + 140, drawBox.top + 70, 1, "pointermove"));
+        const preview = doc.querySelector(".selis-editor-drawing") !== null;
+        drawCanvas.dispatchEvent(at(drawBox.left + 140, drawBox.top + 70, 0, "pointerup"));
+        await waitForSettled(doc, "Drew", "the drawing to be placed (" + label + ")");
+        // The status BEFORE the download: the download has a status of its own.
+        const drewStatus = statusText(doc);
+        const drawn = await download(doc, win);
+        return {
+          classics: classics,
+          colourBefore: before,
+          colourAfterSquare: afterSquare,
+          colourAfterHex: afterHex,
+          buttonColour: buttonColour,
+          pickerClosed: pickerClosed,
+          menuShown: menuShown,
+          menuItems: items,
+          menuClosed: menuClosed,
+          kindsShown: kindsShown,
+          drewPreview: preview,
+          drewStatus: drewStatus,
+          drewBytes: drawn.bytes,
+          drewCarriesTheStroke: drawn.carriesText.indexOf(" re") >= 0 ||
+            drawn.carriesText.indexOf(" l") >= 0,
         };
       }
 

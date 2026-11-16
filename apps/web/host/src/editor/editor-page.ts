@@ -56,7 +56,12 @@ import {
 import { type SignWasm, loadSign, runSign } from "../tools/sign-protocol.js";
 import { type AccessibilityReport, reportStructure } from "./accessibility.js";
 import { type EditorAnnotation, annotationAt } from "./annotations.js";
-import { EngineClient, EngineError, type RenderedPage } from "./engine.js";
+import {
+	EngineClient,
+	EngineError,
+	type PageTextLayer as EnginePageTextLayer,
+	type RenderedPage,
+} from "./engine.js";
 import { type LinePlacement, placeLine } from "./geometry.js";
 import { DocumentHistory } from "./history.js";
 import { type IconName, icon } from "./icons.js";
@@ -69,6 +74,22 @@ import {
 	readAnnotationsReport,
 } from "./markup.js";
 import { measureOnCanvas, measurementText } from "./measure.js";
+import {
+	CLASSIC_COLOURS,
+	fromHex,
+	fromHue,
+	fromSquare,
+	toHex,
+	toHsv,
+	type Colour,
+} from "./colour.js";
+import {
+	characterAt,
+	runsToPaint,
+	textBetween,
+	type SelectionEnd,
+	type SelectionLine,
+} from "./selection.js";
 import { PLAIN_STYLE, type TextStyle, withStyle } from "./text-style.js";
 import {
 	type EditorOperation,
@@ -125,14 +146,27 @@ const MAX_DEVICE_PIXEL_RATIO = 2;
 /** How many document states the undo stack keeps. */
 const HISTORY_DEPTH = 25;
 
+/**
+ * What the Draw tool draws.
+ *
+ * The competitors offer the same set: Acrobat's "Fill & Sign" has a pen, a
+ * line, a rectangle, an ellipse and an arrow, and Foxit's Draw tab has pen
+ * ink and the same shapes. A PDF is a drawing as well as a document, and a
+ * reader who cannot draw on it has to leave the tool to do it elsewhere.
+ */
+export type DrawKind = "pen" | "line" | "rectangle" | "ellipse" | "arrow";
+
+/** The kinds, in the order the ribbon shows them. */
+export const DRAW_KINDS: readonly { readonly kind: DrawKind; readonly label: string }[] = [
+	{ kind: "pen", label: "Pen" },
+	{ kind: "line", label: "Line" },
+	{ kind: "rectangle", label: "Rectangle" },
+	{ kind: "ellipse", label: "Ellipse" },
+	{ kind: "arrow", label: "Arrow" },
+];
+
 /** The font size a new text box is drawn at, in points. */
 const TEXT_BOX_FONT_SIZE = 12;
-
-/** The colour a new text box is drawn in, unless the reader chooses one. */
-const BOX_COLOR_BLACK: readonly [number, number, number] = [0.05, 0.05, 0.12];
-
-/** That colour as the browser draws it, for the swatch and the editor. */
-const BOX_COLOR_CSS = "#0d0d1f";
 
 /**
  * The sizes a new text box can be drawn at, in points.
@@ -141,25 +175,6 @@ const BOX_COLOR_CSS = "#0d0d1f";
  * because a free field invites a size the document's font cannot draw.
  */
 const BOX_SIZES = [8, 10, 12, 14, 18, 24] as const;
-
-/**
- * The colours a new text box can be drawn in, as the stamp wants them:
- * red, green and blue between 0 and 1.
- *
- * The palette is the classic one — black, blue, red, green — because a
- * reader reaching for a colour expects the colours every other editor
- * offers, not a spectrum picker.
- */
-const BOX_COLORS: readonly {
-	readonly name: string;
-	readonly rgb: readonly [number, number, number];
-	readonly css: string;
-}[] = [
-	{ name: "Black", rgb: BOX_COLOR_BLACK, css: "#0d0d1f" },
-	{ name: "Blue", rgb: [0, 0, 1], css: "#0000ff" },
-	{ name: "Red", rgb: [1, 0, 0], css: "#ff0000" },
-	{ name: "Green", rgb: [0, 0.5, 0], css: "#008000" },
-];
 
 /** The stamp's padding inside its rectangle, in points, plus a margin. */
 const BOX_PADDING = 8;
@@ -186,6 +201,7 @@ const SURFACE_GUTTER = 72;
 /** What the workspace is armed to do on the page. */
 export type EditorTool =
 	| "select"
+	| "draw"
 	| "text"
 	| "box"
 	| "image"
@@ -239,11 +255,19 @@ interface EditorState {
 	/** The size a new text box is drawn at, in points. */
 	boxSize: number;
 	/** The colour a new text box is drawn in. */
-	boxColor: readonly [number, number, number];
+	boxColor: Colour;
 	/** The name of that colour, so a swatch can say it is the chosen one. */
 	boxColorName: string;
+	/** Whether the colour picker is open. */
+	pickerOpen: boolean;
 	/** The kind of markup the markup tool leaves. */
 	markupKind: MarkupKind;
+	/** What the Draw tool draws. */
+	drawKind: DrawKind;
+	/** The colour the Draw tool draws in. */
+	drawColour: Colour;
+	/** The width of the Draw tool's line, in points. */
+	drawWidth: number;
 	/** The style of the text the reader is adding. */
 	boxStyle: TextStyle;
 	/** The annotations on the page the editor is showing. */
@@ -265,6 +289,10 @@ interface EditorState {
 	matchIndex: number;
 	/** Each page's rail thumbnail, as an object URL. */
 	thumbnails: Map<number, string>;
+	/** The page's characters, in the page's own points, for the selection. */
+	characters: Map<number, SelectionLine[]>;
+	/** Where the reader's selection starts and ends. */
+	selection: { readonly from: SelectionEnd; readonly to: SelectionEnd } | null;
 }
 
 const state: EditorState = {
@@ -283,9 +311,13 @@ const state: EditorState = {
 	tool: "select",
 	image: null,
 	boxSize: TEXT_BOX_FONT_SIZE,
-	boxColor: BOX_COLOR_BLACK,
+	boxColor: CLASSIC_COLOURS[0]?.colour ?? { red: 0, green: 0, blue: 0 },
 	boxColorName: "Black",
+	pickerOpen: false,
 	markupKind: "highlight",
+	drawKind: "pen",
+	drawColour: CLASSIC_COLOURS[0]?.colour ?? { red: 0, green: 0, blue: 0 },
+	drawWidth: 2,
 	boxStyle: PLAIN_STYLE,
 	annotations: [],
 	kept: false,
@@ -297,6 +329,8 @@ const state: EditorState = {
 	matches: [],
 	matchIndex: 0,
 	thumbnails: new Map(),
+	characters: new Map(),
+	selection: null,
 };
 
 let recorder: RequestRecorder | null = null;
@@ -368,6 +402,10 @@ const dom = {
 	inspectorFilter: el<HTMLSelectElement>("selis-editor-inspector-filter"),
 	copy: el<HTMLButtonElement>("selis-editor-copy"),
 	textTools: el<HTMLElement>("selis-editor-text-tools"),
+	colourButton: el<HTMLButtonElement>("selis-editor-colour"),
+	menu: el<HTMLElement>("selis-editor-menu"),
+	drawKinds: el<HTMLElement>("selis-editor-draw-kinds"),
+	drawGroup: el<HTMLElement>("selis-editor-draw-group"),
 	history: el<HTMLOListElement>("selis-editor-history"),
 	historyClear: el<HTMLButtonElement>("selis-editor-history-clear"),
 	labelsApply: el<HTMLButtonElement>("selis-editor-labels-apply"),
@@ -623,6 +661,22 @@ function buildPage(client: EngineClient, page: number): HTMLElement {
 	}
 	if (layer !== null) {
 		wrap.appendChild(buildTextLayer(layer, raster.ctm, cssWidth / raster.width));
+		// The characters, in the page's own points: a selection is drawn from
+		// them, because the engine knows where every glyph is and the browser
+		// does not.
+		state.characters.set(
+			page,
+			layer.lines.map((line) => ({
+				text: line.text,
+				chars: line.chars.map((char) => ({
+					x: char.rect.x,
+					y: char.rect.y,
+					width: char.rect.width,
+					height: char.rect.height,
+					inked: char.inked,
+				})),
+			})),
+		);
 	}
 	return wrap;
 }
@@ -676,21 +730,7 @@ function releaseThumbnails(): void {
 }
 
 /** The text layer's own shape, as the engine reported it. */
-interface PageTextLayer {
-	readonly page: number;
-	readonly width: number;
-	readonly height: number;
-	readonly lowConfidence: boolean;
-	readonly lines: readonly {
-		readonly text: string;
-		readonly rect: {
-			readonly x: number;
-			readonly y: number;
-			readonly width: number;
-			readonly height: number;
-		};
-	}[];
-}
+type PageTextLayer = EnginePageTextLayer;
 
 /** Build the clickable text layer over one rendered page. */
 function buildTextLayer(
@@ -974,6 +1014,27 @@ function setInspectorGroup(group: string): void {
 	}
 }
 
+/**
+ * One panel open at a time.
+ *
+ * The competitors do not stack their options: Acrobat's side panel is a
+ * strip of tools with ONE panel open, and Foxit's is a properties pane that
+ * shows the one thing in hand. A list of twenty accordions, all of which
+ * can be open at once, is neither - it is a wall with doors.
+ *
+ * So opening a panel closes the others: the reader sees one thing, and the
+ * pane stays as short as the thing in it.
+ */
+function closeOtherPanels(panel: HTMLDetailsElement): void {
+	for (const other of dom.inspector.querySelectorAll<HTMLDetailsElement>(
+		".selis-editor-details",
+	)) {
+		if (other !== panel) {
+			other.open = false;
+		}
+	}
+}
+
 /** Open one of the inspector's panels and put the cursor in it. */
 function focusSection(name: string): void {
 	const id = `selis-editor-section-${name}`;
@@ -989,6 +1050,7 @@ function focusSection(name: string): void {
 		toggleInspector();
 	}
 	section.open = true;
+	closeOtherPanels(section);
 	section.scrollIntoView({ block: "nearest", behavior: "smooth" });
 	const first = section.querySelector<HTMLElement>("input, select, button");
 	first?.focus();
@@ -2348,20 +2410,23 @@ function openInlineAt(
 		});
 		tools.appendChild(select);
 
-		for (const swatch of BOX_COLORS) {
+		for (const swatch of CLASSIC_COLOURS) {
 			const button = document.createElement("button");
 			button.type = "button";
 			button.className = "selis-editor-inline__swatch";
 			button.dataset.color = swatch.name;
 			button.title = swatch.name;
 			button.setAttribute("aria-label", `The text in ${swatch.name.toLowerCase()}`);
-			button.setAttribute("aria-pressed", swatch.css === BOX_COLOR_CSS ? "true" : "false");
-			button.style.background = swatch.css;
+			button.setAttribute(
+				"aria-pressed",
+				swatch.name === state.boxColorName ? "true" : "false",
+			);
+			button.style.background = toHex(swatch.colour);
 			button.addEventListener("click", () => {
-				state.boxColor = swatch.rgb;
-				state.boxColorName = swatch.name;
-				textarea.style.color = swatch.css;
-				renderTextGroup();
+				chooseColour(swatch.colour, swatch.name);
+				textarea.style.color = toHex(swatch.colour);
+				// The row says which colour is chosen: the swatch that is
+				// pressed is the one the text will be drawn in.
 				for (const other of tools.querySelectorAll("button[data-color]")) {
 					other.setAttribute(
 						"aria-pressed",
@@ -2645,6 +2710,8 @@ const TOOL_HINTS: Record<EditorTool, string> = {
 	select:
 		"Drag over the words to select them, then press Ctrl+C to copy. This is the tool for reading a document rather than changing it — nothing you select is written into the file.",
 	text: "Click a line of text to change it. The text is replaced where it is drawn — the line does not re-flow, so a much longer replacement runs over what follows it.",
+	draw:
+		"Drag on the page to draw. The pen follows the pointer; the line, the rectangle, the ellipse and the arrow are drawn from where you start to where you stop. What you draw is part of the document.",
 	box: "Click where the text should start, then type it. The text is drawn on top of the page.",
 	image:
 		"Pick a PNG or JPEG, then drag a rectangle to place it. The image is drawn on top of the page.",
@@ -2663,24 +2730,24 @@ const TOOL_HINTS: Record<EditorTool, string> = {
 const BOX_LINE_LEADING = 1.25;
 
 /**
- * The reader's own selection, when it is in the workspace.
+ * The text the reader has selected.
  *
- * With the Select tool armed the text layer's lines are selectable and the
- * browser's own selection does the work: the words are picked out, painted
- * with the shell's selection colour, and Ctrl+C copies them. Nothing is
- * written into the document - this is the tool for READING a PDF, and the
- * competitors offer it for the same reason.
+ * The selection is the editor's own: the browser's selection paints the
+ * browser's idea of where the words are, and the page's words are drawn in
+ * the page's own font, so the highlight sits above them and below them
+ * again. The engine knows where every character is, so the selection is
+ * drawn from that - and it is aligned with the ink by construction.
  */
-function selectionInWorkspace(): Selection | null {
-	const selection = window.getSelection();
-	if (selection === null || selection.rangeCount === 0) {
-		return null;
+function selectedText(): string {
+	const selection = state.selection;
+	if (selection === null) {
+		return "";
 	}
-	const anchor = selection.anchorNode;
-	if (anchor === null || !dom.doc.contains(anchor)) {
-		return null;
+	const lines = state.characters.get(state.page);
+	if (lines === undefined) {
+		return "";
 	}
-	return selection;
+	return textBetween(lines, selection.from, selection.to);
 }
 
 /**
@@ -2690,8 +2757,7 @@ function selectionInWorkspace(): Selection | null {
  * does it; the shortcut is there for the reader who does.
  */
 function renderSelection(): void {
-	const selection = state.tool === "select" ? selectionInWorkspace() : null;
-	const text = selection === null ? "" : selection.toString().trim();
+	const text = state.tool === "select" ? selectedText().trim() : "";
 	dom.copy.hidden = text === "";
 	if (text !== "") {
 		dom.copy.textContent = `Copy ${text.length} characters`;
@@ -2707,17 +2773,28 @@ function renderSelection(): void {
  * text is selected, and the browser's own Ctrl+C still works.
  */
 async function copySelection(): Promise<void> {
-	const selection = selectionInWorkspace();
-	if (selection === null) {
+	const text = selectedText().trim();
+	if (text === "") {
 		return;
 	}
-	const text = selection.toString();
 	try {
 		await navigator.clipboard.writeText(text);
 		setStatus(`Copied ${text.length} characters.`);
 	} catch {
 		setStatus("The browser would not take the text. Ctrl+C copies it too.");
 	}
+}
+
+/**
+ * The colour button shows the colour the next text is drawn in.
+ *
+ * It is the colour the reader picked, not a label: the button IS the
+ * swatch, the way it is in every other editor.
+ */
+function renderColourButton(): void {
+	dom.colourButton.style.background = toHex(state.boxColor);
+	dom.colourButton.title = `The text in ${state.boxColorName.toLowerCase()}`;
+	dom.colourButton.setAttribute("aria-label", `The text in ${state.boxColorName.toLowerCase()}`);
 }
 
 /**
@@ -2749,6 +2826,492 @@ function renderTextGroup(): void {
 			swatch.dataset.color === state.boxColorName ? "true" : "false",
 		);
 	}
+	renderColourButton();
+}
+
+/**
+ * Start the reader's selection.
+ *
+ * The pointer lands on a character, and the selection runs from there to
+ * wherever the pointer goes. The characters are the engine's, so the
+ * selection is drawn on the ink rather than on the browser's idea of where
+ * the words are.
+ */
+function startSelection(event: PointerEvent): void {
+	const hit = pointerOnCanvas(event);
+	if (hit === null) {
+		return;
+	}
+	const lines = state.characters.get(hit.page);
+	if (lines === undefined) {
+		return;
+	}
+	const character = characterAt(lines, userPoint(hit));
+	if (character === null) {
+		return;
+	}
+	state.selection = { from: character, to: character };
+	selectionDrag = { page: hit.page, anchor: character };
+	paintSelection();
+}
+
+/**
+ * Follow the pointer, and the selection with it.
+ *
+ * The selection runs from where it started to where the pointer is, in the
+ * reading order: a selection dragged backwards is the same selection as one
+ * dragged forwards.
+ */
+function moveSelection(event: PointerEvent): void {
+	const drag = selectionDrag;
+	if (drag === null) {
+		return;
+	}
+	const hit = pointerOnCanvas(event);
+	if (hit === null || hit.page !== drag.page) {
+		return;
+	}
+	const lines = state.characters.get(hit.page);
+	if (lines === undefined) {
+		return;
+	}
+	const character = characterAt(lines, userPoint(hit));
+	if (character === null) {
+		return;
+	}
+	state.selection = { from: drag.anchor, to: character };
+	paintSelection();
+}
+
+/** Finish the selection. */
+function endSelection(): void {
+	selectionDrag = null;
+	const text = selectedText().trim();
+	renderSelection();
+	if (text !== "") {
+		setStatus(`${text.length} characters selected. Ctrl+C copies them.`);
+	}
+}
+
+/** The pointer's place, in the page's own points. */
+function userPoint(hit: {
+	readonly canvas: HTMLCanvasElement;
+	readonly x: number;
+	readonly y: number;
+}): { readonly x: number; readonly y: number } {
+	const geometry = state.geometry.get(state.page);
+	if (geometry === undefined) {
+		return { x: hit.x, y: hit.y };
+	}
+	const canvas = userRect(geometry, { x: hit.x, y: hit.y, width: 0, height: 0 });
+	return { x: canvas.x, y: canvas.y };
+}
+
+/**
+ * Paint the selection over the words it covers.
+ *
+ * The run is the ink's own box: the ascent and the descent of the type, on
+ * the baseline the glyphs were drawn on. A highlight that is taller than the
+ * words is a smear; one that sits above them is a mistake.
+ */
+function paintSelection(): void {
+	for (const run of dom.doc.querySelectorAll(".selis-editor-selection")) {
+		run.remove();
+	}
+	const selection = state.selection;
+	if (selection === null || state.tool !== "select") {
+		return;
+	}
+	const lines = state.characters.get(state.page);
+	if (lines === undefined) {
+		return;
+	}
+	const geometry = state.geometry.get(state.page);
+	if (geometry === undefined) {
+		return;
+	}
+	const page = dom.doc.querySelector(`.selis-editor-page[data-page="${state.page}"]`);
+	if (!(page instanceof HTMLElement)) {
+		return;
+	}
+	for (const run of runsToPaint(lines, selection.from, selection.to)) {
+		const box = canvasRect(geometry, {
+			x: run.x,
+			y: run.y,
+			width: run.width,
+			height: run.height,
+		});
+		const painted = document.createElement("div");
+		painted.className = "selis-editor-selection";
+		painted.style.left = `${box.x}px`;
+		painted.style.top = `${box.y}px`;
+		painted.style.width = `${box.width}px`;
+		painted.style.height = `${box.height}px`;
+		page.appendChild(painted);
+	}
+}
+
+/** The selection's drag, while it is being made. */
+let selectionDrag: { readonly page: number; readonly anchor: SelectionEnd } | null = null;
+
+/**
+ * The colour picker.
+ *
+ * A reader who wants a colour the classic four do not have needs a picker,
+ * and every editor that has one gives them the same three things: a square
+ * for the saturation and the brightness, a strip for the hue, and the
+ * colour's own name in a field they can type into.
+ *
+ * The picker speaks the page's numbers, so what the reader chooses is what
+ * the engine is asked to draw.
+ */
+function buildPicker(): HTMLElement {
+	const picker = document.createElement("div");
+	picker.className = "selis-editor-picker";
+	picker.setAttribute("role", "dialog");
+	picker.setAttribute("aria-label", "The colour of the text");
+
+	// The square: the saturation and the brightness.
+	const square = document.createElement("div");
+	square.className = "selis-editor-picker__square";
+	const mark = document.createElement("span");
+	mark.className = "selis-editor-picker__mark";
+	square.appendChild(mark);
+
+	// The strip: the hue.
+	const strip = document.createElement("div");
+	strip.className = "selis-editor-picker__strip";
+	const hueMark = document.createElement("span");
+	hueMark.className = "selis-editor-picker__hue";
+	strip.appendChild(hueMark);
+
+	// The colour's own name.
+	const field = document.createElement("input");
+	field.className = "selis-editor-picker__hex";
+	field.type = "text";
+	field.spellcheck = false;
+	field.setAttribute("aria-label", "The colour, as a hex value");
+
+	// The classic four, in a row of their own.
+	const classics = document.createElement("div");
+	classics.className = "selis-editor-picker__classics";
+	for (const entry of CLASSIC_COLOURS) {
+		const swatch = document.createElement("button");
+		swatch.type = "button";
+		swatch.className = "selis-editor-picker__swatch";
+		swatch.dataset.colour = entry.name;
+		swatch.title = entry.name;
+		swatch.setAttribute("aria-label", `The text in ${entry.name.toLowerCase()}`);
+		swatch.style.background = toHex(entry.colour);
+		swatch.addEventListener("click", () => {
+			chooseColour(entry.colour, entry.name);
+		});
+		classics.appendChild(swatch);
+	}
+
+	// The pointer on the square.
+	const pickFromSquare = (event: PointerEvent): void => {
+		const box = square.getBoundingClientRect();
+		const x = (event.clientX - box.left) / Math.max(1, box.width);
+		const y = (event.clientY - box.top) / Math.max(1, box.height);
+		const hsv = toHsv(state.boxColor);
+		chooseColour(fromSquare(hsv.hue, x, y), state.boxColorName);
+	};
+	square.addEventListener("pointerdown", (event) => {
+		// The capture is a convenience: it keeps the drag alive when the
+		// pointer leaves the square. A browser that refuses it (or a
+		// synthetic event) still delivers the event.
+		try {
+			square.setPointerCapture(event.pointerId);
+		} catch {
+			// Nothing to do: the square still gets the pointer.
+		}
+		pickFromSquare(event);
+	});
+	square.addEventListener("pointermove", (event) => {
+		if (square.hasPointerCapture(event.pointerId)) {
+			pickFromSquare(event);
+		}
+	});
+
+	// The pointer on the strip.
+	const pickFromStrip = (event: PointerEvent): void => {
+		const box = strip.getBoundingClientRect();
+		const x = Math.min(1, Math.max(0, (event.clientX - box.left) / Math.max(1, box.width)));
+		const hsv = toHsv(state.boxColor);
+		chooseColour(fromHue(hsv.hue + x * 360), state.boxColorName);
+	};
+	strip.addEventListener("pointerdown", (event) => {
+		try {
+			strip.setPointerCapture(event.pointerId);
+		} catch {
+			// Nothing to do: the strip still gets the pointer.
+		}
+		pickFromStrip(event);
+	});
+	strip.addEventListener("pointermove", (event) => {
+		if (strip.hasPointerCapture(event.pointerId)) {
+			pickFromStrip(event);
+		}
+	});
+
+	// The hex field: the reader can type the colour they know.
+	field.addEventListener("change", () => {
+		const colour = fromHex(field.value);
+		if (colour !== null) {
+			chooseColour(colour, state.boxColorName);
+		}
+		field.value = toHex(state.boxColor);
+	});
+	field.addEventListener("keydown", (event) => {
+		if (event.key === "Enter") {
+			field.blur();
+		}
+	});
+
+	picker.append(classics, square, strip, field);
+	paintPicker(mark, hueMark, field);
+	return picker;
+}
+
+/**
+ * Take a colour, and say so.
+ *
+ * The colour is the page's own numbers, and it is the colour the next text
+ * box is drawn in.
+ */
+function chooseColour(colour: Colour, name: string): void {
+	state.boxColor = colour;
+	state.boxColorName = name;
+	renderTextGroup();
+	renderColourButton();
+	// The picker is a popover on the page, not inside the workspace.
+	const picker = document.querySelector(".selis-editor-picker");
+	if (picker !== null) {
+		const mark = picker.querySelector<HTMLElement>(".selis-editor-picker__mark");
+		const hue = picker.querySelector<HTMLElement>(".selis-editor-picker__hue");
+		const field = picker.querySelector<HTMLInputElement>(".selis-editor-picker__hex");
+		if (mark !== null && hue !== null && field !== null) {
+			paintPicker(mark, hue, field);
+		}
+	}
+}
+
+/**
+ * Open the colour picker, or close it.
+ *
+ * The picker is a popover: it hangs under the button that opened it and it
+ * goes away when the reader is done with it — Escape, a click outside it, or
+ * the button again.
+ */
+function togglePicker(): void {
+	const open = document.querySelector(".selis-editor-picker");
+	if (open !== null) {
+		closePicker();
+		return;
+	}
+	const picker = buildPicker();
+	picker.style.position = "fixed";
+	const box = dom.colourButton.getBoundingClientRect();
+	picker.style.left = `${Math.round(box.left)}px`;
+	picker.style.top = `${Math.round(box.bottom + 6)}px`;
+	document.body.appendChild(picker);
+	state.pickerOpen = true;
+	dom.colourButton.setAttribute("aria-expanded", "true");
+	const dismiss = (event: Event): void => {
+		const target = event.target;
+		if (target instanceof Node && picker.contains(target)) {
+			return;
+		}
+		closePicker();
+		document.removeEventListener("pointerdown", dismiss, true);
+	};
+	document.addEventListener("pointerdown", dismiss, true);
+	document.addEventListener(
+		"keydown",
+		(event) => {
+			if (event.key === "Escape") {
+				closePicker();
+			}
+		},
+		{ once: true },
+	);
+}
+
+/** Close the colour picker. */
+function closePicker(): void {
+	const open = document.querySelector(".selis-editor-picker");
+	if (open === null) {
+		return;
+	}
+	open.remove();
+	state.pickerOpen = false;
+	dom.colourButton.setAttribute("aria-expanded", "false");
+}
+
+/**
+ * Put the picker's marks where the colour is.
+ *
+ * The mark on the square is where the saturation and the brightness are, and
+ * the mark on the strip is where the hue is.
+ */
+function paintPicker(
+	mark: HTMLElement,
+	hue: HTMLElement,
+	field: HTMLInputElement,
+): void {
+	const colour = state.boxColor;
+	const hsv = toHsv(colour);
+	mark.style.left = `${hsv.saturation * 100}%`;
+	mark.style.top = `${(1 - hsv.brightness) * 100}%`;
+	mark.style.background = toHex(colour);
+	hue.style.left = `${(hsv.hue / 360) * 100}%`;
+	field.value = toHex(colour);
+}
+
+/**
+ * The context menu.
+ *
+ * ## What the competitors do
+ *
+ * Acrobat's right-click on a page offers the page's own commands — Rotate
+ * Page, Insert Page, Extract Page, Replace Page, Delete Page, Page
+ * Properties — and, on a word, the text's: Copy, Edit Text, and the
+ * selection. Foxit offers the same shape: View, Rotate, Edit, Delete,
+ * Extract, Export, Print, Find, Properties, and on text, Copy, Paste and
+ * Edit Text.
+ *
+ * So the menu is the commands under the pointer, not a copy of the ribbon:
+ * the page's commands when the pointer is on the page, and the text's when
+ * it is on the words.
+ */
+function openMenu(event: MouseEvent): void {
+	closeMenu();
+	const hit = pointerOnCanvas(event as unknown as PointerEvent);
+	const items: { readonly label: string; readonly action: () => void }[] = [];
+
+	if (hit !== null) {
+		const page = hit.page;
+		const mark = annotationAt(state.annotations, hit.x, hit.y);
+		if (mark !== null) {
+			items.push({
+				label: "Remove this mark",
+				action: () => {
+					void removeAnnotation(page, mark.index);
+				},
+			});
+		}
+		const line = lineAtPoint(hit);
+		if (line !== null) {
+			const row = state.characters.get(page)?.[line.line];
+			const words = row?.text ?? "";
+			items.push({
+				label: "Edit this text",
+				action: () => {
+					setTool("text");
+					openInline(page, line.line, words);
+				},
+			});
+			items.push({
+				label: "Select this text",
+				action: () => {
+					setTool("select");
+					state.selection = { from: line, to: line };
+					paintSelection();
+					renderSelection();
+				},
+			});
+		}
+		items.push(
+			{ label: "Rotate left", action: () => void runPageTool("rotate-270") },
+			{ label: "Rotate right", action: () => void runPageTool("rotate-90") },
+			{
+				label: "Crop and resize",
+				action: () => {
+					selectTab("selis-editor-tab-organize");
+					focusSection("size");
+				},
+			},
+			{
+				label: "Keep these pages",
+				action: () => {
+					selectTab("selis-editor-tab-organize");
+					focusSection("split");
+				},
+			},
+			{
+				label: "Number the pages",
+				action: () => {
+					selectTab("selis-editor-tab-document");
+					focusSection("numbers");
+				},
+			},
+			{
+				label: "Put a watermark on it",
+				action: () => {
+					selectTab("selis-editor-tab-document");
+					focusSection("watermark");
+				},
+			},
+			{
+				label: "Delete this page",
+				action: () => {
+					void runPageTool("delete");
+				},
+			},
+		);
+	}
+
+	if (items.length === 0) {
+		return;
+	}
+	for (const item of items) {
+		const button = document.createElement("button");
+		button.type = "button";
+		button.className = "selis-editor-menu__item";
+		button.textContent = item.label;
+		button.addEventListener("click", () => {
+			closeMenu();
+			item.action();
+		});
+		dom.menu.appendChild(button);
+	}
+	dom.menu.hidden = false;
+	const box = dom.menu.getBoundingClientRect();
+	const left = Math.min(event.clientX, window.innerWidth - box.width - 8);
+	const top = Math.min(event.clientY, window.innerHeight - box.height - 8);
+	dom.menu.style.left = `${Math.max(8, Math.round(left))}px`;
+	dom.menu.style.top = `${Math.max(8, Math.round(top))}px`;
+	dom.menu.querySelector("button")?.focus();
+}
+
+/** Close the context menu. */
+function closeMenu(): void {
+	dom.menu.replaceChildren();
+	dom.menu.hidden = true;
+}
+
+/**
+ * The line under a point, in the text layer's own terms.
+ *
+ * The overlay knows where every line is, so the hit test is the overlay's:
+ * a reader who clicks a word gets that word's line.
+ */
+function lineAtPoint(hit: {
+	readonly canvas: HTMLCanvasElement;
+	readonly page: number;
+	readonly x: number;
+	readonly y: number;
+}): SelectionEnd | null {
+	const lines = state.characters.get(hit.page);
+	if (lines === undefined) {
+		return null;
+	}
+	const character = characterAt(lines, userPoint(hit));
+	if (character === null) {
+		return null;
+	}
+	return character;
 }
 
 /** Arm the workspace for a tool. */
@@ -2762,11 +3325,23 @@ function setTool(tool: EditorTool): void {
 	}
 	dom.toolHint.textContent = TOOL_HINTS[tool];
 	dom.doc.dataset.tool = tool;
+	// The Draw tool's kinds are only there when the Draw tool is in hand.
+	dom.drawGroup.hidden = tool !== "draw";
+	for (const button of dom.drawKinds.querySelectorAll<HTMLButtonElement>(
+		"button[data-draw]",
+	)) {
+		button.setAttribute(
+			"aria-pressed",
+			button.dataset.draw === state.drawKind ? "true" : "false",
+		);
+	}
 	// A selection made with the Select tool is not a selection any more once
 	// the reader picks up a placement tool: the words would stay painted while
 	// the reader draws a box over them.
 	if (tool !== "select") {
-		window.getSelection()?.removeAllRanges();
+		state.selection = null;
+		selectionDrag = null;
+		paintSelection();
 	}
 	renderSelection();
 	// The measurement and the signature belong to the tool that drew them.
@@ -2828,8 +3403,8 @@ function pointerOnCanvas(
 /** Start a placement drag. */
 function startDrag(event: PointerEvent): void {
 	// The text tool and the select tool are the two that place nothing: the
-	// first opens an editor over a line, the second lets the browser's own
-	// selection do its work. Neither draws a rubber band.
+	// first opens an editor over a line, the second selects the words under
+	// the pointer. Neither draws a rubber band.
 	if (state.tool === "text" || state.tool === "select") {
 		return;
 	}
@@ -2890,10 +3465,14 @@ function moveDrag(event: PointerEvent): void {
 	}
 	drag.x = hit.x;
 	drag.y = hit.y;
-	if (state.tool === "sign") {
-		// The signature's path: every point the pointer made.
+	if (state.tool === "sign" || state.tool === "draw") {
+		// The path: every point the pointer made.
 		drag.path.push({ x: hit.x, y: hit.y });
-		drawSignaturePath(drag.page, drag.path);
+		if (state.tool === "sign") {
+			drawSignaturePath(drag.page, drag.path);
+		} else {
+			drawDrawingPath(drag.page, drag.path, state.drawKind);
+		}
 		return;
 	}
 	if (drag.band === null) {
@@ -2954,6 +3533,15 @@ function endDrag(event: PointerEvent): void {
 		const path = current.path;
 		clearSignature();
 		void stampSignature(current.page, path);
+		return;
+	}
+	if (state.tool === "draw") {
+		const path = current.path;
+		clearDrawing();
+		void stampDrawing(current.page, path, { x: current.startX, y: current.startY }, {
+			x: current.x,
+			y: current.y,
+		});
 		return;
 	}
 	if (state.tool === "measure") {
@@ -3022,7 +3610,7 @@ async function applyTextBox(page: number, click: Rect, text: string): Promise<vo
 			},
 			text,
 			size,
-			state.boxColor,
+			[state.boxColor.red, state.boxColor.green, state.boxColor.blue],
 			state.boxStyle,
 		);
 		const response = runSign(chunk, {
@@ -3830,6 +4418,216 @@ async function stampSignature(
 	} finally {
 		state.busy = false;
 		dom.download.disabled = state.bytes === null;
+	}
+}
+
+/**
+ * The path a shape is made of.
+ *
+ * The pen is the pointer's own path. The shapes are drawn from where the
+ * drag started to where it stopped: a line is its two ends, a rectangle is
+ * its four corners, an ellipse is a polygon round the box (the stamp draws
+ * paths, and a polygon at this size is the ellipse), and an arrow is the
+ * line with two barbs.
+ */
+function shapePath(
+	kind: DrawKind,
+	start: { readonly x: number; readonly y: number },
+	end: { readonly x: number; readonly y: number },
+): { readonly x: number; readonly y: number }[] {
+	const left = Math.min(start.x, end.x);
+	const right = Math.max(start.x, end.x);
+	const top = Math.min(start.y, end.y);
+	const bottom = Math.max(start.y, end.y);
+	switch (kind) {
+		case "line":
+			return [start, end];
+		case "rectangle":
+			return [
+				{ x: left, y: top },
+				{ x: right, y: top },
+				{ x: right, y: bottom },
+				{ x: left, y: bottom },
+				{ x: left, y: top },
+			];
+		case "ellipse": {
+			const points: { x: number; y: number }[] = [];
+			const steps = 36;
+			for (let step = 0; step <= steps; step += 1) {
+				const angle = (step / steps) * Math.PI * 2;
+				points.push({
+					x: (left + right) / 2 + (Math.cos(angle) * (right - left)) / 2,
+					y: (top + bottom) / 2 + (Math.sin(angle) * (bottom - top)) / 2,
+				});
+			}
+			return points;
+		}
+		case "arrow": {
+			const angle = Math.atan2(end.y - start.y, end.x - start.x);
+			const barb = Math.max(6, Math.hypot(end.x - start.x, end.y - start.y) * 0.2);
+			return [
+				start,
+				end,
+				{
+					x: end.x - barb * Math.cos(angle - Math.PI / 6),
+					y: end.y - barb * Math.sin(angle - Math.PI / 6),
+				},
+				end,
+				{
+					x: end.x - barb * Math.cos(angle + Math.PI / 6),
+					y: end.y - barb * Math.sin(angle + Math.PI / 6),
+				},
+				end,
+			];
+		}
+		case "pen":
+		default:
+			return [start, end];
+	}
+}
+
+/**
+ * Draw on the page.
+ *
+ * The drawing is stamped into the document the way the signature is: the
+ * sign chunk's own stroke writer, with the reader's colour and width. So
+ * what the reader drew is part of the page, and every other reader sees it.
+ */
+async function stampDrawing(
+	page: number,
+	points: readonly { x: number; y: number }[],
+	start: { readonly x: number; readonly y: number },
+	end: { readonly x: number; readonly y: number },
+): Promise<void> {
+	const bytes = state.bytes;
+	const geometry = state.geometry.get(page);
+	if (bytes === null || geometry === undefined) {
+		setStatus("Open a PDF first.", "error");
+		return;
+	}
+	const path =
+		state.drawKind === "pen" ? points : shapePath(state.drawKind, start, end);
+	if (path.length < 2) {
+		setStatus("Draw on the page first.");
+		return;
+	}
+	let left = path[0]?.x ?? 0;
+	let right = left;
+	let top = path[0]?.y ?? 0;
+	let bottom = top;
+	for (const point of path) {
+		left = Math.min(left, point.x);
+		right = Math.max(right, point.x);
+		top = Math.min(top, point.y);
+		bottom = Math.max(bottom, point.y);
+	}
+	const width = Math.max(right - left, 1);
+	const height = Math.max(bottom - top, 1);
+	state.busy = true;
+	dom.download.disabled = true;
+	setStatus("Drawing…");
+	try {
+		const chunk = await signChunk();
+		const anchor = displayRect(geometry, { x: left, y: top, width, height });
+		const strokes = [
+			{
+				points: path.map((point) => [
+					(point.x - left) / width,
+					(bottom - point.y) / height,
+				]),
+			},
+		];
+		const options = {
+			page: page + 1,
+			rect: [anchor.x0, anchor.y0, anchor.x1, anchor.y1],
+			lines: [],
+			strokes,
+			color: [state.drawColour.red, state.drawColour.green, state.drawColour.blue],
+			strokeWidth: state.drawWidth,
+			fontSize: 11,
+			border: false,
+		};
+		const response = runSign(chunk, {
+			op: "stamp",
+			options,
+			file: { name: state.name, bytes },
+		});
+		if (response.kind !== "document") {
+			throw new Error("the signing chunk returned no document");
+		}
+		await commit(response.output.bytes, `Drew on page ${page + 1}`);
+	} catch (error) {
+		setStatus(`The drawing could not be placed: ${messageOf(error)}`, "error");
+	} finally {
+		state.busy = false;
+		dom.download.disabled = state.bytes === null;
+	}
+}
+
+/**
+ * Draw the path the reader is making.
+ *
+ * The preview is on the screen, not in the document: it is the reader's own
+ * line, in the reader's own colour, and it is drawn with the same points
+ * the stamp will use.
+ */
+function drawDrawingPath(
+	page: number,
+	points: readonly { x: number; y: number }[],
+	kind: DrawKind,
+): void {
+	const wrap = dom.doc.querySelector(`.selis-editor-page[data-page="${page}"]`);
+	if (wrap === null) {
+		return;
+	}
+	const canvas = wrap.querySelector("canvas");
+	if (!(canvas instanceof HTMLElement)) {
+		return;
+	}
+	const box = canvas.getBoundingClientRect();
+	const path =
+		kind === "pen" || points.length < 2
+			? points
+			: shapePath(kind, points[0] ?? { x: 0, y: 0 }, points[points.length - 1] ?? { x: 0, y: 0 });
+	if (path.length < 2) {
+		return;
+	}
+	let left = path[0]?.x ?? 0;
+	let right = left;
+	let top = path[0]?.y ?? 0;
+	let bottom = top;
+	for (const point of path) {
+		left = Math.min(left, point.x);
+		right = Math.max(right, point.x);
+		top = Math.min(top, point.y);
+		bottom = Math.max(bottom, point.y);
+	}
+	const made = document.createElement("div");
+	made.className = "selis-editor-drawing";
+	made.style.left = `${Math.min(left, right) - box.left}px`;
+	made.style.top = `${Math.min(top, bottom) - box.top}px`;
+	made.style.width = `${Math.max(1, Math.abs(right - left))}px`;
+	made.style.height = `${Math.max(1, Math.abs(bottom - top))}px`;
+	made.style.borderColor = toHex(state.drawColour);
+	const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+	svg.setAttribute("viewBox", `${left} ${top} ${Math.max(1, right - left)} ${Math.max(1, bottom - top)}`);
+	svg.style.overflow = "visible";
+	const line = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+	line.setAttribute("points", path.map((point) => `${point.x},${point.y}`).join(" "));
+	line.setAttribute("fill", "none");
+	line.setAttribute("stroke", toHex(state.drawColour));
+	line.setAttribute("stroke-width", String(state.drawWidth));
+	line.setAttribute("stroke-linecap", "round");
+	line.setAttribute("stroke-linejoin", "round");
+	svg.appendChild(line);
+	made.appendChild(svg);
+	wrap.appendChild(made);
+}
+
+/** Take the drawing's preview off the page. */
+function clearDrawing(): void {
+	for (const made of dom.doc.querySelectorAll(".selis-editor-drawing")) {
+		made.remove();
 	}
 }
 
@@ -4929,6 +5727,7 @@ function wire(): void {
 		}
 		if (
 			tool === "select" ||
+			tool === "draw" ||
 			tool === "text" ||
 			tool === "box" ||
 			tool === "redact" ||
@@ -4994,12 +5793,24 @@ function wire(): void {
 		if (event.button !== 0) {
 			return;
 		}
+		if (state.tool === "select") {
+			startSelection(event);
+			return;
+		}
 		startDrag(event);
 	});
 	dom.doc.addEventListener("pointermove", (event) => {
+		if (selectionDrag !== null) {
+			moveSelection(event);
+			return;
+		}
 		moveDrag(event);
 	});
 	dom.doc.addEventListener("pointerup", (event) => {
+		if (selectionDrag !== null) {
+			endSelection();
+			return;
+		}
 		endDrag(event);
 	});
 	dom.doc.addEventListener("pointercancel", () => {
@@ -5268,11 +6079,9 @@ function wire(): void {
 		}
 		const swatch = target.closest<HTMLButtonElement>("button[data-color]");
 		if (swatch !== null) {
-			const colour = BOX_COLORS.find((entry) => entry.name === swatch.dataset.color);
+			const colour = CLASSIC_COLOURS.find((entry) => entry.name === swatch.dataset.color);
 			if (colour !== undefined) {
-				state.boxColor = colour.rgb;
-				state.boxColorName = colour.name;
-				renderTextGroup();
+				chooseColour(colour.colour, colour.name);
 			}
 		}
 	});
@@ -5293,14 +6102,77 @@ function wire(): void {
 		toggleInspector();
 	});
 
+	// The Draw tool's kinds: the pen, the line, the rectangle, the ellipse
+	// and the arrow.
+	dom.drawKinds.addEventListener("click", (event) => {
+		const target = event.target;
+		if (!(target instanceof Element)) {
+			return;
+		}
+		const button = target.closest<HTMLButtonElement>("button[data-draw]");
+		const kind = button?.dataset.draw;
+		if (kind === undefined) {
+			return;
+		}
+		state.drawKind = kind as DrawKind;
+		setTool("draw");
+	});
+
+	// The context menu: the commands under the pointer.
+	dom.doc.addEventListener("contextmenu", (event) => {
+		event.preventDefault();
+		openMenu(event);
+	});
+	document.addEventListener("pointerdown", (event) => {
+		const target = event.target;
+		if (target instanceof Node && dom.menu.contains(target)) {
+			return;
+		}
+		closeMenu();
+	}, true);
+	document.addEventListener("keydown", (event) => {
+		if (event.key === "Escape") {
+			closeMenu();
+		}
+	});
+
+	// The colour picker: the button that opens it, and the button's own
+	// colour, which is the colour the next text box is drawn in.
+	dom.colourButton.addEventListener("click", () => {
+		togglePicker();
+	});
+	renderColourButton();
+
 	// The inspector's filter: the panels of one group, or all of them.
 	dom.inspectorFilter.addEventListener("change", () => {
 		setInspectorGroup(dom.inspectorFilter.value);
 	});
 
-	// The selection: the browser's own, and the copy that takes it away.
-	document.addEventListener("selectionchange", () => {
-		renderSelection();
+	// One panel open at a time: the pane shows the thing in hand.
+	for (const panel of dom.inspector.querySelectorAll<HTMLDetailsElement>(
+		".selis-editor-details",
+	)) {
+		panel.addEventListener("toggle", () => {
+			if (panel.open) {
+				closeOtherPanels(panel);
+			}
+		});
+	}
+
+	// The selection, and the copy that takes it away.
+	//
+	// Ctrl+C is the reader's own shortcut, and the browser's own copy would
+	// take nothing: the selection is the editor's, drawn from the engine's
+	// character boxes.
+	document.addEventListener("keydown", (event) => {
+		if (state.tool !== "select" || state.selection === null) {
+			return;
+		}
+		if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "c") {
+			return;
+		}
+		event.preventDefault();
+		void copySelection();
 	});
 	dom.copy.addEventListener("click", () => {
 		void copySelection();

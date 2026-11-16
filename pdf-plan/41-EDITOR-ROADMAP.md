@@ -499,6 +499,36 @@ wall, and the buttons' colours did not follow the theme.
       markup, and the ribbon's "Header and footer" command opened a panel
       that did not exist.
 
+### Slice 8c — the workspace a reader expects (shipped)
+
+What the reader asked for: the selected text did not line up, the right pane
+was cramped and in the wrong order, there was no colour picker, there was
+no right-click menu, and a PDF could not be drawn on.
+
+- [x] **The selection is drawn on the ink.** The browser's own selection
+      paints the BROWSER's idea of where the words are — the metrics of the
+      workspace's own font — so the highlight sat above the words and below
+      them again. The engine knows where every character is, so the
+      selection is drawn from that: the ascent and the descent of the type,
+      on the baseline the glyphs were drawn on. The check measures the
+      highlight against the page's own ink, and they are the same row.
+- [x] **A colour picker.** The classic four in a row, a square for the
+      saturation and the brightness, a strip for the hue, and the colour's
+      own name in a field the reader can type into. The picker speaks the
+      page's numbers, so what the reader picks is what the engine draws.
+- [x] **A right-click menu.** Acrobat's right-click on a page offers the
+      page's commands; Foxit's offers the same shape, and on text, the
+      text's. So the menu is the commands under the pointer: the text's
+      first, the page's after.
+- [x] **A Draw tool.** Acrobat's "Fill & Sign" and Foxit's "Draw" tab both
+      offer a pen, a line, a rectangle, an ellipse and an arrow. The
+      drawing is stamped into the document the way the signature is, so
+      every other reader sees it.
+- [x] **The pane has room and one thing at a time.** The label column is a
+      column and not whatever the label happens to be, the panel is wider,
+      and opening a panel closes the others — which is what Acrobat's side
+      panel and Foxit's properties pane both do.
+
 ### Slice 9 — what still needs the engine
 
 These are the blockers named above, in the order they unlock the most.

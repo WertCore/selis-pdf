@@ -33,7 +33,7 @@
 		<link
 			rel="stylesheet"
 			href="/assets/editor.css"
-			integrity="sha384-prkFg/9cMwIa7iAr8PMa4EB9iEnEGj3yVY/dI0p2PW/xkEIH9Gmuhdj2xLq/49eu"
+			integrity="sha384-nI5uh4FMXLbC6Nfi4NDc8uU7rNL01sCkiU/JOnb1/sIVggEFjjQHJTJKRpM/oz/7"
 			crossorigin="anonymous"
 		/>
 	</head>
@@ -404,6 +404,15 @@
 						<button
 							type="button"
 							class="selis-editor-tool"
+							data-tool="draw"
+							data-icon="draw"
+							aria-pressed="false"
+						>
+							<span class="selis-editor-tool__label">Draw</span>
+						</button>
+						<button
+							type="button"
+							class="selis-editor-tool"
 							data-tool="text"
 							data-icon="text"
 							aria-pressed="false"
@@ -511,6 +520,14 @@
 						</select>
 						<button
 							type="button"
+							id="selis-editor-colour"
+							class="selis-editor-colour"
+							title="The colour of the text"
+							aria-label="The colour of the text"
+							aria-expanded="false"
+						></button>
+						<button
+							type="button"
 							class="selis-editor-inline__swatch"
 							data-color="Black"
 							title="Black"
@@ -547,6 +564,60 @@
 						></button>
 					</div>
 					<p class="selis-editor-group__label">Text</p>
+				</div>
+				<div
+					class="selis-editor-group selis-editor-group--draw"
+					id="selis-editor-draw-group"
+					hidden
+				>
+					<div
+						id="selis-editor-draw-kinds"
+						class="selis-editor-group__buttons selis-editor-toolrow"
+						role="group"
+						aria-label="What to draw"
+					>
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-draw="pen"
+							aria-pressed="true"
+						>
+							<span class="selis-editor-tool__label">Pen</span>
+						</button>
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-draw="line"
+							aria-pressed="false"
+						>
+							<span class="selis-editor-tool__label">Line</span>
+						</button>
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-draw="rectangle"
+							aria-pressed="false"
+						>
+							<span class="selis-editor-tool__label">Rectangle</span>
+						</button>
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-draw="ellipse"
+							aria-pressed="false"
+						>
+							<span class="selis-editor-tool__label">Ellipse</span>
+						</button>
+						<button
+							type="button"
+							class="selis-editor-tool"
+							data-draw="arrow"
+							aria-pressed="false"
+						>
+							<span class="selis-editor-tool__label">Arrow</span>
+						</button>
+					</div>
+					<p class="selis-editor-group__label">Draw</p>
 				</div>
 				<div class="selis-editor-group">
 					<div class="selis-editor-group__buttons">
@@ -1474,6 +1545,13 @@
 				</aside>
 		</main>
 
+		<div
+			id="selis-editor-menu"
+			class="selis-editor-menu"
+			role="menu"
+			aria-label="What to do here"
+			hidden
+		></div>
 		<footer class="selis-editor-statusbar">
 			<p id="selis-editor-status" class="selis-editor-status" role="status" aria-live="polite"></p>
 			<button

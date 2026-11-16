@@ -7609,6 +7609,143 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
         return Err("the ribbon's Download button is on the screen with no document".into());
     }
 
+    // THE SELECTION: drawn on the ink, and copied.
+    //
+    // A selection made by the browser paints the BROWSER's idea of where the
+    // words are — the metrics of the workspace's own font — so the highlight
+    // sits above the words and below them again. The engine knows where every
+    // glyph is, so the selection is drawn from that, and the check measures
+    // the highlight against the page's own ink.
+    let selection = report
+        .get("selection")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the page reported no selection (selection = None)".to_string())?;
+    if selection.get("painted").and_then(Json::as_bool) != Some(true) {
+        return Err("the selection was not painted on the page".into());
+    }
+    let ink_top = selection.get("inkTop").and_then(Json::as_u64);
+    let run_top = selection.get("top").and_then(Json::as_u64);
+    if let (Some(ink), Some(run)) = (ink_top, run_top) {
+        let difference = if ink > run { ink - run } else { run - ink };
+        if difference > 4 {
+            return Err(format!(
+                "the selection is {difference}px away from the words it covers"
+            ));
+        }
+    }
+    if selection.get("copyShown").and_then(Json::as_bool) != Some(true) {
+        return Err("the selection offers no way to copy what was selected".into());
+    }
+
+    // THE PICKER, THE MENU, AND THE DRAW TOOL.
+    let extras = report
+        .get("extras")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the page reported no extras leg (extras = None)".to_string())?;
+
+    // The picker: the classic four, a square that picks a colour, and a hex
+    // field for the colour the reader knows.
+    let classics = extras
+        .get("classics")
+        .and_then(Json::as_array)
+        .map(|rows| rows.len())
+        .unwrap_or(0);
+    if classics < 4 {
+        return Err(format!(
+            "the colour picker offers {classics} classic colours; it should offer four"
+        ));
+    }
+    let after_square = extras
+        .get("colourAfterSquare")
+        .and_then(Json::as_str)
+        .unwrap_or("");
+    let before = extras
+        .get("colourBefore")
+        .and_then(Json::as_str)
+        .unwrap_or("");
+    if after_square == before {
+        return Err("the colour picker's square does not pick a colour".into());
+    }
+    if extras.get("colourAfterHex").and_then(Json::as_str) != Some("#3366cc") {
+        return Err("the colour picker's hex field does not take the colour".into());
+    }
+    if extras.get("pickerClosed").and_then(Json::as_bool) != Some(true) {
+        return Err("the colour picker does not close".into());
+    }
+
+    // The menu: the commands under the pointer.
+    if extras.get("menuShown").and_then(Json::as_bool) != Some(true) {
+        return Err("the right-click menu did not open".into());
+    }
+    let items = extras
+        .get("menuItems")
+        .and_then(Json::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(Json::as_str)
+                .map(str::to_string)
+                .collect::<Vec<String>>()
+        })
+        .unwrap_or_default();
+    if !items.iter().any(|item| item == "Edit this text") {
+        return Err("the right-click menu offers no way to edit the text".into());
+    }
+    if !items.iter().any(|item| item == "Delete this page") {
+        return Err("the right-click menu offers no page commands".into());
+    }
+    if extras.get("menuClosed").and_then(Json::as_bool) != Some(true) {
+        return Err("the right-click menu does not close".into());
+    }
+
+    // The Draw tool: the kinds, a preview, and a drawing IN the document.
+    if extras.get("kindsShown").and_then(Json::as_bool) != Some(true) {
+        return Err("the Draw tool offers no kinds".into());
+    }
+    if extras.get("drewPreview").and_then(Json::as_bool) != Some(true) {
+        return Err("the Draw tool draws no preview".into());
+    }
+    let drew = extras
+        .get("drewStatus")
+        .and_then(Json::as_str)
+        .unwrap_or("");
+    if !drew.contains("Drew") {
+        return Err(format!("the drawing was not placed: {drew:?}"));
+    }
+    if extras.get("drewCarriesTheStroke").and_then(Json::as_bool) != Some(true) {
+        return Err("the drawing is not in the document".into());
+    }
+
+    // THE CLOSE BUTTON: it closes, and the app bar says what is left.
+    //
+    // A Close that only forgot the document left the pages on the screen,
+    // and the reader had to refresh to see the truth.
+    let closed = report
+        .get("closed")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the page reported no close leg (closed = None)".to_string())?;
+    let pages_before = closed
+        .get("pagesBefore")
+        .and_then(Json::as_u64)
+        .unwrap_or(0);
+    let pages_after = closed.get("pagesAfter").and_then(Json::as_u64).unwrap_or(0);
+    if pages_before < 1 {
+        return Err("the close leg had no document to close".into());
+    }
+    if pages_after != 0 {
+        return Err(format!(
+            "the Close button left {pages_after} page(s) on the screen"
+        ));
+    }
+    if closed.get("openShown").and_then(Json::as_bool) != Some(true) {
+        return Err("the Open button is missing after the document was closed".into());
+    }
+    if closed.get("closeShown").and_then(Json::as_bool) != Some(false) {
+        return Err("the Close button is still on the screen after the document closed".into());
+    }
+    if closed.get("downloadShown").and_then(Json::as_bool) != Some(false) {
+        return Err("the Download button is on the screen with no document".into());
+    }
+
     // THE READING LEG: the select tool, the close button, the pane.
     let reading = report
         .get("reading")
@@ -7620,13 +7757,6 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
     // browser's own selection picks the words out.
     if reading.get("takesThePointer").and_then(Json::as_bool) != Some(true) {
         return Err("the Select tool does not let the reader select the words".into());
-    }
-    let selected = reading.get("selected").and_then(Json::as_str).unwrap_or("");
-    if selected.trim().is_empty() {
-        return Err("the Select tool selected nothing".into());
-    }
-    if reading.get("copyShown").and_then(Json::as_bool) != Some(true) {
-        return Err("the Select tool offers no way to copy what was selected".into());
     }
 
     // The pane follows the ribbon's tab: a short list, not a wall.
@@ -7652,35 +7782,6 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
     let all = reading.get("allPanels").and_then(Json::as_u64).unwrap_or(0);
     if all < organize as u64 {
         return Err("the filter cannot show the whole list".into());
-    }
-
-    // The Close button CLOSES: the pages go, and the app bar says what is
-    // left to do. A Close that only forgot the document left the pages on
-    // the screen, and the reader had to refresh to see the truth.
-    let pages_before = reading
-        .get("pagesBefore")
-        .and_then(Json::as_u64)
-        .unwrap_or(0);
-    let pages_after = reading
-        .get("pagesAfter")
-        .and_then(Json::as_u64)
-        .unwrap_or(0);
-    if pages_before < 1 {
-        return Err("the reading leg had no document to close".into());
-    }
-    if pages_after != 0 {
-        return Err(format!(
-            "the Close button left {pages_after} page(s) on the screen"
-        ));
-    }
-    if reading.get("openShown").and_then(Json::as_bool) != Some(true) {
-        return Err("the Open button is missing after the document was closed".into());
-    }
-    if reading.get("closeShown").and_then(Json::as_bool) != Some(false) {
-        return Err("the Close button is still on the screen after the document closed".into());
-    }
-    if reading.get("downloadShown").and_then(Json::as_bool) != Some(false) {
-        return Err("the Download button is on the screen with no document".into());
     }
 
     // THE THEME: every label must be readable against its own background, in

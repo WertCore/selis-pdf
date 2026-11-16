@@ -33,6 +33,7 @@ export type IconName =
 	| "chevron-right"
 	| "text"
 	| "select"
+	| "draw"
 	| "text-box"
 	| "image"
 	| "redact"
@@ -102,6 +103,7 @@ const PATHS: Readonly<Record<IconName, string>> = {
 	"chevron-left": "m14.5 5-7 7 7 7",
 	"chevron-right": "m9.5 5 7 7-7 7",
 	text: "M5 6.5V5h14v1.5M12 5v14M9 19h6",
+	draw: "M4 19.5 15.5 8l2 2L6 21.5H4zM14 5.5l4.5 4.5",
 	select: "M6 4.5 10.5 19l2.2-6.2L19 10.5z",
 	"text-box": "M4 5.5h16v13H4zM8.5 9h7M12 9v5.5",
 	image: "M4 5.5h16v13H4zM4 15l4.5-4.5 4 4 3-3L20 15M15.5 9.5h.01",

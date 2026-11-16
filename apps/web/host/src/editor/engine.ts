@@ -104,6 +104,21 @@ export interface RenderedPage {
 	readonly ctm: Matrix;
 }
 
+/** One character of a line, in PDF user space. */
+export interface TextLayerChar {
+	/** The character's box, around the baseline it was drawn on. */
+	readonly rect: {
+		readonly x: number;
+		readonly y: number;
+		readonly width: number;
+		readonly height: number;
+	};
+	/** The pen step the character takes. */
+	readonly advance: number;
+	/** Whether the character has ink: a space does not. */
+	readonly inked: boolean;
+}
+
 /** One line of a page's text layer. */
 export interface TextLayerLine {
 	/** The line's recovered text. */
@@ -115,6 +130,13 @@ export interface TextLayerLine {
 		readonly width: number;
 		readonly height: number;
 	};
+	/**
+	 * The line's characters, in reading order.
+	 *
+	 * They are what a selection is drawn from: the engine knows where every
+	 * glyph is, and the browser does not.
+	 */
+	readonly chars: readonly TextLayerChar[];
 }
 
 /** One place a search query was found. */
@@ -495,6 +517,27 @@ export class EngineClient {
 			if (typeof text !== "string" || text === "" || !isRecord(rect)) {
 				continue;
 			}
+			const chars: TextLayerChar[] = [];
+			const rawChars = Array.isArray(raw.chars) ? raw.chars : [];
+			for (const rawChar of rawChars) {
+				if (!isRecord(rawChar)) {
+					continue;
+				}
+				const box = rawChar.rect;
+				if (!isRecord(box)) {
+					continue;
+				}
+				chars.push({
+					rect: {
+						x: numberField(box, "x"),
+						y: numberField(box, "y"),
+						width: numberField(box, "width"),
+						height: numberField(box, "height"),
+					},
+					advance: numberField(rawChar, "advance"),
+					inked: rawChar.inked !== false,
+				});
+			}
 			lines.push({
 				text,
 				rect: {
@@ -503,6 +546,7 @@ export class EngineClient {
 					width: numberField(rect, "width"),
 					height: numberField(rect, "height"),
 				},
+				chars,
 			});
 		}
 		return {
