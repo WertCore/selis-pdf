@@ -71,7 +71,9 @@ from the shell.
   is given, so the editor keeps the image's aspect ratio itself.
 - **Taking text out** → the tools chunk's `redact` (op 34): `{page (0-based), rects [[x,y,w,h]] in
   user space}`. It strips the **text** inside the region from the content stream and draws an
-  opaque black box over it. Anything else under the region is covered, not erased.
+  opaque black box over it. An **image** inside the region is taken out of the FILE as well: its
+  draw is dropped and the image is left out of the page's resources, so its bytes never reach the
+  output. A line of vector art under the region is covered, not erased.
   The region is in the PAGE's space: the rewriter tracks the content's own transform
   (`q`, `Q`, `cm`) and compares the text's position there, so a page whose content
   has been scaled (which is what the editor's own resize does) is redacted where the
@@ -228,8 +230,9 @@ The verdicts:
 
 | Feature | Where it is now | Verdict |
 |---|---|---|
-| Redact | A region, and the **text** under it is removed from the file and covered. | **SHIPPED** — for text only |
-| Redact an image or a line of art | Covered, not erased. | **BLOCKED** — `SL-5.REDACT.*` |
+| Redact | A region, and the **text** under it is removed from the file and covered. | **SHIPPED** |
+| Redact an image | The image is taken OUT of the file: its draw is dropped and it is left out of the page's resources, so its bytes never reach the output. | **SHIPPED** |
+| Redact a line of vector art | Covered, not erased. | **BLOCKED** — `SL-5.REDACT.*` |
 | Find the sensitive text for me (AI redaction) | Nowhere. | **NOT PLANNED** — it needs an inference service |
 | Remove the document's metadata | The Protect tab's "Strip metadata". | **SHIPPED** |
 | See what the document leaks | The privacy report and the fingerprint, in the inspector. | **SHIPPED** |
@@ -594,9 +597,16 @@ writing down.
 
 These are the blockers named above, in the order they unlock the most.
 
-- [ ] **I2 — A redaction that removes more than text (`SL-5.REDACT.*`).**
-      Today the redaction strips text and covers everything else. Removing an
-      image under the region means rewriting the page's XObjects.
+- [x] **I2 — A redaction that removes more than text (`SL-5.REDACT.*`).**
+      An **image** under the region is taken out of the FILE now, not just
+      covered. The rewriter drops the `Do` that draws it — the image is drawn
+      into the unit square, so the square's corners, put through the content's
+      own transform, are where it lands — and reports the image's name, so the
+      writer leaves it out of the page's resources. The bytes never reach the
+      output. An image drawn twice, once under the region and once out of it,
+      keeps its resource: the draw that was KEPT would otherwise name an
+      object the file no longer holds. A line of vector art is still covered
+      rather than erased, and the page says so.
 - [ ] **I3 — Text that re-flows (`SL-5.TEXTEDIT.02`).** The edit splices a
       string; a longer replacement runs over what follows it.
 - [ ] **I4 — The mutation journal (`SL-5.EDIT.01`).** The spec's own model.
@@ -610,8 +620,9 @@ These are the blockers named above, in the order they unlock the most.
 - **A second implementation of the engine's arithmetic.** The placement
   geometry, the stamp's width table and the redaction's text matrix all come
   from the engine. A second copy is a second set of bugs.
-- **A redaction that fakes removal.** Covering an image is not erasing it,
-  and the page says so.
+- **A redaction that fakes removal.** Covering an image is not erasing it.
+  The redaction erases the image now (Slice 9, I2), and the page says what
+  it removes.
 - **A second copy of a decision.** The theme's decisions are the design
   system's, the export's writers are the engine's, and the web layer holds
   only the wire. `43-THEME-EXPORT-CORE.md` says which is which.

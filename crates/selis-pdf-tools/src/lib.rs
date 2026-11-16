@@ -353,9 +353,11 @@ pub fn redact(
 /// through unchanged.
 ///
 /// The redaction removes the **text** inside each region from the content
-/// stream and draws an opaque black box over it. An image or a line of vector
-/// art under the region is covered by that box, not erased: only text is
-/// removed from the file.
+/// stream and draws an opaque black box over it. An **image** under the
+/// region is taken out of the file as well: its draw is dropped and the
+/// image is left out of the page's resources, so its bytes never reach the
+/// output. A line of vector art under the region is covered by the box, not
+/// erased: only text and images are removed from the file.
 ///
 /// # Errors
 ///

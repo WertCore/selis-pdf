@@ -2729,7 +2729,7 @@ const TOOL_HINTS: Record<EditorTool, string> = {
 	image:
 		"Pick a PNG or JPEG, then drag a rectangle to place it. The image is drawn on top of the page.",
 	redact:
-		"Drag a rectangle over what should not be there: the text under it is removed from the file and covered with a black box. Anything else under it — an image, a line of art — is covered, not erased.",
+		"Drag a rectangle over what should not be there: the text under it is removed from the file and covered with a black box. An image under it is taken out of the file as well — its pixels do not reach the output at all.",
 	measure:
 		"Drag between two points to measure the page. The measurement is drawn on the screen and is not put in the document.",
 	sign: "Draw your signature on the page. It is stamped onto the page as part of the document's own drawing, not as a cryptographic signature.",
@@ -3771,8 +3771,10 @@ async function placeImage(page: number, rect: Rect, geometry: PageGeometry): Pro
  * Redact a region of a page.
  *
  * The engine removes the **text** inside the region from the content stream
- * and draws an opaque black box over it. Anything else under the box — an
- * image, a line of vector art — is covered, not erased, and the page says so.
+ * and draws an opaque black box over it. An **image** under the region is
+ * taken out of the file as well: its draw is dropped and the image is left
+ * out of the page's resources, so its pixels never reach the output. A line
+ * of vector art under the box is covered, not erased, and the page says so.
  */
 async function redactRegion(page: number, rect: Rect, geometry: PageGeometry): Promise<void> {
 	const bytes = state.bytes;

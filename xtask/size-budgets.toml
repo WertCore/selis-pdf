@@ -69,13 +69,20 @@ budget = 900000
 # Operation 33 (edit text) next became CID-aware (SL-5.TEXTEDIT.02): it reads a
 # font's /ToUnicode CMap and inverts it to re-encode a replacement through the
 # embedded subset's own codes (so a Type0/Chrome-export PDF is editable with no
-# new face shipped), a measured +7.5 KB to 361 KB. The budget moves one 20 KB
-# step to 380 000 to cover both the overdue growth and this slice; the 2% rule
-# still gates every later slice.
+# new face shipped), a measured +7.5 KB to 361 KB. The budget moved one 20 KB
+# step to 380 000 to cover both the overdue growth and that slice.
+#
+# The editor's own engine work then carried it past that ceiling: the
+# annotation writer (SL-5.ANNOT.*), the ink marks the eraser takes off, the
+# stamp's object numbering, the CID-aware replacement's faces, and the Word
+# export's page picture — a measured 387 705 B brotli. The budget moves one
+# more 20 KB step to 400 000 rather than the work being cut; the 2% rule still
+# gates every later slice, and the baseline moves to the same measurement so
+# the gate counts from here.
 [[budget]]
 chunk = "tools"
 artifact = "selis_pdf_wasm_tools"
-budget = 380000
+budget = 400000
 
 # The raster page's lazy chunk (PDF → PNG, JPG, TIFF and WebP). It carries the
 # whole render walk, tiny-skia, the built-in Liberation fallback faces, the owned

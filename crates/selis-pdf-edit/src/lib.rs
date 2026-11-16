@@ -208,7 +208,15 @@ pub fn edit_text(
     let (encoded, filter_name) = encode_content(filter, &rewritten);
     let new_stream = rebuild_stream(&stream_dict, encoded, filter_name);
     let trailer = carried_trailer(&doc)?;
-    let mut objects: Vec<(u32, Obj)> = vec![(content_refs[0].num, new_stream)];
+    // The page's FIRST content stream is the one that is rewritten, and the
+    // page is pointed at it. A page with no content stream cannot be
+    // edited, and saying so is better than reaching past the end.
+    let Some(first_content) = content_refs.first() else {
+        return Err(EditError::Malformed(format!(
+            "page {page_index} has no content stream to edit"
+        )));
+    };
+    let mut objects: Vec<(u32, Obj)> = vec![(first_content.num, new_stream)];
     if content_refs.len() > 1 {
         // The page drew its content from several streams; it now draws it
         // from one. The page dictionary is rewritten to point at it, and every
@@ -216,7 +224,7 @@ pub fn edit_text(
         let mut page: Vec<(Bytes, Obj)> = Vec::with_capacity(page_dict.len());
         for (key, value) in &page_dict {
             if key.as_slice() == b"Contents" {
-                page.push((key.clone(), Obj::Ref(content_refs[0])));
+                page.push((key.clone(), Obj::Ref(*first_content)));
             } else {
                 page.push((key.clone(), value.clone()));
             }
@@ -610,15 +618,35 @@ pub struct Redaction {
     /// in the content's own space. `None` when the content's transform is the
     /// identity, which is the usual case.
     pub inverse_transform: Option<Matrix6>,
+    /// The resource names of the images that fell inside a region.
+    ///
+    /// The names are the page's own (`/Im1`, `/Im2`), so the caller can
+    /// leave those images out of the resources it copies — and then their
+    /// bytes never reach the output file. A redaction that covers an image
+    /// but keeps the image is a black box over a secret.
+    pub removed_images: Vec<String>,
 }
 
-/// Remove the text runs whose origin falls inside one of the given regions.
+/// Remove what the given regions cover: the text runs inside them, and the
+/// images drawn inside them.
 ///
 /// The regions are in the page's own user space: points, y-up, at the
 /// `/MediaBox`'s lower-left corner. A show operation (`Tj`, `TJ`, `'` or `"`)
 /// is removed when the text matrix puts its origin inside a region — and the
 /// operands it drew go with it, because a string left without its operator is
 /// not a stream a reader can parse.
+///
+/// An image is drawn into the **unit square**, so the square's corners — put
+/// through the content's transform — are where it lands on the page. A draw
+/// whose box overlaps a region is removed, and the image's name is reported
+/// in [`Redaction::removed_images`] so the caller can leave the image out of
+/// the resources it copies: the bytes then never reach the output file.
+/// A black box over a picture is not a redaction — the picture is still in
+/// the file, and anyone with a file reader has it.
+///
+/// An **inline** image (`BI`/`ID`/`EI`) is not recognised: the rewriter does
+/// not guess where the binary data ends, so such an image is covered by the
+/// box rather than removed.
 ///
 /// The text matrix is tracked across `BT`, `Td`, `TD`, `Tm`, `TL` and `T*`, and
 /// the content's own transform across `q`, `Q` and `cm`, so the position a show
@@ -640,7 +668,7 @@ pub struct Redaction {
 /// A stream that is not a content stream is copied through unchanged: the
 /// rewriter removes text, and it refuses to guess where the text is.
 #[must_use]
-pub fn strip_text_in_regions(content: &[u8], regions: &[(f64, f64, f64, f64)]) -> Redaction {
+pub fn strip_content_in_regions(content: &[u8], regions: &[(f64, f64, f64, f64)]) -> Redaction {
     let mut cur = Cursor::new(content);
     let mut out: Vec<u8> = Vec::new();
     // How much of the input has been copied out.
@@ -652,6 +680,17 @@ pub fn strip_text_in_regions(content: &[u8], regions: &[(f64, f64, f64, f64)]) -
     // The array nesting: a number inside `[...]` is not an operand of the
     // operator that follows the array.
     let mut depth = 0usize;
+    // The name of the last operand: `Do` takes one, and it is the name of
+    // the image the page draws.
+    let mut last_name: Option<String> = None;
+    // How many times each XObject is drawn, and how many of those draws
+    // fell inside a region.
+    //
+    // An image drawn twice — once under the redaction and once out of it —
+    // must keep its resource, or the draw that was KEPT would name an
+    // object the file no longer holds. So an image is removed only when
+    // EVERY draw of it was dropped.
+    let mut draws: Vec<(String, usize, usize)> = Vec::new();
     let mut tm = TextMatrix::IDENTITY;
     let mut leading = 0.0f64;
     let mut in_text = false;
@@ -691,7 +730,8 @@ pub fn strip_text_in_regions(content: &[u8], regions: &[(f64, f64, f64, f64)]) -
                 copy_to(&mut out, &cur, &mut copied);
             }
             b'/' => {
-                cur.skip_name();
+                let name = cur.read_name_token();
+                last_name = Some(String::from_utf8_lossy(&name).into_owned());
                 push_operand(&mut operands, &mut operand_start, Pending::Other, out.len());
                 copy_to(&mut out, &cur, &mut copied);
             }
@@ -805,6 +845,28 @@ pub fn strip_text_in_regions(content: &[u8], regions: &[(f64, f64, f64, f64)]) -
                     "Tj" | "TJ" => {
                         drop_it = in_text && inside_any(regions, tm.e, tm.f, ctm);
                     }
+                    "Do" => {
+                        // An image is drawn into the unit square, so the
+                        // square's own corners — put through the content's
+                        // transform — are where the image lands on the page.
+                        //
+                        // The draw is dropped when that box falls inside a
+                        // region, and the name is remembered so the caller
+                        // can leave the image out of the file altogether.
+                        if let Some(name) = last_name.clone() {
+                            let covered = image_inside_any(regions, ctm);
+                            drop_it = covered;
+                            match draws.iter_mut().find(|(drawn, _, _)| *drawn == name) {
+                                Some((_, total, dropped)) => {
+                                    *total = total.saturating_add(1);
+                                    if covered {
+                                        *dropped = dropped.saturating_add(1);
+                                    }
+                                }
+                                None => draws.push((name, 1, usize::from(covered))),
+                            }
+                        }
+                    }
                     _ => {}
                 }
                 if drop_it {
@@ -817,6 +879,7 @@ pub fn strip_text_in_regions(content: &[u8], regions: &[(f64, f64, f64, f64)]) -
                 copy_to(&mut out, &cur, &mut copied);
                 operands.clear();
                 operand_start = None;
+                last_name = None;
             }
             _ => {
                 cur.bump();
@@ -830,9 +893,15 @@ pub fn strip_text_in_regions(content: &[u8], regions: &[(f64, f64, f64, f64)]) -
     if copied < content.len() {
         out.extend_from_slice(content.get(copied..).unwrap_or(&[]));
     }
+    let removed_images: Vec<String> = draws
+        .into_iter()
+        .filter(|(_, total, dropped)| *total > 0 && total == dropped)
+        .map(|(name, _, _)| name)
+        .collect();
     Redaction {
         content: out,
         inverse_transform: invert(ctm),
+        removed_images,
     }
 }
 
@@ -884,6 +953,33 @@ fn inside_any(regions: &[(f64, f64, f64, f64)], x: f64, y: f64, ctm: Matrix6) ->
     regions
         .iter()
         .any(|(rx, ry, rw, rh)| px >= *rx && px <= rx + rw && py >= *ry && py <= ry + rh)
+}
+
+/// Whether an image drawn at the content's own transform falls in a region.
+///
+/// An image is drawn into the **unit square**, so the square's four corners —
+/// put through the content's transform — are where the image lands on the
+/// page. The image is removed when its box OVERLAPS a region: a redaction
+/// that left the fragment of an image outside the box would have left the
+/// secret in the file, and over-redacting a picture is a smaller harm than
+/// leaving one.
+fn image_inside_any(regions: &[(f64, f64, f64, f64)], ctm: Matrix6) -> bool {
+    let mut left = f64::INFINITY;
+    let mut right = f64::NEG_INFINITY;
+    let mut bottom = f64::INFINITY;
+    let mut top = f64::NEG_INFINITY;
+    for (x, y) in [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] {
+        let px = ctm[0] * x + ctm[2] * y + ctm[4];
+        let py = ctm[1] * x + ctm[3] * y + ctm[5];
+        left = left.min(px);
+        right = right.max(px);
+        bottom = bottom.min(py);
+        top = top.max(py);
+    }
+    regions.iter().any(|(rx, ry, rw, rh)| {
+        let (rx1, ry1) = (rx + rw, ry + rh);
+        left <= rx1 && right >= *rx && bottom <= ry1 && top >= *ry
+    })
 }
 
 /// A content-stream byte that begins a regular (non-delimiter, non-ws) token.
@@ -1792,6 +1888,58 @@ mod tests {
         } else {
             data.as_slice().to_vec()
         }
+    }
+
+    /// An image drawn under the region is removed from the content stream,
+    /// and its name is reported so the caller can leave it out of the file.
+    #[test]
+    fn an_image_under_the_region_is_removed_and_named() {
+        let content = b"q 200 0 0 100 10 50 cm /Im1 Do Q";
+        let out = strip_content_in_regions(content, &[(0.0, 40.0, 200.0, 120.0)]);
+        let text = String::from_utf8_lossy(&out.content).to_string();
+        assert!(!text.contains("Im1"), "the image draw is gone: {text}");
+        assert!(!text.contains("Do"), "the operator is gone with it: {text}");
+        assert_eq!(
+            out.removed_images,
+            vec!["Im1".to_string()],
+            "the image is named so the caller can leave it out of the file"
+        );
+    }
+
+    /// An image drawn OUTSIDE the region is kept, and it is not reported.
+    #[test]
+    fn an_image_outside_the_region_is_kept() {
+        let content = b"q 10 0 0 10 10 180 cm /Im2 Do Q";
+        let out = strip_content_in_regions(content, &[(0.0, 40.0, 200.0, 120.0)]);
+        let text = String::from_utf8_lossy(&out.content).to_string();
+        assert!(
+            text.contains("/Im2 Do"),
+            "the image draw is untouched: {text}"
+        );
+        assert!(
+            out.removed_images.is_empty(),
+            "nothing is reported as removed: {:?}",
+            out.removed_images
+        );
+    }
+
+    /// An image drawn TWICE — once under the region and once out of it —
+    /// must keep its resource, or the draw that was kept would name an object
+    /// the file no longer holds.
+    #[test]
+    fn an_image_drawn_outside_as_well_keeps_its_name() {
+        let content = b"q 200 0 0 100 10 50 cm /Im1 Do Q q 10 0 0 10 10 180 cm /Im1 Do Q";
+        let out = strip_content_in_regions(content, &[(0.0, 40.0, 200.0, 120.0)]);
+        let text = String::from_utf8_lossy(&out.content).to_string();
+        assert!(
+            text.contains("/Im1 Do"),
+            "the draw that was kept is still there: {text}"
+        );
+        assert!(
+            out.removed_images.is_empty(),
+            "the image is not reported as removed: {:?}",
+            out.removed_images
+        );
     }
 
     #[test]

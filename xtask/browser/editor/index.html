@@ -234,6 +234,7 @@
 
         // The session leg RELOADS the frame, so it runs after every leg
         // that holds the frame's document.
+        out.redactImage = await redactImageLeg(onlineDoc, onlineWin, "online");
         out.widthsLeg = await widthsLeg(onlineDoc, onlineWin, fixtureBytes, "online");
         out.extras = await extrasLeg(onlineDoc, onlineWin, fixtureBytes, "online");
         out.session = await sessionLeg(onlineDoc, onlineWin, "online");
@@ -663,6 +664,62 @@
           // The redacted text must be GONE from the file, not merely covered.
           stillCarriesText: carried.indexOf("Invoice total") >= 0,
           coversText: carried.indexOf("0 0 0 rg") >= 0,
+        };
+      }
+
+      /**
+       * Redact a region over an IMAGE, and check the image's bytes are gone
+       * from the file.
+       *
+       * A black box over a picture is not a redaction: the picture is still
+       * in the file, and anyone with a file reader - or anyone who undoes
+       * the box - has it. So the check reads the produced file and asks
+       * whether the image is in it at all.
+       */
+      async function redactImageLeg(doc, win, label) {
+        // A one-page document whose page is COVERED by an image, so any
+        // region on the page overlaps it.
+        const binary = atob("JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCAzMDAgMjAwXSAvQ29udGVudHMgNCAwIFIgL1Jlc291cmNlcyA8PCAvWE9iamVjdCA8PCAvSW0xIDUgMCBSID4+ID4+ID4+CmVuZG9iago0IDAgb2JqCjw8IC9MZW5ndGggODEgPj4Kc3RyZWFtCnEgMzAwIDAgMCAyMDAgMCAwIGNtIC9JbTEgRG8gUQpCVCAvRjEgMTIgVGYgMjAgMTYwIFRkIChJbnZvaWNlIHRvdGFsOiA5MDApIFRqIEVUCgplbmRzdHJlYW0KZW5kb2JqCjUgMCBvYmoKPDwgL1R5cGUgL1hPYmplY3QgL1N1YnR5cGUgL0ltYWdlIC9XaWR0aCA4IC9IZWlnaHQgNCAvQ29sb3JTcGFjZSAvRGV2aWNlUkdCIC9CaXRzUGVyQ29tcG9uZW50IDggL0xlbmd0aCAxNyA+PgpzdHJlYW0KU0VDUkVULVBJWEVMLURBVEEKZW5kc3RyZWFtCmVuZG9iagp4cmVmCjAgNgowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMDkgMDAwMDAgbiAKMDAwMDAwMDA1OCAwMDAwMCBuIAowMDAwMDAwMTE1IDAwMDAwIG4gCjAwMDAwMDAyNDUgMDAwMDAgbiAKMDAwMDAwMDM3NiAwMDAwMCBuIAp0cmFpbGVyCjw8IC9TaXplIDYgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjUzNgolJUVPRgo=");
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+        const file = new File([bytes], "image-page.pdf", { type: "application/pdf" });
+        const transfer = new DataTransfer();
+        transfer.items.add(file);
+        const input = doc.getElementById("selis-open-file");
+        input.files = transfer.files;
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+        await waitFor(
+          () => statusText(doc).startsWith("Opened image-page.pdf"),
+          30_000,
+          "the document to be opened (" + label + ")",
+        );
+
+        // The region is dragged over the line of TEXT, so the check can
+        // ask for both things at once: the text under the region is gone,
+        // and the image the region overlaps is gone.
+        const line = doc.querySelector(".selis-editor-line");
+        if (!line) throw new Error("the document drew no clickable text");
+        useTool(doc, "redact");
+        const canvas = doc.querySelector("canvas");
+        if (!canvas) throw new Error("the document drew no canvas");
+        const text = line.getBoundingClientRect();
+        const box = canvas.getBoundingClientRect();
+        await dragOnCanvas(
+          doc,
+          { x: text.left - box.left - 4, y: text.top - box.top - 4 },
+          { x: text.right - box.left + 4, y: text.bottom - box.top + 4 },
+        );
+        await waitForSettled(doc, "Redacted", "the region to be redacted (" + label + ")");
+
+        const produced = await download(doc, win);
+        const carried = produced.carriesText;
+        return {
+          status: statusText(doc),
+          bytes: produced.bytes,
+          // The image itself: its resource, and its pixels.
+          carriesImage: carried.indexOf("/Subtype /Image") >= 0,
+          carriesPixels: carried.indexOf("SECRET-PIXEL-DATA") >= 0,
+          stillCarriesText: carried.indexOf("Invoice total") >= 0,
         };
       }
 

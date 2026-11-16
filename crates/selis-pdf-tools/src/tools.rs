@@ -3701,7 +3701,7 @@ fn copy_page_inner(
         .iter()
         .map(|r| Ref::new(remap.get(&r.num).copied().unwrap_or(r.num), r.gen))
         .collect();
-    let new_resources = materialize_resources(merged, src, doc, resources, budget, g)?;
+    let new_resources = materialize_resources(merged, src, doc, resources, &[], budget, g)?;
     // Page order must not change how a page is read, so a plain copy keeps
     // its rotation. The rotate operation supplies its own computed value and
     // opts out to avoid writing `/Rotate` twice.
@@ -3726,10 +3726,66 @@ fn materialize_resources(
     src: &[u8],
     doc: &selis_pdf_cos::Doc,
     resources: Option<Obj>,
+    removed_images: &[String],
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
 ) -> Result<Option<Ref>, String> {
-    materialize_object(merged, src, doc, resources, budget, g)
+    if removed_images.is_empty() {
+        return materialize_object(merged, src, doc, resources, budget, g);
+    }
+    // The page's resources, one entry at a time, so the images that were
+    // redacted away can be LEFT OUT.
+    //
+    // They are left out, not just undrawn: a redaction that covers a picture
+    // and keeps the picture in the file has not removed anything a reader
+    // with a file reader could not have. The bytes never reach the output.
+    let Some(value) = resources else {
+        return Ok(None);
+    };
+    let resolved = match &value {
+        Obj::Ref(r) => resolve_ref_obj(src, doc, *r, budget, g)?,
+        other => other.clone(),
+    };
+    let Obj::Dict(pairs) = resolved else {
+        return materialize_object(merged, src, doc, Some(value), budget, g);
+    };
+    let mut out: Vec<(selis_bytes::Bytes, Obj)> = Vec::with_capacity(pairs.len());
+    for (key, entry) in &pairs {
+        if key.as_slice() != b"XObject" {
+            let carried = materialize_object(merged, src, doc, Some(entry.clone()), budget, g)?;
+            out.push((key.clone(), carried.map_or(Obj::Null, Obj::Ref)));
+            continue;
+        }
+        let xobjects: Vec<(selis_bytes::Bytes, Obj)> = match entry {
+            Obj::Ref(r) => match resolve_ref_obj(src, doc, *r, budget, g)? {
+                Obj::Dict(items) => items,
+                _ => Vec::new(),
+            },
+            Obj::Dict(items) => items.clone(),
+            _ => Vec::new(),
+        };
+        let mut kept: Vec<(selis_bytes::Bytes, Obj)> = Vec::with_capacity(xobjects.len());
+        for (name, xobject) in xobjects {
+            if removed_images
+                .iter()
+                .any(|gone| gone.as_bytes() == name.as_slice())
+            {
+                continue;
+            }
+            let carried = materialize_object(merged, src, doc, Some(xobject.clone()), budget, g)?;
+            kept.push((name, carried.map_or(Obj::Null, Obj::Ref)));
+        }
+        // The kept entries are ALREADY copies, so the dictionary is written
+        // as it stands. Handing it back to the copier would copy the copies'
+        // numbers out of the SOURCE document - and bring a stream nobody
+        // asked for along with them.
+        let num = merged.allocate();
+        merged.add_object(num, Obj::Dict(kept));
+        out.push((key.clone(), Obj::Ref(Ref::new(num, 0))));
+    }
+    let num = merged.allocate();
+    merged.add_object(num, Obj::Dict(out));
+    Ok(Some(Ref::new(num, 0)))
 }
 
 /// Carry an arbitrary page-level value (resources, annotations, group) into
@@ -4220,8 +4276,9 @@ fn copy_page_redacted(
     // The inverse of the content's own transform, so a black box drawn in the
     // page's space lands where the reader pointed even on a page whose
     // content is scaled.
-    let redaction = selis_pdf_edit::strip_text_in_regions(&joined, rects);
+    let redaction = selis_pdf_edit::strip_content_in_regions(&joined, rects);
     let inverse = redaction.inverse_transform;
+    let removed_images = redaction.removed_images;
     let mut rebuilt = redaction.content;
     // Append black rects over the regions.
     let mut cb = selis_pdf_cos::doc_writer::ContentBuilder::new();
@@ -4263,7 +4320,8 @@ fn copy_page_redacted(
             data: selis_bytes::Bytes::from(rebuilt),
         },
     );
-    let new_resources = materialize_resources(merged, src, &doc, resources_ref, budget, g)?;
+    let new_resources =
+        materialize_resources(merged, src, &doc, resources_ref, &removed_images, budget, g)?;
     let mut extra = rotate_extra(rotate);
     if let Some(annots) = materialize_annotations(merged, src, &doc, annots, budget, g)? {
         extra.push((b"Annots".to_vec(), annots));
@@ -5231,7 +5289,7 @@ pub(crate) fn nup(path: &str, options: NupOptions, output: &str) -> CliResult<Ve
                 .map(|r| Ref::new(remap.get(&r.num).copied().unwrap_or(r.num), r.gen))
                 .collect();
             let new_resources =
-                materialize_resources(&mut out, &src, &doc, resources, &budget, &mut g)
+                materialize_resources(&mut out, &src, &doc, resources, &[], &budget, &mut g)
                     .map_err(|e| CliError(format!("{path}: page resources: {e}")))?;
             // Bakes `/Rotate` into the form: the sheet itself stays upright.
             let form_matrix = resize_matrix(visible, rotation, display.0, display.1, false);
@@ -6010,7 +6068,7 @@ mod tests {
     #[test]
     fn the_rewriter_drops_the_text_inside_a_region_and_keeps_the_rest() {
         let content = b"BT /F1 12 Tf 20 160 Td (Inside) Tj 20 40 Td (Outside) Tj ET";
-        let out = selis_pdf_edit::strip_text_in_regions(content, &[(10.0, 150.0, 100.0, 20.0)]);
+        let out = selis_pdf_edit::strip_content_in_regions(content, &[(10.0, 150.0, 100.0, 20.0)]);
         let text = String::from_utf8_lossy(&out.content).to_string();
         assert!(
             !text.contains("Inside"),
@@ -6038,7 +6096,7 @@ mod tests {
         // The content is scaled by half: the text is at (10, 80) in the PAGE's
         // space, and at (20, 160) in the content's own.
         let content = b"q 0.5 0 0 0.5 0 0 cm BT /F1 12 Tf 20 160 Td (Inside) Tj ET Q";
-        let out = selis_pdf_edit::strip_text_in_regions(content, &[(0.0, 70.0, 100.0, 20.0)]);
+        let out = selis_pdf_edit::strip_content_in_regions(content, &[(0.0, 70.0, 100.0, 20.0)]);
         let text = String::from_utf8_lossy(&out.content).to_string();
         assert!(
             !text.contains("Inside"),
@@ -6058,7 +6116,7 @@ mod tests {
     #[test]
     fn the_rewriter_reports_the_inverse_of_a_trailing_transform() {
         let content = b"0.5 0 0 0.5 0 0 cm BT /F1 12 Tf 20 160 Td (Inside) Tj ET";
-        let out = selis_pdf_edit::strip_text_in_regions(content, &[(0.0, 70.0, 100.0, 20.0)]);
+        let out = selis_pdf_edit::strip_content_in_regions(content, &[(0.0, 70.0, 100.0, 20.0)]);
         let text = String::from_utf8_lossy(&out.content).to_string();
         assert!(
             !text.contains("Inside"),
@@ -6190,6 +6248,149 @@ endobj
         path
     }
 
+    /// A one-page PDF whose page draws TWO images: one under the region the
+    /// redaction covers, and one out of it.
+    ///
+    /// The first image's pixels are spelled out in the fixture, so the test
+    /// can ask whether the bytes are still in the file.
+    fn image_page_pdf() -> std::path::PathBuf {
+        let path = std::env::temp_dir().join("selis-redact-image.pdf");
+        let secret: &[u8] = b"SECRET-PIXEL-DATA";
+        let public: &[u8] = b"PUBLICPIXELDATA";
+        // The secret image fills the page's middle; the public one is a
+        // stamp in the top-left corner, well outside the region.
+        let content = b"q 200 0 0 100 10 50 cm /Im1 Do Q q 10 0 0 10 10 180 cm /Im2 Do Q";
+        let mut objects: Vec<String> = vec![
+            "1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+".to_string(),
+            "2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+".to_string(),
+            "3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Resources << /XObject << /Im1 5 0 R /Im2 6 0 R >> >> >>
+endobj
+".to_string(),
+            format!(
+                "4 0 obj
+<< /Length {} >>
+stream
+{}
+endstream
+endobj
+",
+                content.len(),
+                String::from_utf8_lossy(content),
+            ),
+            format!(
+                "5 0 obj
+<< /Type /XObject /Subtype /Image /Width 8 /Height 4 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Length {} >>
+stream
+{}
+endstream
+endobj
+",
+                secret.len(),
+                String::from_utf8_lossy(secret),
+            ),
+            format!(
+                "6 0 obj
+<< /Type /XObject /Subtype /Image /Width 8 /Height 4 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Length {} >>
+stream
+{}
+endstream
+endobj
+",
+                public.len(),
+                String::from_utf8_lossy(public),
+            ),
+        ];
+        let mut out = b"%PDF-1.4
+"
+        .to_vec();
+        let mut offsets = Vec::new();
+        for object in &mut objects {
+            offsets.push(out.len());
+            out.extend_from_slice(object.as_bytes());
+        }
+        let xref = out.len();
+        let size = objects.len() + 1;
+        out.extend_from_slice(
+            format!(
+                "xref
+0 {size}
+"
+            )
+            .as_bytes(),
+        );
+        out.extend_from_slice(
+            b"0000000000 65535 f 
+",
+        );
+        for offset in &offsets {
+            out.extend_from_slice(
+                format!(
+                    "{offset:010} 00000 n 
+"
+                )
+                .as_bytes(),
+            );
+        }
+        out.extend_from_slice(
+            format!(
+                "trailer
+<< /Size {size} /Root 1 0 R >>
+startxref
+{xref}
+%%EOF
+"
+            )
+            .as_bytes(),
+        );
+        std::fs::write(&path, out).expect("the fixture");
+        path
+    }
+
+    /// A redaction that covers an IMAGE must take the image's bytes out of
+    /// the file.
+    ///
+    /// A black box over a picture is not a redaction: the picture is still in
+    /// the file, and anyone with a file reader - or anyone who undoes the
+    /// box - has it. So the draw is dropped AND the image is left out of the
+    /// resources, and the bytes never reach the output.
+    #[test]
+    fn a_redaction_of_an_image_removes_the_image_from_the_file() {
+        let src = image_page_pdf();
+        let out = std::env::temp_dir().join("selis-redact-image-out.pdf");
+        let verification = super::redact(
+            &src.to_string_lossy(),
+            &[(0.0, 40.0, 200.0, 120.0)],
+            Some("0"),
+            &out.to_string_lossy(),
+        )
+        .expect("the redaction");
+        assert_eq!(verification.pages_out, 1);
+        let produced = std::fs::read(&out).expect("the output");
+        let text = String::from_utf8_lossy(&produced).to_string();
+        assert!(
+            !text.contains("SECRET-PIXEL-DATA"),
+            "the redacted image's pixels are not in the file: {text}"
+        );
+        assert!(
+            !text.contains("/Im1"),
+            "the redacted image's resource is not in the file: {text}"
+        );
+        // The image that was NOT under the region survives: a redaction
+        // takes away what it covers, and nothing else.
+        assert!(
+            text.contains("PUBLICPIXELDATA"),
+            "the other image is still in the file: {text}"
+        );
+        let _ = std::fs::remove_file(&out);
+    }
+
     /// A one-page PDF whose content is three streams: a `q <matrix> cm`, the
     /// text, and the `Q` that closes it.
     fn split_content_pdf() -> std::path::PathBuf {
@@ -6236,7 +6437,7 @@ endobj
     #[test]
     fn the_rewriter_keeps_a_show_arrays_brackets() {
         let content = b"BT /F1 12 Tf 20 160 Td [(Kept) -100 (Text)] TJ ET";
-        let out = selis_pdf_edit::strip_text_in_regions(content, &[(0.0, 0.0, 10.0, 10.0)]);
+        let out = selis_pdf_edit::strip_content_in_regions(content, &[(0.0, 0.0, 10.0, 10.0)]);
         let text = String::from_utf8_lossy(&out.content).to_string();
         assert!(text.contains('['), "the array keeps its bracket: {text}");
         assert!(text.contains(']'), "the array keeps its bracket: {text}");
@@ -6248,7 +6449,7 @@ endobj
     #[test]
     fn the_rewriter_follows_a_text_matrix() {
         let content = b"BT /F1 12 Tf 1 0 0 1 20 160 Tm (Inside) Tj ET";
-        let out = selis_pdf_edit::strip_text_in_regions(content, &[(10.0, 150.0, 100.0, 20.0)]);
+        let out = selis_pdf_edit::strip_content_in_regions(content, &[(10.0, 150.0, 100.0, 20.0)]);
         let text = String::from_utf8_lossy(&out.content).to_string();
         assert!(
             !text.contains("Inside"),

@@ -7503,6 +7503,27 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
         return Err("the redacted region is not covered by an opaque box".into());
     }
 
+    // A REDACTION OF AN IMAGE must take the image out of the file, not cover
+    // it. A black box over a picture leaves the picture in the file, and
+    // anyone with a file reader has it.
+    let redact_image = report
+        .get("redactImage")
+        .and_then(Json::as_object)
+        .ok_or_else(|| "the page reported no redactImage leg (redactImage = None)".to_string())?;
+    if redact_image.get("carriesImage").and_then(Json::as_bool) != Some(false) {
+        return Err(
+            "the redacted image is still in the file; a redaction that only covers an image is \
+             not a redaction"
+                .into(),
+        );
+    }
+    if redact_image.get("carriesPixels").and_then(Json::as_bool) != Some(false) {
+        return Err("the redacted image's pixels are still in the file".into());
+    }
+    if redact_image.get("stillCarriesText").and_then(Json::as_bool) != Some(false) {
+        return Err("the text under the redacted region is still in the file".into());
+    }
+
     // The page's own size, the document's properties, and the form's fields.
     let crop = report
         .get("crop")
