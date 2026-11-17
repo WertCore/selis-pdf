@@ -74,7 +74,10 @@ pub use outline::{
 pub use pdfdoc_encoding::{decode as pdfdoc_decode, PDF_DOC_ENCODING};
 pub use recover::{Recovery, RecoveryConfidence, TextRecovery};
 pub use standard14::{is_standard, width as standard14_width, FontMetrics, GlyphWidth, ALL_FONTS};
-pub use subset::{add_glyph, subset_ttf, subset_ttf_named, GlyphSet, SubsetName};
+pub use subset::{
+    add_glyph, subset_ttf, subset_ttf_named, subset_ttf_with_map, GlyphSet, SubsetName,
+    SubsetResult,
+};
 pub use type1::{
     glyph_count as type1_glyph_count, glyph_name as type1_glyph_name, parse as parse_type1,
     Type1Font,

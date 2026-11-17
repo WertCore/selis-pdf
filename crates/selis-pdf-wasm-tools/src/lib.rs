@@ -107,6 +107,7 @@ enum Op {
     XfdfExport,
     FlattenAnnotations,
     FillFormData,
+    SubsetFonts,
 }
 
 impl Op {
@@ -152,6 +153,7 @@ impl Op {
             38 => Some(Self::XfdfExport),
             39 => Some(Self::FlattenAnnotations),
             40 => Some(Self::FillFormData),
+            41 => Some(Self::SubsetFonts),
             _ => None,
         }
     }
@@ -575,6 +577,15 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
                 name: format!("{stem}-compressed.pdf"),
                 verification,
                 over_target,
+            }]
+        }
+        Op::SubsetFonts => {
+            let (_report, verification) = selis_pdf_tools::subset_fonts("in/0", "out.pdf")?;
+            vec![Produced {
+                output: "out.pdf".to_string(),
+                name: format!("{stem}-subset.pdf"),
+                verification,
+                over_target: false,
             }]
         }
         Op::Attachments => return run_attachments(&stem, first_input_len),
@@ -1985,8 +1996,8 @@ mod tests {
             "the XMP stream is removed"
         );
 
-        // Op 40 fills a form from form-data, so the probe moves past it.
-        let response = run_request(&request(41, b"", &[("doc.pdf", &pdf)]));
+        // Op 41 subsets fonts, so the unknown-op probe moves past it.
+        let response = run_request(&request(42, b"", &[("doc.pdf", &pdf)]));
         assert!(error_text(&response).contains("unknown tool operation"));
     }
 
@@ -2638,6 +2649,24 @@ mod tests {
     }
 
     #[test]
+    fn subset_fonts_operation_returns_a_smaller_verified_pdf() {
+        let pdf = embedded_font_pdf();
+        let in_len = pdf.len();
+        let response = run_request(&request(41, b"{}", &[("doc.pdf", &pdf)]));
+        let (status, message, outputs) = parse_response(&response);
+        assert_eq!(status, 0, "subset fonts failed: {message}");
+        assert_eq!(message["verdict"], "ok");
+        assert_eq!(outputs[0].0, "doc-subset.pdf");
+        assert_eq!(&outputs[0].1[0..5], b"%PDF-");
+        assert!(
+            outputs[0].1.len() < in_len,
+            "subset {} < {} bytes",
+            outputs[0].1.len(),
+            in_len
+        );
+    }
+
+    #[test]
     fn compress_rejects_an_unknown_level() {
         let pdf = multipage_pdf(1);
         let response = run_request(&request(11, br#"{"level":"bogus"}"#, &[("doc.pdf", &pdf)]));
@@ -2859,6 +2888,52 @@ mod tests {
                 "trailer\n<< /Size {size} /Root 1 0 R /Info 4 0 R >>\nstartxref\n{xref}\n%%EOF\n"
             )
             .as_bytes(),
+        );
+        out
+    }
+
+    /// A one-page PDF with a real embedded TrueType program (Liberation Sans)
+    /// showing a short WinAnsi string. `subset_fonts` must shrink this a lot.
+    fn embedded_font_pdf() -> Vec<u8> {
+        const TTF: &[u8] = include_bytes!("../../../assets/fonts/LiberationSans-Regular.ttf");
+        let content = b"BT /F1 24 Tf 72 700 Td (Hello, fonts!) Tj ET\n";
+        let mut objects: Vec<Vec<u8>> = Vec::new();
+        objects.push(b"<< /Type /Catalog /Pages 2 0 R >>".to_vec());
+        objects.push(b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec());
+        objects.push(b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>".to_vec());
+        let mut obj4 = format!("<< /Length {} >>\nstream\n", content.len()).into_bytes();
+        obj4.extend_from_slice(content);
+        obj4.extend_from_slice(b"\nendstream");
+        objects.push(obj4);
+        objects.push(b"<< /Type /Font /Subtype /TrueType /BaseFont /ABCDEE+LiberationSans /Encoding /WinAnsiEncoding /FontDescriptor << /FontName /ABCDEE+LiberationSans /Flags 4 /FontFile2 6 0 R >> >>".to_vec());
+        let mut obj6 = format!(
+            "<< /Length {} /Length1 {} >>\nstream\n",
+            TTF.len(),
+            TTF.len()
+        )
+        .into_bytes();
+        obj6.extend_from_slice(TTF);
+        obj6.extend_from_slice(b"\nendstream");
+        objects.push(obj6);
+
+        let mut out = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::new();
+        for object in &objects {
+            offsets.push(out.len());
+            out.extend_from_slice(format!("{} 0 obj\n", offsets.len()).as_bytes());
+            out.extend_from_slice(object);
+            out.extend_from_slice(b"\nendobj\n");
+        }
+        let xref = out.len();
+        let size = offsets.len().saturating_add(1);
+        out.extend_from_slice(format!("xref\n0 {size}\n").as_bytes());
+        out.extend_from_slice(b"0000000000 65535 f \n");
+        for offset in &offsets {
+            out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        out.extend_from_slice(
+            format!("trailer\n<< /Size {size} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n")
+                .as_bytes(),
         );
         out
     }

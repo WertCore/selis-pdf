@@ -56,6 +56,7 @@ pub mod runtime;
 pub mod security;
 #[cfg(feature = "sign")]
 pub mod sign;
+pub mod subset_fonts;
 #[cfg(feature = "text")]
 pub mod text;
 mod tools;
@@ -86,13 +87,14 @@ pub use metadata::{metadata_report, MetadataReport};
 pub use outline::{set_outline, OutlineEntry, OutlineOptions};
 pub use overlay::add_image_watermark;
 pub use privacy::{privacy_report, PrivacyFinding, PrivacyReport};
-pub use selis_pdf_optimize::CompressionLevel;
+pub use selis_pdf_optimize::{CompressionLevel, SubsetError, SubsetReport};
 #[cfg(feature = "sign")]
 pub use sign::{
     sign_pdf, signature_report, signature_report_bytes, stamp_pdf, DigitalOptions, DigitalReport,
     SignatureReport, SignaturesReport, TrustReport, VisualLine, VisualOptions, VisualReport,
     VisualStroke,
 };
+pub use subset_fonts::subset_fonts;
 #[cfg(feature = "text")]
 pub use text::{
     extract_docx, extract_docx_with_images, extract_pptx, extract_pptx_with_images, extract_tables,

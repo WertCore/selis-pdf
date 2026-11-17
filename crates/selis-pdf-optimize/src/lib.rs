@@ -15,10 +15,22 @@
 //! never opens). Text, annotations, forms and outlines are not touched at
 //! all — the pass only ever edits an image stream's own dictionary.
 //!
+//! The second pass, [`font_subset`], is a *lossless* whole-document rewrite:
+//! it finds the TrueType programs actually used by the document's text,
+//! subsets each to the referenced glyphs through `selis-font`, rewrites the
+//! font streams, and returns a new document. It fails loudly (typed
+//! [`font_subset::SubsetError`]) on unsupported programs or when the rewrite
+//! would not shrink the file; it never silently passes an unoptimised document
+//! through. See the module docs for the exact supported font shapes.
+//!
 //! Shared by the CLI, the browser tools chunk and any later desktop shell:
 //! nothing here names a filesystem or a browser API.
 
 #![forbid(unsafe_code)]
+
+pub mod font_subset;
+
+pub use font_subset::{subset_fonts, SubsetError, SubsetReport};
 
 use selis_bytes::Bytes;
 use selis_pdf_cos::Obj;

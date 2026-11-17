@@ -1885,7 +1885,9 @@ version = "0.1.0"
 dependencies = [
  "selis-bytes",
  "selis-error",
+ "selis-font",
  "selis-image",
+ "selis-pdf-content",
  "selis-pdf-cos",
  "selis-pdf-filter",
  "selis-sandbox",

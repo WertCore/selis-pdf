@@ -32,6 +32,23 @@ pub struct GlyphSet {
     pub keep: Vec<u16>,
 }
 
+/// The result of subsetting: the new font program plus the old→new glyph-id
+/// map.
+///
+/// The subsetter compacts the kept glyphs to a dense 0-based range (the keep
+/// set, plus composite components, sorted). `gid_map` records that
+/// renumbering so a caller whose codes *are* glyph ids — an Identity-H CIDFont
+/// with `/CIDToGIDMap /Identity` — can rebuild a correct `/CIDToGIDMap` stream
+/// instead of assuming the ids survived unchanged.
+#[derive(Debug, Clone)]
+pub struct SubsetResult {
+    /// The subset font program, ready to re-embed as a `/FontFile2` stream.
+    pub font: Bytes,
+    /// Original glyph id → glyph id in `font`. Every kept id (including
+    /// transitively added composite components) is present.
+    pub gid_map: BTreeMap<u16, u16>,
+}
+
 /// Subset a TrueType font to the glyphs in `keep`, transitively including
 /// composite components.
 ///
@@ -47,6 +64,28 @@ pub struct GlyphSet {
 /// `BUDGET_BYTES` when exhausted. A broken font → `Ok(None)`.
 pub fn subset_ttf(data: &Bytes, keep: &GlyphSet, g: &mut BudgetGuard<'_>) -> Result<Option<Bytes>> {
     subset_ttf_named(data, keep, None, g)
+}
+
+/// Subset a TrueType font and also return the old→new glyph-id map.
+///
+/// Identical to [`subset_ttf`] except the renumbering is exposed. Needed when
+/// re-embedding into a document whose text codes are glyph ids (Identity-H
+/// CID fonts): the new ids must be written into a `/CIDToGIDMap` stream.
+///
+/// # Budget
+///
+/// Charges the output font bytes (document-derived; the output is bounded by
+/// the input).
+///
+/// # Malformed Input
+///
+/// `BUDGET_BYTES` when exhausted. A broken font or CFF font → `Ok(None)`.
+pub fn subset_ttf_with_map(
+    data: &Bytes,
+    keep: &GlyphSet,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Option<SubsetResult>> {
+    Ok(subset_impl(data, keep, None, g)?.map(|(font, gid_map)| SubsetResult { font, gid_map }))
 }
 
 /// The name a subset is published under (SL-3.FONT.10).
@@ -180,6 +219,17 @@ pub fn subset_ttf_named(
     name: Option<SubsetName>,
     g: &mut BudgetGuard<'_>,
 ) -> Result<Option<Bytes>> {
+    Ok(subset_impl(data, keep, name, g)?.map(|(font, _)| font))
+}
+
+/// The shared implementation. Returns the subset bytes together with the
+/// original→new glyph-id map so CID re-embedding can rebuild its code mapping.
+fn subset_impl(
+    data: &Bytes,
+    keep: &GlyphSet,
+    name: Option<SubsetName>,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Option<(Bytes, BTreeMap<u16, u16>)>> {
     let font = match FontRef::new(data.as_slice()) {
         Ok(f) => f,
         Err(_) => return Ok(None),
@@ -247,7 +297,12 @@ pub fn subset_ttf_named(
             let start = usize::try_from(start).unwrap_or(0);
             let end = usize::try_from(end).unwrap_or(0);
             if let Some(slice) = glyf.get(start..end) {
-                new_glyf.extend_from_slice(slice);
+                let mut glyph = slice.to_vec();
+                // Composite glyphs store their components' ORIGINAL glyph ids.
+                // The subset compacts ids, so those fields must be rewritten
+                // or the component points at the wrong (or a missing) glyph.
+                renumber_composite_components(&mut glyph, &renumber);
+                new_glyf.extend_from_slice(&glyph);
             }
         }
     }
@@ -312,7 +367,7 @@ pub fn subset_ttf_named(
     let output = assemble_sfnt(&tables, g)?;
 
     let patched = patch_checksum(&output);
-    Ok(Some(Bytes::copy_from_slice(&patched)))
+    Ok(Some((Bytes::copy_from_slice(&patched), renumber)))
 }
 
 /// Merge a new glyph into an existing subset font (ADR-P0024 editing path).
@@ -663,6 +718,39 @@ fn loca_offset(loca: &[u8], gid: u16, is_short: bool) -> u32 {
     }
 }
 
+/// Rewrite the component glyph ids inside a composite glyph to their subset
+/// ids. A non-composite glyph (or one too short to hold a component record) is
+/// left alone. The byte length never changes, so `loca` offsets stay valid.
+fn renumber_composite_components(glyph: &mut [u8], renumber: &BTreeMap<u16, u16>) {
+    if read_i16_at(glyph, 0) != -1 {
+        return;
+    }
+    let mut pos = 10usize; // numberOfContours(2) + bbox(8)
+    loop {
+        let flags = read_u16_at(glyph, pos);
+        let component_pos = pos.saturating_add(2);
+        let old = read_u16_at(glyph, component_pos);
+        let new = renumber.get(&old).copied().unwrap_or(0); // .notdef fallback
+        set_u16(glyph, component_pos, new);
+        pos = component_pos.saturating_add(2);
+        if flags & 0x0001 != 0 {
+            pos = pos.saturating_add(4); // word args
+        } else {
+            pos = pos.saturating_add(2); // byte args
+        }
+        if flags & 0x0008 != 0 {
+            pos = pos.saturating_add(2);
+        } else if flags & 0x0040 != 0 {
+            pos = pos.saturating_add(4);
+        } else if flags & 0x0080 != 0 {
+            pos = pos.saturating_add(8);
+        }
+        if flags & 0x0020 == 0 {
+            break; // no more components
+        }
+    }
+}
+
 /// Add composite components to the keep set.
 fn composite_closure(
     glyf: &[u8],
@@ -928,6 +1016,23 @@ mod tests {
     }
 
     #[test]
+    fn subset_with_map_reports_the_renumbering() {
+        let mut g = guard();
+        let data = Bytes::copy_from_slice(include_bytes!("../tests/fixtures/mini.ttf"));
+        // Keep A (gid 1) only; .notdef (gid 0) is always added. The subset's
+        // dense ids are 0 (.notdef) and 1 (A).
+        let result = subset_ttf_with_map(&data, &GlyphSet { keep: vec![1] }, &mut g)
+            .expect("subset")
+            .expect("font");
+        assert_eq!(result.gid_map.get(&0), Some(&0));
+        assert_eq!(result.gid_map.get(&1), Some(&1));
+        assert!(!result.gid_map.contains_key(&2));
+        let font = FontRef::new(result.font.as_slice()).expect("parse subset");
+        let met = font.metrics(Size::unscaled(), LocationRef::default());
+        assert_eq!(met.glyph_count, 2);
+    }
+
+    #[test]
     fn composite_components_are_transitively_kept() {
         let mut g = guard();
         let data = Bytes::copy_from_slice(include_bytes!("../tests/fixtures/composite.ttf"));
@@ -943,6 +1048,32 @@ mod tests {
             .expect("outline")
             .expect("gid 2 (B)");
         assert_eq!(b.bbox.expect("bbox"), [0.0, 0.0, 1400.0, 600.0]);
+    }
+
+    /// A composite glyph whose components shift to lower ids must have those
+    /// component references rewritten, or its outline breaks in the subset.
+    #[test]
+    fn composite_component_ids_are_renumbered() {
+        let mut g = guard();
+        let data = Bytes::copy_from_slice(include_bytes!(
+            "../../../corpus/fixtures/fonts/NotoSansDevanagari-Regular.ttf"
+        ));
+        let result = subset_ttf_with_map(&data, &GlyphSet { keep: vec![56, 32] }, &mut g)
+            .expect("subset")
+            .expect("font");
+        for old_gid in [56u16, 32u16] {
+            let new_gid = result.gid_map.get(&old_gid).copied().expect("kept id");
+            let original = outline_glyph(&data, old_gid, &mut g)
+                .expect("outline original")
+                .expect("original glyph");
+            let subset = outline_glyph(&result.font, new_gid, &mut g)
+                .expect("outline subset")
+                .expect("subset glyph");
+            assert_eq!(
+                original.commands, subset.commands,
+                "gid {old_gid} keeps its outline after renumbering to {new_gid}"
+            );
+        }
     }
 
     #[test]

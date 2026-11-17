@@ -1,6 +1,6 @@
 ﻿[package]
 name = "selis-pdf-optimize"
-description = "Document optimisation passes shared by the CLI, desktop and browser tools: lossy image downsample/re-encode for the Compress tool's level/target tiers."
+description = "Document optimisation passes shared by the CLI, desktop and browser tools: lossy image downsample/re-encode for the Compress tool's level/target tiers, and TrueType font subsetting."
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -23,4 +23,6 @@ selis-bytes = { workspace = true }
 selis-sandbox = { workspace = true }
 selis-pdf-cos = { workspace = true }
 selis-pdf-filter = { workspace = true }
+selis-pdf-content = { workspace = true }
+selis-font = { workspace = true }
 selis-image = { workspace = true }

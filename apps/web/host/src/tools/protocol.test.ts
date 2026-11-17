@@ -128,6 +128,11 @@ describe("encodeToolRequest", () => {
 		expect(readU32(encodeToolRequest({ op: "privacy", files }), 8)).toBe(32);
 	});
 
+	it("encodes the font-subset operation at 41", () => {
+		const files = [{ name: "a.pdf", bytes: new Uint8Array([0x25]) }];
+		expect(readU32(encodeToolRequest({ op: "subset_fonts", files }), 8)).toBe(41);
+	});
+
 	it("encodes the batch queue at 28", () => {
 		const files = [
 			{ name: "a.pdf", bytes: new Uint8Array([0x25]) },
