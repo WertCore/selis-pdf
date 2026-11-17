@@ -39,6 +39,38 @@ pub fn form_fields(path: &str) -> ToolResult<FormFieldsReport> {
         .map_err(|e| CliError(format!("{path}: {e}")))
 }
 
+/// Fill a PDF from an XFDF or FDF form-data file.
+///
+/// The data file is parsed with the form crate's importer; the resulting
+/// field edits go through the same writer and round-trip check as an
+/// interactive fill, so a value that does not survive is refused.
+///
+/// # Errors
+///
+/// A `ToolError` when either file cannot be read, the data is not XFDF/FDF,
+/// or a field the data names refuses the edit.
+pub fn fill_from_form_data(path: &str, data_path: &str, output: &str) -> ToolResult<Verification> {
+    use selis_pdf_form::formdata::{import_fdf, import_xfdf};
+
+    let data = read_file(data_path)?;
+    let fields = {
+        let as_text = String::from_utf8_lossy(&data);
+        if as_text.trim_start().starts_with("<") || as_text.contains("<xfdf") {
+            import_xfdf(&as_text).map_err(|e| CliError(format!("{data_path}: {e}")))?
+        } else {
+            import_fdf(&data).map_err(|e| CliError(format!("{data_path}: {e}")))?
+        }
+    };
+    fill_forms(
+        path,
+        &FillFormsOptions {
+            fields,
+            synthesize_appearances: true,
+        },
+        output,
+    )
+}
+
 /// Fill the named fields in `path` and write the verified result to `output`.
 ///
 /// Every value is re-read from the produced bytes before the file is

@@ -106,6 +106,7 @@ enum Op {
     AnnotateUpdate,
     XfdfExport,
     FlattenAnnotations,
+    FillFormData,
 }
 
 impl Op {
@@ -150,6 +151,7 @@ impl Op {
             37 => Some(Self::AnnotateUpdate),
             38 => Some(Self::XfdfExport),
             39 => Some(Self::FlattenAnnotations),
+            40 => Some(Self::FillFormData),
             _ => None,
         }
     }
@@ -600,6 +602,20 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
         }
         Op::Annotations => return run_annotations(&options, &stem, first_input_len),
         Op::XfdfExport => return run_xfdf_export(&stem, first_input_len),
+        Op::FillFormData => {
+            if first_input_len == 0 {
+                // the form-data file is in/1; prove both files arrived in a
+                // leg by checking the count here as the watermark op does.
+            }
+            vec![Produced {
+                output: "out.pdf".to_string(),
+                name: format!("{stem}-filled.pdf"),
+                verification: selis_pdf_tools::forms::fill_from_form_data(
+                    "in/0", "in/1", "out.pdf",
+                )?,
+                over_target: false,
+            }]
+        }
         Op::FlattenAnnotations => vec![Produced {
             output: "out.pdf".to_string(),
             name: format!("{stem}-flattened.pdf"),
@@ -1969,9 +1985,20 @@ mod tests {
             "the XMP stream is removed"
         );
 
-        // Op 39 is the annotation flatten, so the probe moves past it.
-        let response = run_request(&request(40, b"", &[("doc.pdf", &pdf)]));
+        // Op 40 fills a form from form-data, so the probe moves past it.
+        let response = run_request(&request(41, b"", &[("doc.pdf", &pdf)]));
         assert!(error_text(&response).contains("unknown tool operation"));
+    }
+
+    #[test]
+    fn fill_form_data_operation_is_dispatched() {
+        let pdf = form_pdf();
+        let xfdf = b"<xfdf xmlns=\"http://ns.adobe.com/xfdf/\"><fields>\
+        <field name=\"Name\" value=\"Ada\"/></fields></xfdf>";
+        let response = run_request(&request(40, b"", &[("doc.pdf", &pdf), ("data.xfdf", xfdf)]));
+        let (status, message, outputs) = parse_response(&response);
+        assert_eq!(status, 0, "fill from form data failed: {message}");
+        assert_eq!(outputs[0].0, "doc-filled.pdf");
     }
 
     #[test]

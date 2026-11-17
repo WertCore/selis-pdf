@@ -379,6 +379,8 @@ const dom = {
 	fields: el<HTMLDivElement>("selis-editor-fields"),
 	fieldsApply: el<HTMLButtonElement>("selis-editor-fields-apply"),
 	fieldsRead: el<HTMLButtonElement>("selis-editor-fields-read"),
+	fieldsImport: el<HTMLButtonElement>("selis-editor-fields-import"),
+	fieldsImportInput: el<HTMLInputElement>("selis-editor-fields-import-input"),
 	outline: el<HTMLDivElement>("selis-editor-outline"),
 	outlineApply: el<HTMLButtonElement>("selis-editor-outline-apply"),
 	outlineRead: el<HTMLButtonElement>("selis-editor-outline-read"),
@@ -5358,6 +5360,44 @@ interface FormField {
  * nothing is uploaded, and the values the reader types go back into the
  * document the same way.
  */
+/**
+ * Fill the document's fields from an XFDF or FDF file the reader picked.
+ */
+async function importFormData(file: File): Promise<void> {
+	const bytes = state.bytes;
+	if (bytes === null) {
+		setStatus("Open a PDF first.", "error");
+		return;
+	}
+	state.busy = true;
+	dom.download.disabled = true;
+	setStatus("Importing the form data…");
+	try {
+		const data = new Uint8Array(await file.arrayBuffer());
+		const chunk = await tools();
+		const result = runTool(chunk, {
+			op: "fill_form_data",
+			options: {},
+			files: [
+				{ name: state.name, bytes },
+				{ name: file.name, bytes: data },
+			],
+		});
+		const output = result.outputs[0];
+		if (output === undefined) {
+			throw new Error("the engine produced no document");
+		}
+		await commit(output.bytes, `Filled the form from ${file.name}`);
+		await readFormFields();
+		setStatus(`Filled the form from ${file.name}.`);
+	} catch (error) {
+		setStatus(`The form data could not be imported: ${messageOf(error)}`, "error");
+	} finally {
+		state.busy = false;
+		dom.download.disabled = state.bytes === null;
+	}
+}
+
 async function readFormFields(): Promise<void> {
 	const bytes = state.bytes;
 	if (bytes === null) {
@@ -6205,6 +6245,16 @@ function wire(): void {
 	});
 	dom.fieldsApply.addEventListener("click", () => {
 		void fillFormFields();
+	});
+	dom.fieldsImport.addEventListener("click", () => {
+		dom.fieldsImportInput.click();
+	});
+	dom.fieldsImportInput.addEventListener("change", () => {
+		const file = dom.fieldsImportInput.files?.[0];
+		if (file !== undefined) {
+			void importFormData(file);
+		}
+		dom.fieldsImportInput.value = "";
 	});
 	dom.cropApply.addEventListener("click", () => {
 		void cropPage();

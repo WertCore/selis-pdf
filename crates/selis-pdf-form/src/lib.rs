@@ -42,6 +42,11 @@
 
 #![forbid(unsafe_code)]
 
+pub mod formdata;
+
+#[cfg(test)]
+mod formdata_tests;
+
 use std::collections::HashMap;
 use std::fmt;
 
