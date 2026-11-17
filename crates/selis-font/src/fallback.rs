@@ -484,7 +484,7 @@ mod tests {
                 );
             }
             for c in 0xA0u32..0x100 {
-                if (c as u8 as char).is_ascii_control() {
+                if char::from_u32(c).is_some_and(|ch| ch.is_ascii_control()) {
                     continue; // 0x80-0x9F are C1 controls, not text
                 }
                 assert!(
