@@ -51,11 +51,42 @@ impl Style {
     }
 }
 
+/// Paragraph / table-cell text alignment carried on the spans of that block.
+///
+/// Alignment is a property of the containing block, but the block model keeps
+/// spans as its only styled unit; the value is therefore stored on every span
+/// a block produces and the layout reads it from the first span. Only
+/// `left`/`center`/`right` are recognised — any other CSS value is ignored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum TextAlign {
+    /// Flush left (the default).
+    #[default]
+    Left,
+    /// Centre within the available width.
+    Center,
+    /// Flush right.
+    Right,
+}
+
 /// A run of styled text inside a block.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// Besides the base [`Style`], a span may carry a small set of inline
+/// properties recovered from HTML `style=` attributes / Markdown link syntax.
+/// Everything is optional: a converter that does not understand a property
+/// leaves it at `None` and the layout falls back to its defaults. Unknown CSS
+/// is never guessed at.
+#[derive(Debug, Clone, PartialEq, Default)]
 pub(crate) struct Span {
     pub style: Style,
     pub text: String,
+    /// Link target (`<a href>` / `[text](url)`). Drives a real URI annotation.
+    pub href: Option<String>,
+    /// Explicit fill colour as RGB in [0, 1] (inline `color:`).
+    pub color: Option<[f64; 3]>,
+    /// Explicit font size in points (inline `font-size:`).
+    pub size: Option<f64>,
+    /// Text alignment of the containing paragraph/cell, if specified.
+    pub align: Option<TextAlign>,
 }
 
 /// A layout-level document block.

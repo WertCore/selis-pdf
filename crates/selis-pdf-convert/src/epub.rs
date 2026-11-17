@@ -195,6 +195,7 @@ pub(crate) fn epub_to_pdf(
         blocks.push(crate::blocks::Block::Paragraph(vec![crate::blocks::Span {
             style: crate::blocks::Style::Italic,
             text: format!("{title} (an EPUB with no readable text)"),
+            ..Default::default()
         }]));
     }
     emit::build(&blocks, &opts, budget, g)

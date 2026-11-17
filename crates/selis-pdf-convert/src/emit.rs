@@ -102,15 +102,11 @@ pub(crate) fn build(
                 }
             }
         }
-        // Text, restoring black after any rectangle fills.
-        let mut any_rect = false;
-        for line in &page.lines {
-            any_rect = any_rect || line.items.iter().any(|i| matches!(i, Item::Rect { .. }));
-        }
-        if any_rect {
-            cb.set_fill(0.0, 0.0, 0.0);
-        }
-        cb.begin_text();
+        // Text in runs of a single fill colour. `rg` is a graphics-state
+        // operator, so it is emitted between text objects rather than inside
+        // a `BT`…`ET` block; this keeps every reader happy.
+        let mut active_color: Option<[f64; 3]> = None;
+        let mut in_text = false;
         for line in &page.lines {
             for item in &line.items {
                 if let Item::Text {
@@ -118,16 +114,27 @@ pub(crate) fn build(
                     font,
                     size,
                     bytes: text,
-                    color: _,
+                    color,
                 } = item
                 {
+                    if active_color != Some(*color) {
+                        if in_text {
+                            cb.end_text();
+                        }
+                        cb.set_fill(color[0], color[1], color[2]);
+                        cb.begin_text();
+                        in_text = true;
+                        active_color = Some(*color);
+                    }
                     cb.set_font(&font_key(font), *size)
                         .set_text_matrix(*x, page_h - line.baseline)
                         .show_raw(text);
                 }
             }
         }
-        cb.end_text();
+        if in_text {
+            cb.end_text();
+        }
 
         let data = cb.to_bytes();
         let content_num = take_num(&mut b);
@@ -141,12 +148,82 @@ pub(crate) fn build(
                 data: Bytes::from(data),
             },
         );
-        b.add_page_with(page_w, page_h, &[Ref::new(content_num, 0)], Some(res_ref));
+
+        // One genuine /Link annotation per link box. The action is
+        // `/A << /S /URI /URI (url) >>` so a reader can actually click it and
+        // a re-parser can assert its target.
+        let mut annots: Vec<Obj> = Vec::new();
+        for line in &page.lines {
+            for item in &line.items {
+                if let Item::LinkBox { x, top, w, h, uri } = item {
+                    let num = take_num(&mut b);
+                    b.add_object(
+                        num,
+                        Obj::Dict(vec![
+                            (bytes(b"Type"), Obj::Name(bytes(b"Annot"))),
+                            (bytes(b"Subtype"), Obj::Name(bytes(b"Link"))),
+                            (
+                                bytes(b"Rect"),
+                                Obj::Array(vec![
+                                    real(*x),
+                                    real(page_h - top - h),
+                                    real(x + w),
+                                    real(page_h - top),
+                                ]),
+                            ),
+                            (
+                                bytes(b"Border"),
+                                Obj::Array(vec![real(0.0), real(0.0), real(0.0)]),
+                            ),
+                            (
+                                bytes(b"A"),
+                                Obj::Dict(vec![
+                                    (bytes(b"S"), Obj::Name(bytes(b"URI"))),
+                                    (bytes(b"URI"), Obj::String(bytes(uri.as_bytes()))),
+                                ]),
+                            ),
+                        ]),
+                    );
+                    annots.push(Obj::Ref(Ref::new(num, 0)));
+                    object_count = object_count.saturating_add(1);
+                }
+            }
+        }
+        let extra = if annots.is_empty() {
+            Vec::new()
+        } else {
+            vec![(b"Annots".to_vec(), Obj::Array(annots))]
+        };
+        b.add_page_with_extra(
+            page_w,
+            page_h,
+            &[Ref::new(content_num, 0)],
+            Some(res_ref),
+            extra,
+        );
         object_count = object_count.saturating_add(2);
     }
 
     g.charge(Resource::Objects, object_count)?;
     b.write(budget, g)
+}
+
+/// A real number object with millipoint precision, used for annotation rects.
+fn real(v: f64) -> Obj {
+    if !v.is_finite() {
+        return Obj::Int(0);
+    }
+    let max = 9_223_372_036_854_775_807i64;
+    let scaled = (v * 1000.0).round();
+    let scaled = if scaled >= max as f64 {
+        max
+    } else {
+        #[allow(clippy::cast_possible_truncation)]
+        {
+            scaled as i64
+        }
+    };
+    Obj::Real { scaled, scale: 3 }
 }
 
 /// The standard-14 resource key (`F1`–`F5`) for a font name; unknown names
