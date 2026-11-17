@@ -267,8 +267,10 @@ And the redaction leg, which used to fail:
 
 ## 6. The adversarial redaction corpus (SL-5.REDACT.06) — honest status
 
-**The DoD is NOT met: 3 of the 7 cases pass, 4 fail. Any failure blocks G5.**
-This section records the real state; it is not a "known issue" waiver.
+**The DoD is MET: all 7 of the 7 cases pass, plus the "test the test" control.**
+The four former engine gaps (cases 02, 03, 05, 07) were closed by making
+redaction a genuine content-REMOVAL sweep; their `#[ignore]` attributes are
+gone. This section records the real state, including what each fix does.
 
 The corpus and its verification suite live in
 `crates/selis-pdf-tools/src/adversarial_redaction.rs`. Each case builds a
@@ -289,34 +291,32 @@ would be caught. That is the one part of the proof that is fully sound today.
 | # | Spec case | Marker | Result | Why |
 |---|---|---|---|---|
 | 01 | Text split across runs | `ADV-SPLIT-RUN-SECRET` (two `Tj` fragments) | **PASS** | Both runs sit under the region; `strip_content_in_regions` drops both. |
-| 02 | Text in a form XObject | `ADV-FORM-XOBJECT-SECRET` | **FAIL** (`#[ignore]`) | The page only draws `/Fm1 Do` at identity CTM; the engine never recurses into the form's stream and treats the `Do` as an image whose unit-square misses the region, so both the draw and the resource survive. |
-| 03 | Text in an annotation appearance | `ADV-ANNOT-AP-SECRET` | **FAIL** (`#[ignore]`) | Annotations are copied with every object they reference, including the `/AP /N` stream; redaction does not strip appearance text. |
+| 02 | Text in a form XObject | `ADV-FORM-XOBJECT-SECRET` | **PASS** | `strip_content_in_regions` reports each kept `Do` with its CTM; `copy_page_redacted` recurses into the form stream at that CTM (composing the form's `/Matrix`), writes a redacted copy, and drops the draw + resource if the form becomes empty. |
+| 03 | Text in an annotation appearance | `ADV-ANNOT-AP-SECRET` | **PASS** | `materialize_annotations` blanks `/AP` (and `/AS`) for any annotation whose `/Rect` intersects a redaction region *before* its referenced objects are copied, so the appearance stream's bytes never reach the file. The annotation itself is preserved. |
 | 04 | Text in a prior revision | `ADV-PRIOR-REV-SECRET` | **PASS** | Redaction does a full rewrite, not an incremental append: the earlier revision's bytes never reach the output. |
-| 05 | Text in an embedded file | `ADV-EMBEDDED-FILE-SECRET` | **FAIL** (`#[ignore]`) | `reconcile_single_input` carries `/Names /EmbeddedFiles` through with `PRESERVE_ALL`; the embedded stream's bytes survive. |
+| 05 | Text in an embedded file | `ADV-EMBEDDED-FILE-SECRET` | **PASS** | `reconcile_single_input_redacted` drops `/Names /EmbeddedFiles` and its streams; `write_document_with_embedded` relaxes only the attachment-count expectation to zero. A region cannot target bytes inside an opaque attachment, so the whole tree is removed. |
 | 06 | Text as an image with an OCR layer | `ADV-OCR-IMAGE-SECRET` | **PASS** | The named image's bytes are removed (draw dropped + resource omitted) *and* the hidden `Tr 3` OCR text under the region is stripped. Both halves are gone. |
-| 07 | Text in metadata | `ADV-METADATA-SECRET` | **FAIL** (`#[ignore]`) | The catalog's `/Metadata` XMP stream is carried through with `carry_metadata = true`, secret intact. |
+| 07 | Text in metadata | `ADV-METADATA-SECRET` | **PASS** | `reconcile_single_input_redacted` sets `carry_metadata = false`, so the catalog's `/Metadata` (XMP) stream is not carried; no `/Info` is written either. |
 
-Run everything, including the four honest failures, with:
+Run the whole corpus (7 cases + the control) with:
 
 ```
-cargo test -p selis-pdf-tools adversarial_redaction -- --include-ignored --nocapture
+cargo test -p selis-pdf-tools adversarial_redaction -- --nocapture
 ```
 
-### What engine work each failure needs
+All four former gaps were closed in the redaction engine:
 
-- **02 (form XObject):** recurse into form-XObject streams, composing the
-  `Do` placement matrix into the CTM, and strip their text; drop the form
-  when every draw is covered.
-- **03 (annotation appearance):** strip or regenerate annotation appearance
-  streams whose `/Rect` intersects a redaction region before the page is
-  materialised.
-- **05 (embedded file):** give redaction a content-removal path that drops
-  embedded files and relaxes the embedded-file count gate for the operation.
-- **07 (metadata):** scrub the XMP packet (and `/Info`) for the redacted
-  strings rather than carrying it through.
+- **02 (form XObject):** form-aware stripping with CTM composition (including
+  the form's `/Matrix`, nested forms, and the empty-form drop).
+- **03 (annotation appearance):** rect-overlap appearance blanking during
+  annotation materialisation.
+- **05 (embedded file):** a redaction-specific catalog sweep that removes the
+  embedded-file tree plus a single, documented relaxation of the write gate's
+  attachment-count expectation.
+- **07 (metadata):** the same sweep stops carrying the XMP packet and writes no
+  `/Info`.
 
-Until all four are closed and the four `#[ignore]`s are removed, SL-5.REDACT.06
-does not meet its "100% pass" DoD, and G5 is blocked. The default crate suite
-is green (`cargo test -p selis-pdf-tools`: 136 passed, 4 ignored); the ignored
-tests are the four honest failures above, kept visible so the gap cannot be
-forgotten.
+The independent verifier (raw-byte grep + fresh re-parse + structural survey)
+remains in the path for all seven cases, and the "test the test" control still
+proves the verifier rejects a redaction that missed the secret. SL-5.REDACT.06
+meets its "100% pass" DoD; G5 is no longer blocked by this corpus.

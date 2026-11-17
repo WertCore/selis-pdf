@@ -399,11 +399,12 @@ fn control_pdf() -> Vec<u8> {
 ///
 /// Fixtures are built in memory and are well-formed; a failure to build or
 /// redact one is a test failure, not a handled case.
-fn e2e(builder: fn() -> Vec<u8>, needles: &[&[u8]], case: &str) {
+fn e2e(builder: fn() -> Vec<u8>, needles: &[&[u8]], case: &str) -> Vec<u8> {
     let output = redact_bytes(&builder(), REGION, case);
     if let Err(why) = verify_redaction_proof(&output, needles) {
         panic!("[{case}] ADR-P0023 proof failed: {why}");
     }
+    output
 }
 
 #[test]
@@ -415,33 +416,47 @@ fn case_01_text_split_across_runs() {
     );
 }
 
-// GAP: strip_content_in_regions only rewrites the page content stream. A form
-// XObject's own stream is never recursed into; its `Do` is treated as an image
-// draw, and at identity CTM the unit square misses the region, so both the
-// draw and the resource survive. Engine work needed: recurse into form
-// XObjects with the placement matrix composed into the CTM, and strip their
-// text too (or drop the form when every draw is covered).
+// CLOSED: redaction now recurses into form XObjects. strip_content_in_regions
+// reports each kept `Do` with its CTM; copy_page_redacted recurses into the
+// form stream via strip_content_in_regions_with_ctm (composing the form's
+// /Matrix), writes a redacted copy, and drops the draw + resource when the
+// form becomes empty.
 #[test]
-#[ignore = "engine gap: form XObject streams are not recursed into by strip_content_in_regions"]
 fn case_02_text_in_form_xobject() {
-    e2e(
+    let output = e2e(
         form_xobject_pdf,
         &[b"ADV-FORM-XOBJECT-SECRET"],
         "form-xobject",
     );
+    // The draw is kept (the form still holds its text scaffolding), so the
+    // redacted form stream must still be reachable from the page.
+    assert!(
+        output.windows(b"/Fm1 Do".len()).any(|w| w == b"/Fm1 Do"),
+        "the kept form draw must still be in the output"
+    );
 }
 
-// GAP: annotations are copied with every object they reference, including
-// /AP /N appearance streams. The redaction never touches appearance text.
-// Engine work needed: strip (or regenerate) annotation appearance streams
-// whose /Rect intersects a redaction region before materialising the page.
+// CLOSED: materialize_annotations now blanks the /AP (and /AS) of any
+// annotation whose /Rect overlaps a redaction region, before its referenced
+// objects are copied — so the appearance stream's bytes never reach the file.
 #[test]
-#[ignore = "engine gap: annotation appearance streams are not stripped by redaction"]
 fn case_03_text_in_annotation_appearance() {
-    e2e(
+    let output = e2e(
         annotation_appearance_pdf,
         &[b"ADV-ANNOT-AP-SECRET"],
         "annotation-appearance",
+    );
+    // The annotation itself survives (the write gate still asserts its count);
+    // only its secret-bearing appearance is gone.
+    assert!(
+        output
+            .windows(b"/Subtype /Square".len())
+            .any(|w| w == b"/Subtype /Square"),
+        "the annotation must still be present"
+    );
+    assert!(
+        !output.windows(b"/AP".len()).any(|w| w == b"/AP"),
+        "the appearance entry must be dropped"
     );
 }
 
@@ -454,18 +469,22 @@ fn case_04_text_in_prior_revision() {
     );
 }
 
-// GAP: reconcile_single_input carries catalog /Names /EmbeddedFiles through
-// untouched (PRESERVE_ALL expects the count to match). The embedded stream's
-// bytes therefore survive. Engine work needed: redaction-specific filtering
-// that drops embedded files (and relaxes the embedded-file count gate) when
-// the operation is asked to remove content from the document.
+// CLOSED: reconcile_single_input_redacted drops /Names /EmbeddedFiles (and
+// its streams) for redaction, and write_document_with_embedded sets the gate's
+// expected attachment count to zero. A geometric region cannot target bytes
+// inside an opaque attachment, so the whole tree is removed.
 #[test]
-#[ignore = "engine gap: embedded files are carried through by the rewrite"]
 fn case_05_text_in_embedded_file() {
-    e2e(
+    let output = e2e(
         embedded_file_pdf,
         &[b"ADV-EMBEDDED-FILE-SECRET"],
         "embedded-file",
+    );
+    assert!(
+        !output
+            .windows(b"/EmbeddedFiles".len())
+            .any(|w| w == b"/EmbeddedFiles"),
+        "the embedded-file name tree must be gone"
     );
 }
 
@@ -474,14 +493,18 @@ fn case_06_text_as_image_with_ocr_layer() {
     e2e(ocr_image_pdf, &[b"ADV-OCR-IMAGE-SECRET"], "image-with-ocr");
 }
 
-// GAP: the catalog's /Metadata (XMP) stream is copied through by
-// reconcile_single_input with carry_metadata = true, secret intact.
-// Engine work needed: redaction must scrub the XMP packet (and the /Info
-// dictionary) for the redacted strings rather than carrying them through.
+// CLOSED: reconcile_single_input_redacted sets carry_metadata = false, so the
+// catalog's /Metadata (XMP) stream is not carried; no /Info is written either.
+// Only the raw-byte proof (not a writer report) decides whether this held.
 #[test]
-#[ignore = "engine gap: catalog /Metadata is carried through by the rewrite"]
 fn case_07_text_in_metadata() {
-    e2e(metadata_pdf, &[b"ADV-METADATA-SECRET"], "metadata");
+    let output = e2e(metadata_pdf, &[b"ADV-METADATA-SECRET"], "metadata");
+    assert!(
+        !output
+            .windows(b"/Metadata".len())
+            .any(|w| w == b"/Metadata"),
+        "the XMP metadata stream must not be carried through a redaction"
+    );
 }
 
 /// Test the test: redact the WRONG region, so the secret is NOT covered, and

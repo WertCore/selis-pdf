@@ -738,6 +738,22 @@ fn invert(matrix: Matrix6) -> Option<Matrix6> {
     ])
 }
 
+/// One XObject `Do` that a strip kept, with the transform at the draw.
+///
+/// A form XObject executes its own content stream at the CTM in force at the
+/// `Do` (further composed with the form's `/Matrix`). The caller needs that
+/// transform to recurse into the form and strip the text under the same
+/// page-space regions; an image draw needs no recursion and is reported only
+/// through [`Redaction::removed_images`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct XObjectDraw {
+    /// The resource name the `Do` used, without the leading slash.
+    pub name: String,
+    /// The content transform at the `Do`, mapping that content's space into
+    /// the page space the regions are expressed in.
+    pub ctm: Matrix6,
+}
+
 /// What a redaction removed, and how to draw the box over it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Redaction {
@@ -756,6 +772,13 @@ pub struct Redaction {
     /// bytes never reach the output file. A redaction that covers an image
     /// but keeps the image is a black box over a secret.
     pub removed_images: Vec<String>,
+    /// Every XObject `Do` that was KEPT, with the transform at the draw.
+    ///
+    /// Lets a caller recurse into form XObjects and strip their own streams
+    /// under the same regions. A draw that was itself dropped (an image whose
+    /// unit square fell inside a region) is not listed — nothing reaches the
+    /// output that would need the XObject.
+    pub xobject_draws: Vec<XObjectDraw>,
 }
 
 /// Remove what the given regions cover: the text runs inside them, and the
@@ -788,6 +811,10 @@ pub struct Redaction {
 /// Everything else is copied through byte for byte, so a stream with nothing
 /// to remove comes back unchanged.
 ///
+/// This is the page-level entry point: the content's own transform starts at
+/// the identity. To strip a stream that executes inside a form XObject, use
+/// [`strip_content_in_regions_with_ctm`] with the transform at the `Do`.
+///
 /// # Budget
 ///
 /// The work is bounded by the length of the content stream: the stream is read
@@ -800,6 +827,37 @@ pub struct Redaction {
 /// rewriter removes text, and it refuses to guess where the text is.
 #[must_use]
 pub fn strip_content_in_regions(content: &[u8], regions: &[(f64, f64, f64, f64)]) -> Redaction {
+    strip_content_in_regions_with_ctm(content, regions, IDENTITY)
+}
+
+/// Strip text from a content stream that executes at `initial_ctm`.
+///
+/// Identical to [`strip_content_in_regions`] except that the content's own
+/// transform starts at `initial_ctm` instead of the identity. A form XObject
+/// executes its stream at the CTM in force at the `Do`, composed with the
+/// form's own `/Matrix`, so a caller recursing into a form passes that composed
+/// matrix here and the *same* page-space regions: a text origin is transformed
+/// by the starting CTM before it is compared with a region.
+///
+/// The returned [`Redaction::xobject_draws`] carry CTMs already in the page
+/// space, so nested forms can be recursed into with this same function.
+///
+/// # Budget
+///
+/// Linear in the content length, as [`strip_content_in_regions`]. The starting
+/// transform is a fixed six-element matrix and adds no work.
+///
+/// # Malformed Input
+///
+/// A non-finite starting matrix makes every position test fail closed (the
+/// transformed point cannot fall in a finite region), so nothing is removed
+/// rather than an arbitrary region being redacted.
+#[must_use]
+pub fn strip_content_in_regions_with_ctm(
+    content: &[u8],
+    regions: &[(f64, f64, f64, f64)],
+    initial_ctm: Matrix6,
+) -> Redaction {
     let mut cur = Cursor::new(content);
     let mut out: Vec<u8> = Vec::new();
     // How much of the input has been copied out.
@@ -822,11 +880,14 @@ pub fn strip_content_in_regions(content: &[u8], regions: &[(f64, f64, f64, f64)]
     // object the file no longer holds. So an image is removed only when
     // EVERY draw of it was dropped.
     let mut draws: Vec<(String, usize, usize)> = Vec::new();
+    // Every kept `Do`, with the transform at the draw, for form recursion.
+    let mut xobject_draws: Vec<XObjectDraw> = Vec::new();
     let mut tm = TextMatrix::IDENTITY;
     let mut leading = 0.0f64;
     let mut in_text = false;
-    // The content's own transform, and the stack `q`/`Q` keep.
-    let mut ctm: Matrix6 = IDENTITY;
+    // The content's own transform, and the stack `q`/`Q` keep. A form's stream
+    // starts at the composed CTM handed in by the caller, not at the identity.
+    let mut ctm: Matrix6 = initial_ctm;
     let mut stack: Vec<Matrix6> = Vec::new();
 
     loop {
@@ -994,7 +1055,13 @@ pub fn strip_content_in_regions(content: &[u8], regions: &[(f64, f64, f64, f64)]
                                         *dropped = dropped.saturating_add(1);
                                     }
                                 }
-                                None => draws.push((name, 1, usize::from(covered))),
+                                None => draws.push((name.clone(), 1, usize::from(covered))),
+                            }
+                            // A draw that survives must be reproducible: for a
+                            // form XObject the caller recurses at this CTM. A
+                            // dropped draw needs no XObject in the output.
+                            if !drop_it {
+                                xobject_draws.push(XObjectDraw { name, ctm });
                             }
                         }
                     }
@@ -1033,7 +1100,27 @@ pub fn strip_content_in_regions(content: &[u8], regions: &[(f64, f64, f64, f64)]
         content: out,
         inverse_transform: invert(ctm),
         removed_images,
+        xobject_draws,
     }
+}
+
+/// Compose two PDF `[a b c d e f]` matrices: `outer` applied after `inner`.
+///
+/// Exposed so the tools layer can compose a form's `/Matrix` with the CTM at
+/// the `Do` before recursing into the form's stream.
+///
+/// # Budget
+///
+/// Constant work: eight multiplies and six adds on a fixed six-element matrix.
+///
+/// # Malformed Input
+///
+/// No validation is performed; non-finite inputs propagate as non-finite
+/// outputs. Callers that cannot tolerate that fail closed on the position
+/// tests in [`strip_content_in_regions_with_ctm`].
+#[must_use]
+pub fn compose_matrix(outer: Matrix6, inner: Matrix6) -> Matrix6 {
+    compose(outer, inner)
 }
 
 /// Copy the input up to the cursor's position.
@@ -2098,6 +2185,47 @@ mod tests {
             out.removed_images.is_empty(),
             "the image is not reported as removed: {:?}",
             out.removed_images
+        );
+    }
+
+    /// A `Do` that survives is reported with the transform at the draw, so a
+    /// caller can recurse into a form XObject at the right CTM.
+    #[test]
+    fn a_kept_do_is_reported_with_its_ctm() {
+        let content = b"q 2 0 0 3 5 7 cm /Fm1 Do Q";
+        let out = strip_content_in_regions(content, &[(0.0, 0.0, 1.0, 1.0)]);
+        assert_eq!(out.xobject_draws.len(), 1);
+        assert_eq!(out.xobject_draws[0].name, "Fm1");
+        assert_eq!(out.xobject_draws[0].ctm, [2.0, 0.0, 0.0, 3.0, 5.0, 7.0]);
+    }
+
+    /// Text in a form's own stream is stripped when the caller supplies the
+    /// CTM at the `Do`; the *same* page-space regions apply.
+    #[test]
+    fn text_in_a_form_stream_is_stripped_at_the_do_ctm() {
+        let form = b"BT /F1 12 Tf 20 160 Td (ADV-FORM-XOBJECT-SECRET) Tj ET";
+        // The form executes at identity: text at (20,160) lands under the page
+        // region, so it must go.
+        let out = strip_content_in_regions_with_ctm(form, &[(10.0, 150.0, 100.0, 20.0)], IDENTITY);
+        let text = String::from_utf8_lossy(&out.content);
+        assert!(
+            !text.contains("ADV-FORM-XOBJECT-SECRET"),
+            "the form's text is gone: {text}"
+        );
+    }
+
+    /// A form drawn with a translation in its CTM is stripped in the right
+    /// place: the text origin is transformed into page space before the test.
+    #[test]
+    fn a_form_matrix_translation_is_honoured() {
+        let form = b"BT /F1 12 Tf 15 5 Td (SECRET-AT-25-165) Tj ET";
+        // Form content (15,5) translated by (10,160) lands at page (25,165),
+        // inside the region.
+        let shifted = compose_matrix([1.0, 0.0, 0.0, 1.0, 10.0, 160.0], IDENTITY);
+        let out = strip_content_in_regions_with_ctm(form, &[(10.0, 150.0, 100.0, 20.0)], shifted);
+        assert!(
+            !String::from_utf8_lossy(&out.content).contains("SECRET-AT-25-165"),
+            "text translated into the region is stripped"
         );
     }
 

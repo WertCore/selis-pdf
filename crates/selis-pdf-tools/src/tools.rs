@@ -1334,6 +1334,57 @@ pub(crate) fn reconcile_single_input(
         kept,
         &new_idx_by_old,
         carry_metadata,
+        true,
+        budget,
+        g,
+    )
+}
+
+/// Reconcile a rewritten document for a REDACTION operation.
+///
+/// A redaction removes content, and two catalog structures can hold the very
+/// bytes being redacted in a place no page region can reach:
+///
+/// * `/Names /EmbeddedFiles` — each attached file is an opaque stream; a
+///   geometric page region cannot say which part of it to remove, so redaction
+///   drops the whole name tree (and its streams never reach the output).
+/// * `/Metadata` (XMP) — carried with `carry_metadata = false`, so the packet
+///   is not copied. No `/Info` is written either (the builder only writes one
+///   when a tool calls `set_info`). Both can carry the redacted text verbatim.
+///
+/// Every other catalog structure (pages' visible content, outlines,
+/// destinations, form fields, OCGs, structure tree, page labels) still carries
+/// through exactly as [`reconcile_single_input`] would.
+///
+/// # Budget
+///
+/// As [`reconcile_single_input_mapped`]; skipping two carries can only do less
+/// work.
+///
+/// # Malformed Input
+///
+/// As [`reconcile_single_input_mapped`]. An unreadable name tree is skipped,
+/// so no embedded file reaches the output.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn reconcile_single_input_redacted(
+    out: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
+    src: &[u8],
+    doc: &selis_pdf_cos::Doc,
+    all_pages: &[Ref],
+    kept: &[KeptPage],
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<(), String> {
+    let new_idx_by_old = output_index_by_source(kept);
+    reconcile_single_input_mapped(
+        out,
+        src,
+        doc,
+        all_pages,
+        kept,
+        &new_idx_by_old,
+        false, // carry_metadata: drop the XMP packet
+        false, // keep_embedded_files: drop the whole /EmbeddedFiles tree
         budget,
         g,
     )
@@ -1368,6 +1419,7 @@ fn reconcile_single_input_mapped(
     kept: &[KeptPage],
     new_idx_by_old: &std::collections::HashMap<usize, usize>,
     carry_metadata: bool,
+    keep_embedded_files: bool,
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
 ) -> Result<(), String> {
@@ -1439,8 +1491,19 @@ fn reconcile_single_input_mapped(
     // Form fields: roots whose widget page was deleted are dropped.
     carry_acroform_single(out, src, doc, &page_map, &deleted, &mut cache, budget, g)?;
 
-    // Named destinations (pruned) and embedded files (kept); never actions.
-    carry_names_single(out, src, doc, &page_map, &deleted, &mut cache, budget, g)?;
+    // Named destinations (pruned) and embedded files (kept unless a redaction
+    // asked for a non-content sweep); never actions.
+    carry_names_single(
+        out,
+        src,
+        doc,
+        &page_map,
+        &deleted,
+        keep_embedded_files,
+        &mut cache,
+        budget,
+        g,
+    )?;
 
     // The structure tree (ADR-P0031): pruned at the deleted pages.
     carry_struct_tree_single(
@@ -2381,6 +2444,7 @@ fn carry_names_single(
     doc: &selis_pdf_cos::Doc,
     page_map: &std::collections::HashMap<u32, Ref>,
     deleted: &std::collections::HashSet<u32>,
+    keep_embedded_files: bool,
     cache: &mut std::collections::HashMap<(u32, u16), u32>,
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
@@ -2418,6 +2482,12 @@ fn carry_names_single(
                 }
             }
             b"EmbeddedFiles" => {
+                if !keep_embedded_files {
+                    // A redaction cannot target bytes inside an opaque
+                    // attachment with a page region, so the whole tree is
+                    // dropped: its streams never reach the output file.
+                    continue;
+                }
                 let v = resolve_shallow(src, doc, v.clone(), budget, g);
                 let Ok(found) = rec::name_tree_pairs(&v, src, doc, budget, g) else {
                     continue;
@@ -3380,6 +3450,21 @@ pub(crate) fn strip_metadata(path: &str, output: &str) -> CliResult<Verification
 
 /// Redact regions: cover them with black and strip text that falls within
 /// them (SL-0.LEGAL.05). Returns the operation's verification display.
+///
+/// A redaction is a content-REMOVAL operation, not just a visual cover. On
+/// every selected page it strips text under the regions — including text in
+/// form XObjects (recursed into at the placement CTM) and the hidden OCR text
+/// over a drawn image — and removes any image whose draw the region covers.
+/// It also blanks the appearance of annotations whose `/Rect` overlaps a
+/// region, and drops the document's XMP/Info metadata and embedded files:
+/// those can carry the redacted text verbatim in a place a page region cannot
+/// reach (SL-5.REDACT.03). The full rewrite drops every prior revision too.
+///
+/// # Errors
+///
+/// As [`merge`], plus an error when a form XObject's stream cannot be decoded
+/// safely for stripping — a redaction removes content or fails loudly; it
+/// never emits a stream it could not inspect.
 pub(crate) fn redact(
     path: &str,
     rects: &[(f64, f64, f64, f64)],
@@ -3421,18 +3506,25 @@ pub(crate) fn redact(
         .map_err(|e| CliError(format!("{path}: {e}")))?;
         kept.push((idx, page_ref.num, merged_ref));
     }
-    // WRITE.07: catalog-level structures carry through the rewrite.
-    reconcile_single_input(
-        &mut out, &src, &doc, &page_refs, &kept, true, &budget, &mut g,
-    )
-    .map_err(CliError)?;
-    let verification = write_document(
+    // A redaction is a CONTENT-REMOVAL operation. The catalog sweep drops the
+    // XMP/Info metadata and the whole /EmbeddedFiles tree: both can carry the
+    // redacted text verbatim in a place a page region cannot reach, so a
+    // geometric strip alone would leave it in the file. Every other catalog
+    // structure still carries through (see reconcile_single_input_redacted).
+    reconcile_single_input_redacted(&mut out, &src, &doc, &page_refs, &kept, &budget, &mut g)
+        .map_err(CliError)?;
+    // Embedded files are deliberately removed, so the gate must expect ZERO
+    // rather than the input's count. This is the ONLY expectation relaxed:
+    // pages, annotations, fields, OCGs and outlines are still asserted by the
+    // shared PRESERVE_ALL set.
+    let verification = write_document_with_embedded(
         out,
         output,
         Some(&src),
         PRESERVE_ALL,
         Some(u64::try_from(kept.len()).unwrap_or(u64::MAX)),
         None,
+        Some(0),
         in_bytes,
         &budget,
         &mut g,
@@ -3719,6 +3811,460 @@ fn copy_page_inner(
     Ok(page)
 }
 
+// --- Redaction-specific object handling -----------------------------------
+//
+// A redaction is a content-REMOVAL operation. Three structures a normal
+// rewrite carries through can hold the very text being redacted in a place a
+// geometric page-region cannot reach: a form XObject's own stream, an
+// annotation's appearance stream, and (as catalog structures) embedded files
+// and XMP. The helpers below close the first two; the catalog sweep in
+// `reconcile_single_input_redacted` closes the others.
+
+/// The deepest form XObject chain we will recurse into while redacting. A
+/// deeper chain is refused rather than silently left in the output: redaction
+/// must remove content or fail loudly.
+const MAX_REDACT_FORM_DEPTH: usize = 16;
+/// A guard on decoded form-stream size while redacting.
+const MAX_REDACT_STREAM_BYTES: u64 = 64 * 1024 * 1024;
+
+/// One dictionary entry by key.
+fn dict_entry<'a>(pairs: &'a [(selis_bytes::Bytes, Obj)], key: &[u8]) -> Option<&'a Obj> {
+    pairs
+        .iter()
+        .find(|(k, _)| k.as_slice() == key)
+        .map(|(_, v)| v)
+}
+
+/// A PDF number as `f64` (`Int` or `Real`), for matrices and rectangles.
+fn obj_f64(obj: &Obj) -> Option<f64> {
+    match obj {
+        Obj::Int(value) => Some(*value as f64),
+        Obj::Real { scaled, scale } => {
+            let divisor = 10_f64.powi(i32::from(*scale));
+            if divisor == 0.0 {
+                None
+            } else {
+                Some(*scaled as f64 / divisor)
+            }
+        }
+        _ => None,
+    }
+}
+
+/// A form's `/Matrix` as a six-element PDF matrix, when present and well formed.
+fn form_matrix(dict: &[(selis_bytes::Bytes, Obj)]) -> Option<[f64; 6]> {
+    let Obj::Array(items) = dict_entry(dict, b"Matrix")? else {
+        return None;
+    };
+    if items.len() != 6 {
+        return None;
+    }
+    let values = items.iter().map(obj_f64).collect::<Option<Vec<f64>>>()?;
+    Some([
+        values[0], values[1], values[2], values[3], values[4], values[5],
+    ])
+}
+
+/// The single stream filter a redacted form stream may use.
+///
+/// Only Flate is decoded/re-encoded (the same set the content editor accepts).
+/// A `/DecodeParms` predictor would change the decoded bytes, so it is refused
+/// rather than guessed at — a form whose content cannot be decoded cannot be
+/// redacted safely, and must fail loudly.
+fn redaction_stream_filter(dict: &[(selis_bytes::Bytes, Obj)]) -> Result<Option<Vec<u8>>, String> {
+    let filter = dict_entry(dict, b"Filter");
+    if filter.is_some() && dict_entry(dict, b"DecodeParms").is_some() {
+        return Err(
+            "a form XObject stream with /DecodeParms cannot be redacted safely".to_string(),
+        );
+    }
+    match filter {
+        None => Ok(None),
+        Some(Obj::Name(name)) if name.as_slice() == b"FlateDecode" || name.as_slice() == b"Fl" => {
+            Ok(Some(name.as_slice().to_vec()))
+        }
+        Some(other) => Err(format!(
+            "a form XObject stream with an unsupported {} filter cannot be redacted safely",
+            other.type_name()
+        )),
+    }
+}
+
+/// Decode a form stream for stripping, returning its bytes and the filter to
+/// re-apply when writing the stripped copy.
+fn decode_redaction_stream(
+    dict: &[(selis_bytes::Bytes, Obj)],
+    data: &[u8],
+    g: &mut BudgetGuard<'_>,
+) -> Result<(Vec<u8>, Option<Vec<u8>>), String> {
+    let filter = redaction_stream_filter(dict)?;
+    let plain = match &filter {
+        Some(name) => {
+            let name = std::str::from_utf8(name).unwrap_or("FlateDecode");
+            selis_pdf_filter::decode(name, data, MAX_REDACT_STREAM_BYTES, g)
+                .map_err(|e| format!("cannot decode a form XObject stream for redaction: {e}"))?
+        }
+        None => data.to_vec(),
+    };
+    Ok((plain, filter))
+}
+
+/// Re-encode a stripped form stream under the filter it arrived with.
+fn encode_redaction_stream(filter: Option<&[u8]>, plain: &[u8]) -> (Vec<u8>, Option<Vec<u8>>) {
+    match filter {
+        Some(name) => (
+            selis_pdf_filter::flate_encode(plain, 6),
+            Some(name.to_vec()),
+        ),
+        None => (plain.to_vec(), None),
+    }
+}
+
+/// The outcome of recursing into one XObject resource candidate.
+enum FormRedaction {
+    /// Not a form stream: the caller copies the object normally.
+    NotAForm,
+    /// A redacted form stream was written; the caller points at this ref.
+    Written(Ref),
+    /// The form stripped to nothing: the caller drops the resource AND the
+    /// `Do` that would name it.
+    Empty,
+}
+
+/// A byte that can appear inside a PDF name or keyword token.
+fn is_token_byte(b: u8) -> bool {
+    !matches!(
+        b,
+        0x00..=0x20 | b'(' | b')' | b'<' | b'>' | b'[' | b']' | b'{' | b'}' | b'/' | b'%'
+    )
+}
+
+/// Remove `<name> Do` draws for the given XObject names from a content stream.
+///
+/// Used when a form stripped to nothing: leaving the `Do` would name a
+/// resource the output no holds, so both the draw and the resource go.
+fn remove_do_draws(content: &[u8], names: &[selis_bytes::Bytes]) -> Vec<u8> {
+    if names.is_empty() {
+        return content.to_vec();
+    }
+    let mut out = Vec::with_capacity(content.len());
+    let mut i = 0usize;
+    while i < content.len() {
+        if content[i] == b'/' {
+            let mut j = i.saturating_add(1);
+            while j < content.len() && is_token_byte(content[j]) {
+                j = j.saturating_add(1);
+            }
+            let name = content.get(i.saturating_add(1)..j).unwrap_or(&[]);
+            if names.iter().any(|gone| gone.as_slice() == name) {
+                let mut k = j;
+                loop {
+                    while k < content.len() && content[k].is_ascii_whitespace() {
+                        k = k.saturating_add(1);
+                    }
+                    if content.get(k) == Some(&b'%') {
+                        while k < content.len() && !matches!(content[k], b'\n' | b'\r') {
+                            k = k.saturating_add(1);
+                        }
+                        continue;
+                    }
+                    break;
+                }
+                let is_do = content.get(k..k.saturating_add(2)) == Some(b"Do")
+                    && content
+                        .get(k.saturating_add(2))
+                        .is_none_or(|next| !is_token_byte(*next));
+                if is_do {
+                    i = k.saturating_add(2);
+                    continue;
+                }
+            }
+            i = j;
+            continue;
+        }
+        if let Some(byte) = content.get(i) {
+            out.push(*byte);
+        }
+        i = i.saturating_add(1);
+    }
+    out
+}
+
+/// Recurse into a form XObject and write a redacted copy of its stream.
+///
+/// `ctms` holds every transform at which the form was drawn (in page space,
+/// from the caller's stripped content); the form's own `/Matrix` is composed
+/// onto each. Text under the page regions in ANY of those spaces is removed.
+/// [`FormRedaction::NotAForm`] tells the caller to copy the object normally.
+///
+/// # Budget
+///
+/// Bounded by the form stream length times the number of draws, with a fixed
+/// recursion cap ([`MAX_REDACT_FORM_DEPTH`]) and a decoded-size cap. No work
+/// grows with the number of pages.
+///
+/// # Malformed Input
+///
+/// A missing/foreign object, an undecodable stream, an unsupported filter, a
+/// cycle deeper than the cap, or a malformed `/Matrix` refuses the operation
+/// with an error rather than emitting a stream that might still carry the
+/// secret. A malformed `/Matrix` is ignored (identity), which can only leave
+/// MORE content in place — never less than the caller asked to redact; the
+/// raw-byte verifier is the final arbiter.
+#[allow(clippy::too_many_arguments)]
+fn redact_form_stream(
+    merged: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
+    src: &[u8],
+    doc: &selis_pdf_cos::Doc,
+    form_ref: Ref,
+    ctms: &[[f64; 6]],
+    regions: &[(f64, f64, f64, f64)],
+    fallback_resources: Option<&Obj>,
+    depth: usize,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<FormRedaction, String> {
+    use selis_pdf_edit::XObjectDraw;
+
+    if depth > MAX_REDACT_FORM_DEPTH {
+        return Err("form XObject nesting is too deep to redact safely".to_string());
+    }
+    let Ok(object) = resolve_ref_obj(src, doc, form_ref, budget, g) else {
+        return Ok(FormRedaction::NotAForm);
+    };
+    let Obj::Stream { dict, data } = object else {
+        return Ok(FormRedaction::NotAForm);
+    };
+    if !matches!(dict_entry(&dict, b"Subtype"), Some(Obj::Name(n)) if n.as_slice() == b"Form") {
+        return Ok(FormRedaction::NotAForm);
+    }
+    if ctms.is_empty() {
+        return Ok(FormRedaction::NotAForm);
+    }
+    let (mut plain, filter) = decode_redaction_stream(&dict, data.as_slice(), g)?;
+    let matrix = form_matrix(&dict);
+    let mut draws: Vec<XObjectDraw> = Vec::new();
+    let mut removed: Vec<String> = Vec::new();
+    for &ctm in ctms {
+        let effective = match matrix {
+            Some(m) => selis_pdf_edit::compose_matrix(m, ctm),
+            None => ctm,
+        };
+        let redaction =
+            selis_pdf_edit::strip_content_in_regions_with_ctm(&plain, regions, effective);
+        plain = redaction.content;
+        draws.extend(redaction.xobject_draws);
+        for name in redaction.removed_images {
+            if !removed.contains(&name) {
+                removed.push(name);
+            }
+        }
+    }
+    // The form inherits the page's resources when it has none of its own.
+    let effective_resources = dict_entry(&dict, b"Resources")
+        .cloned()
+        .or_else(|| fallback_resources.cloned());
+    let mut emptied: Vec<selis_bytes::Bytes> = Vec::new();
+    let new_resources = materialize_redacted_resources(
+        merged,
+        src,
+        doc,
+        effective_resources.clone(),
+        &draws,
+        &removed,
+        regions,
+        effective_resources.as_ref(),
+        &mut emptied,
+        depth.saturating_add(1),
+        budget,
+        g,
+    )?;
+    // A nested form that stripped to nothing must have its draw removed from
+    // THIS stream too, or the reference dangles in the output file.
+    if !emptied.is_empty() {
+        plain = remove_do_draws(&plain, &emptied);
+    }
+    // A form with no content left is dropped entirely; its caller removes the
+    // corresponding Do. Scaffolding operators (BT/Tf/Td/ET) are content, so a
+    // form like the corpus fixture is kept with its draw intact.
+    if plain.iter().all(|b| b.is_ascii_whitespace()) {
+        return Ok(FormRedaction::Empty);
+    }
+    let (out_data, out_filter) = encode_redaction_stream(filter.as_deref(), &plain);
+    let mut new_dict: Vec<(selis_bytes::Bytes, Obj)> = dict
+        .iter()
+        .filter(|(key, _)| !matches!(key.as_slice(), b"Length" | b"Filter" | b"DecodeParms"))
+        .cloned()
+        .collect();
+    if let Some(name) = out_filter {
+        new_dict.push((
+            selis_bytes::Bytes::copy_from_slice(b"Filter"),
+            Obj::Name(selis_bytes::Bytes::from(name)),
+        ));
+    }
+    if let Some(resources) = new_resources {
+        new_dict.push((
+            selis_bytes::Bytes::copy_from_slice(b"Resources"),
+            Obj::Ref(resources),
+        ));
+    }
+    new_dict.push((
+        selis_bytes::Bytes::copy_from_slice(b"Length"),
+        Obj::Int(i64::try_from(out_data.len()).unwrap_or(i64::MAX)),
+    ));
+    let num = merged.allocate();
+    merged.add_object(
+        num,
+        Obj::Stream {
+            dict: new_dict,
+            data: selis_bytes::Bytes::from(out_data),
+        },
+    );
+    Ok(FormRedaction::Written(Ref::new(num, 0)))
+}
+
+/// Materialise a page's (or a form's) `/Resources`, recursing into drawn form
+/// XObjects and leaving out images the strip removed.
+///
+/// # Budget
+///
+/// Linear in the resource entry count plus the work of each drawn form
+/// ([`redact_form_stream`]), bounded by [`MAX_REDACT_FORM_DEPTH`].
+///
+/// # Malformed Input
+///
+/// A non-dictionary `/XObject` or a foreign object is copied as-is by
+/// [`materialize_object`]; a form that cannot be redacted fails loudly from
+/// [`redact_form_stream`] rather than being carried through with its secret.
+#[allow(clippy::too_many_arguments)]
+fn materialize_redacted_resources(
+    merged: &mut selis_pdf_cos::doc_writer::DocumentBuilder,
+    src: &[u8],
+    doc: &selis_pdf_cos::Doc,
+    resources: Option<Obj>,
+    xobject_draws: &[selis_pdf_edit::XObjectDraw],
+    removed_images: &[String],
+    regions: &[(f64, f64, f64, f64)],
+    fallback_resources: Option<&Obj>,
+    emptied_forms: &mut Vec<selis_bytes::Bytes>,
+    depth: usize,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Option<Ref>, String> {
+    let Some(value) = resources else {
+        return Ok(None);
+    };
+    let resolved = match &value {
+        Obj::Ref(r) => resolve_ref_obj(src, doc, *r, budget, g)?,
+        other => other.clone(),
+    };
+    let Obj::Dict(pairs) = resolved else {
+        return materialize_object(merged, src, doc, Some(value), budget, g);
+    };
+    // A name can be drawn more than once at different CTMs; strip for all of
+    // them so text under the region in any placement is removed.
+    let mut draws_by_name: std::collections::HashMap<Vec<u8>, Vec<[f64; 6]>> =
+        std::collections::HashMap::new();
+    for draw in xobject_draws {
+        draws_by_name
+            .entry(draw.name.as_bytes().to_vec())
+            .or_default()
+            .push(draw.ctm);
+    }
+    let mut out: Vec<(selis_bytes::Bytes, Obj)> = Vec::with_capacity(pairs.len());
+    for (key, entry) in &pairs {
+        if key.as_slice() != b"XObject" {
+            let carried = materialize_object(merged, src, doc, Some(entry.clone()), budget, g)?;
+            out.push((key.clone(), carried.map_or(Obj::Null, Obj::Ref)));
+            continue;
+        }
+        let xobjects: Vec<(selis_bytes::Bytes, Obj)> = match entry {
+            Obj::Ref(r) => match resolve_ref_obj(src, doc, *r, budget, g)? {
+                Obj::Dict(items) => items,
+                _ => Vec::new(),
+            },
+            Obj::Dict(items) => items.clone(),
+            _ => Vec::new(),
+        };
+        let mut kept: Vec<(selis_bytes::Bytes, Obj)> = Vec::with_capacity(xobjects.len());
+        for (name, xobject) in xobjects {
+            if removed_images
+                .iter()
+                .any(|gone| gone.as_bytes() == name.as_slice())
+            {
+                continue;
+            }
+            if let (Some(ctms), Obj::Ref(r)) = (draws_by_name.get(name.as_slice()), &xobject) {
+                match redact_form_stream(
+                    merged,
+                    src,
+                    doc,
+                    *r,
+                    ctms,
+                    regions,
+                    fallback_resources,
+                    depth,
+                    budget,
+                    g,
+                )? {
+                    FormRedaction::Written(redacted) => {
+                        kept.push((name, Obj::Ref(redacted)));
+                        continue;
+                    }
+                    FormRedaction::Empty => {
+                        emptied_forms.push(name.clone());
+                        continue;
+                    }
+                    FormRedaction::NotAForm => {}
+                }
+            }
+            let carried = materialize_object(merged, src, doc, Some(xobject), budget, g)?;
+            kept.push((name, carried.map_or(Obj::Null, Obj::Ref)));
+        }
+        let num = merged.allocate();
+        merged.add_object(num, Obj::Dict(kept));
+        out.push((key.clone(), Obj::Ref(Ref::new(num, 0))));
+    }
+    let num = merged.allocate();
+    merged.add_object(num, Obj::Dict(out));
+    Ok(Some(Ref::new(num, 0)))
+}
+
+/// Whether an annotation's `/Rect` overlaps any redaction region.
+///
+/// Used to blank the appearance of annotations that sit under a redaction:
+/// their `/AP /N` stream is a form that can carry text at coordinates a page
+/// region cannot reach, so keeping it would leave the secret in the file.
+fn annotation_rect_overlaps(
+    src: &[u8],
+    doc: &selis_pdf_cos::Doc,
+    rect: Option<&Obj>,
+    regions: &[(f64, f64, f64, f64)],
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> bool {
+    let Some(rect) = rect else {
+        return false;
+    };
+    let Obj::Array(items) = resolve_shallow(src, doc, rect.clone(), budget, g) else {
+        return false;
+    };
+    if items.len() != 4 {
+        return false;
+    }
+    let values = items.iter().map(obj_f64).collect::<Option<Vec<f64>>>();
+    let Some(values) = values else {
+        return false;
+    };
+    let x0 = values[0].min(values[2]);
+    let x1 = values[0].max(values[2]);
+    let y0 = values[1].min(values[3]);
+    let y1 = values[1].max(values[3]);
+    regions
+        .iter()
+        .any(|(rx, ry, rw, rh)| x0 <= rx + rw && x1 >= *rx && y0 <= ry + rh && y1 >= *ry)
+}
+
 /// Carry a page's `/Resources` into `merged`, returning the reference the
 /// copied page should point at (WRITE.03). See [`materialize_object`].
 fn materialize_resources(
@@ -3796,10 +4342,11 @@ fn materialize_resources(
 /// references (copy the objects it references, renumber the value, and store
 /// it as its own object so the page holds a valid indirect reference).
 /// Dropping these loses the page's fonts/XObjects/annotations.
+///
 /// Copy a page's annotations WITHOUT the entry that points at the old page.
 ///
 /// An annotation's `/P` names the page it is on. When the page is REWRITTEN
-/// - as a redaction rewrites it - an annotation that still points at the old
+/// (as a redaction rewrites it), an annotation that still points at the old
 /// page drags that page into the output, and with it the page's old content
 /// stream: the very text a redaction is there to remove, still readable in the
 /// file.
@@ -3812,6 +4359,7 @@ fn materialize_annotations(
     src: &[u8],
     doc: &selis_pdf_cos::Doc,
     annots: Option<Obj>,
+    regions: &[(f64, f64, f64, f64)],
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
 ) -> Result<Option<Obj>, String> {
@@ -3834,11 +4382,19 @@ fn materialize_annotations(
         let Ok(Obj::Dict(pairs)) = resolve_ref_obj(src, doc, reference, budget, g) else {
             continue;
         };
-        // The annotation without its page pointer.
+        // A redacted region that hits this annotation drops its appearance:
+        // the /AP /N form can carry text that a page region cannot reach, so
+        // keeping its stream would leave the secret in the file. /P is always
+        // dropped (WRITE.07): it would drag the OLD page into a rewritten file.
+        let blank_appearance =
+            annotation_rect_overlaps(src, doc, dict_entry(&pairs, b"Rect"), regions, budget, g);
         let mut trimmed: Vec<(selis_bytes::Bytes, Obj)> = Vec::with_capacity(pairs.len());
         let mut held: Vec<Ref> = Vec::new();
         for (key, value) in &pairs {
             if key.as_slice() == b"P" {
+                continue;
+            }
+            if blank_appearance && matches!(key.as_slice(), b"AP" | b"AS") {
                 continue;
             }
             collect_refs_in(value, &mut held);
@@ -4279,6 +4835,7 @@ fn copy_page_redacted(
     let redaction = selis_pdf_edit::strip_content_in_regions(&joined, rects);
     let inverse = redaction.inverse_transform;
     let removed_images = redaction.removed_images;
+    let xobject_draws = redaction.xobject_draws;
     let mut rebuilt = redaction.content;
     // Append black rects over the regions.
     let mut cb = selis_pdf_cos::doc_writer::ContentBuilder::new();
@@ -4308,7 +4865,30 @@ fn copy_page_redacted(
         rebuilt.extend_from_slice(b"Q\n");
     }
 
-    // Copy the (rebuilt) content as a fresh stream, then the resources.
+    // Recurse into drawn form XObjects so their own streams are redacted at
+    // the placement CTM, and leave out images the strip removed.
+    let mut emptied_forms: Vec<selis_bytes::Bytes> = Vec::new();
+    let new_resources = materialize_redacted_resources(
+        merged,
+        src,
+        &doc,
+        resources_ref,
+        &xobject_draws,
+        &removed_images,
+        rects,
+        None,
+        &mut emptied_forms,
+        0,
+        budget,
+        g,
+    )?;
+    // A form that stripped to nothing has no resource; its draw must go too,
+    // or the page would name an object the output no longer holds. Do this
+    // BEFORE the content stream is written below.
+    if !emptied_forms.is_empty() {
+        rebuilt = remove_do_draws(&rebuilt, &emptied_forms);
+    }
+    // Copy the (rebuilt) content as a fresh stream.
     let content_num = merged.allocate();
     merged.add_object(
         content_num,
@@ -4320,10 +4900,8 @@ fn copy_page_redacted(
             data: selis_bytes::Bytes::from(rebuilt),
         },
     );
-    let new_resources =
-        materialize_resources(merged, src, &doc, resources_ref, &removed_images, budget, g)?;
     let mut extra = rotate_extra(rotate);
-    if let Some(annots) = materialize_annotations(merged, src, &doc, annots, budget, g)? {
+    if let Some(annots) = materialize_annotations(merged, src, &doc, annots, rects, budget, g)? {
         extra.push((b"Annots".to_vec(), annots));
     }
     let page = merged.add_page_with_extra(
@@ -5630,6 +6208,7 @@ fn rewrite_with_plan(
         page_refs,
         &kept,
         &new_idx_by_old,
+        true,
         true,
         budget,
         g,
