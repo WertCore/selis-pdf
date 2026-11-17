@@ -98,6 +98,7 @@ fn run_tools(
             .map(|field| selis_pdf_tools::FieldEdit {
                 name: field.name,
                 value: field.value.unwrap_or_else(|| "conformance".to_string()),
+                values: Vec::new(),
             })
             .collect();
         if edits.is_empty() {

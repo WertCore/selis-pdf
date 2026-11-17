@@ -131,7 +131,11 @@ fn checked_edit(name: String, value: String) -> Result<FieldEdit, ImportError> {
             "the value for {name:?} contains a NUL"
         )));
     }
-    Ok(FieldEdit { name, value })
+    Ok(FieldEdit {
+        name,
+        value,
+        values: Vec::new(),
+    })
 }
 
 /// Import field values from XFDF XML.

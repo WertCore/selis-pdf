@@ -62,5 +62,7 @@ selis-pdf-annot = { workspace = true }
 proptest = { workspace = true }
 # Read-back verification for `subset_fonts`: the output is re-opened with the
 # engine's own extraction pipeline, not matched against source bytes.
-selis-pdf-engine = { workspace = true }
+# The pixel render-check needs a resident standard-14 substitute: without this
+# feature the engine correctly reports a pending fallback and paints nothing.
+selis-pdf-engine = { workspace = true, features = ["builtin-fallback-fonts"] }
 selis-pdf-text = { workspace = true }

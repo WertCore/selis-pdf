@@ -20,12 +20,12 @@ fn choice_fixture() -> Vec<u8> {
         (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
         (
             3,
-            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> /Contents 4 0 R /Annots [6 0 R 7 0 R] >>",
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /Helvetica 8 0 R >> >> /Contents 4 0 R /Annots [6 0 R 7 0 R] >>",
         ),
         (4, b"<< /Length 0 >>\nstream\n\nendstream"),
         (
             5,
-            b"<< /Fields [6 0 R 7 0 R] /DA (/Helv 0 Tf 0 g) /DR << /Font << /Helv 8 0 R >> >> >>",
+            b"<< /Fields [6 0 R 7 0 R] /DA (/Helvetica 0 Tf 0 g) /DR << /Font << /Helvetica 8 0 R >> >> >>",
         ),
         (
             6,
@@ -215,6 +215,108 @@ fn appearance_content(bytes: &[u8], field_name: &str) -> String {
         return String::from_utf8_lossy(data.as_slice()).into_owned();
     }
     panic!("no field named {field_name}");
+}
+
+/// Render page 0 at 72 dpi through the same engine path a viewer uses.
+fn render_page(bytes: &[u8]) -> (u32, u32, Vec<u8>) {
+    let budget = selis_sandbox::Budget::profile(selis_sandbox::Surface::Viewer);
+    let clock = selis_sandbox::shell_clock();
+    let session = selis_pdf_engine::Session::open(bytes.to_vec(), &budget, &clock).expect("open");
+    let mut g = budget.guard_with(&clock, selis_sandbox::CancelToken::new());
+    let page = session
+        .render_page_rgba(0, 72.0, &budget, &mut g)
+        .expect("render");
+    (page.width, page.height, page.rgba)
+}
+
+/// Count pixels darker than near-white (the page content is empty, so any ink
+/// comes from a widget's synthesized appearance).
+fn ink_count(rgba: &[u8]) -> usize {
+    rgba.chunks_exact(4)
+        .filter(|pixel| pixel[0] < 250 || pixel[1] < 250 || pixel[2] < 250)
+        .count()
+}
+
+/// Pixels whose RGB differs between two renders, with their x-extent.
+fn differing_pixels(a: &[u8], b: &[u8], width: u32) -> (usize, u32, u32) {
+    let mut count = 0usize;
+    let mut min_x = u32::MAX;
+    let mut max_x = 0u32;
+    for (at, (left, right)) in a.chunks_exact(4).zip(b.chunks_exact(4)).enumerate() {
+        if left[..3] != right[..3] {
+            count += 1;
+            let x = u32::try_from(at).map(|index| index % width).unwrap_or(0);
+            min_x = min_x.min(x);
+            max_x = max_x.max(x);
+        }
+    }
+    (count, min_x, max_x)
+}
+
+/// Bake a filled form's widget appearances into page content, then return the
+/// bytes. Flattening is the documented way to make a synthesized appearance
+/// permanent, and the engine's page-content render folds a form XObject's font
+/// resources into the page's — so the painted glyphs are measurable here.
+fn flatten_bytes(bytes: &[u8], tag: &str) -> Vec<u8> {
+    let dir = std::env::temp_dir().join(format!("selis-choice-pixel-{tag}-{}", std::process::id()));
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let input = dir.join("in.pdf");
+    let output = dir.join("out.pdf");
+    std::fs::write(&input, bytes).expect("write filled form");
+    crate::flatten_forms(&input.to_string_lossy(), &output.to_string_lossy()).expect("flatten");
+    let out = std::fs::read(&output).expect("read flattened form");
+    std::fs::remove_dir_all(&dir).ok();
+    out
+}
+
+/// Pixel-level evidence that the *selected label* is painted, not merely
+/// present as a `Tj` operator in an appearance stream. The fixture's page
+/// content is empty, so the blank render has no ink; after the CLI fill and
+/// flatten the widget's `/AP /N` paints the chosen label into page content.
+/// Filling a different selection changes pixels, and only inside the combo's
+/// widget box (x 10..120).
+#[test]
+fn cli_fill_paints_the_selected_choice_label_in_pixels() {
+    let fixture = choice_fixture();
+    let blank = render_page(&fixture);
+    assert_eq!(ink_count(&blank.2), 0, "an unfilled blank page has no ink");
+
+    let red = fill_through_cli(
+        &fixture,
+        "<xfdf xmlns=\"http://ns.adobe.com/xfdf/\"><fields>\
+         <field name=\"Combo\" value=\"r\"/><field name=\"List\" value=\"a\"/>\
+         </fields></xfdf>",
+    );
+    let green = fill_through_cli(
+        &fixture,
+        "<xfdf xmlns=\"http://ns.adobe.com/xfdf/\"><fields>\
+         <field name=\"Combo\" value=\"g\"/><field name=\"List\" value=\"a\"/>\
+         </fields></xfdf>",
+    );
+    let red_img = render_page(&flatten_bytes(&red, "red"));
+    let green_img = render_page(&flatten_bytes(&green, "green"));
+    assert_eq!((red_img.0, red_img.1), (blank.0, blank.1));
+
+    let red_ink = ink_count(&red_img.2);
+    let green_ink = ink_count(&green_img.2);
+    assert!(red_ink > 50, "\"Red Label\" was not painted: {red_ink} px");
+    assert!(
+        green_ink > 50,
+        "\"Green Label\" was not painted: {green_ink} px"
+    );
+
+    // A different selection actually changes the painted glyphs and nothing
+    // else on the page.
+    let (differing, min_x, max_x) = differing_pixels(&red_img.2, &green_img.2, red_img.0);
+    assert!(
+        differing > 50,
+        "the two labels render identically: {differing}"
+    );
+    assert!(
+        min_x >= 8 && max_x <= 122,
+        "ink changed outside the combo widget (x 10..120): {min_x}..{max_x}"
+    );
 }
 
 fn acroform_of(

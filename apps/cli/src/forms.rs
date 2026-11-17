@@ -8,8 +8,10 @@
 //! `fill-forms` takes repeatable `--set NAME=VALUE` pairs and writes a filled
 //! PDF. Every filled value is re-read from the produced bytes before the file
 //! is committed (see `selis_pdf_tools::fill_forms`); a value that does not
-//! round-trip leaves no file behind. The read-only, signature, push-button,
-//! multi-select and XFA refusals are deliberate and identical in both halves.
+//! round-trip leaves no file behind. The read-only, signature, push-button and
+//! XFA refusals are deliberate and identical in both halves; a multi-select
+//! choice accepts one selection per `--set` here (the API's `values` carries
+//! several), and refuses a value outside `/Opt`.
 
 use crate::{CliError, CliResult};
 
@@ -62,6 +64,7 @@ pub(crate) fn fill(
         fields.push(selis_pdf_tools::FieldEdit {
             name: name.to_string(),
             value: value.to_string(),
+            values: Vec::new(),
         });
     }
     let options = selis_pdf_tools::FillFormsOptions {
