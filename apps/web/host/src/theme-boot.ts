@@ -12,3 +12,11 @@
 import { startTheme } from "./theme.js";
 
 startTheme();
+
+// The home page and /tools.html are a byte-identical mirror, so the page's
+// role cannot live in the markup without breaking that check. The boot module
+// runs on both and marks the directory from its URL: a reader there came to
+// pick a tool, not to read the pitch.
+if (window.location.pathname === "/tools.html") {
+  document.documentElement.setAttribute("data-page", "tools");
+}

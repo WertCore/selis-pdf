@@ -29,6 +29,10 @@
 	--aside-note: rgba(233, 238, 233, 0.62);
 	--aside-line: rgba(233, 238, 233, 0.18);
 	--card-gradient: linear-gradient(145deg, rgba(255, 253, 247, 0.96), rgba(248, 245, 235, 0.86));
+	--jump-bg: rgba(244, 241, 232, 0.9);
+	--subtle-card-bg: rgba(255, 253, 247, 0.38);
+	--hint-bg: rgba(255, 253, 247, 0.62);
+	--on-accent: #fffdf7;
 	--radius: 20px;
 	--radius-small: 12px;
 	--font: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia,
@@ -64,6 +68,10 @@
 	--aside-note: #a8a49c;
 	--aside-line: #33363a;
 	--card-gradient: linear-gradient(145deg, rgba(30, 33, 36, 0.98), rgba(22, 24, 27, 0.9));
+	--jump-bg: rgba(22, 24, 27, 0.9);
+	--subtle-card-bg: rgba(30, 33, 36, 0.55);
+	--hint-bg: rgba(30, 33, 36, 0.7);
+	--on-accent: #0c1513;
 }
 
 *,
@@ -379,7 +387,7 @@ main {
 .primary-link {
 	border: 1px solid var(--accent);
 	background: var(--accent);
-	color: #fffdf7;
+	color: var(--on-accent);
 	box-shadow: 0 8px 22px rgba(11, 107, 94, 0.2);
 }
 
@@ -391,7 +399,7 @@ main {
 
 .secondary-link {
 	border: 1px solid var(--line-strong);
-	background: rgba(255, 253, 247, 0.62);
+	background: var(--hint-bg);
 	color: var(--ink);
 }
 
@@ -452,8 +460,21 @@ main {
 	line-height: 1.55;
 }
 
+/* ── page roles ──────────────────────────────────────────────────────────
+ * The home page tells the story; the directory is a working page. A reader
+ * who opens /tools.html came to pick a tool, so the hero pitch and the
+ * roadmap are not there — the grid is the first thing they see.
+ */
+:root[data-page="tools"] .hero,
+:root[data-page="tools"] #roadmap,
+:root[data-page="tools"] #platform {
+	display: none;
+}
+
+/* ── the tool directory ──────────────────────────────────────────────────── */
+
 .tools {
-	padding: 1rem 0 clamp(4rem, 8vw, 7rem);
+	padding: clamp(1.5rem, 3vw, 2.5rem) 0 clamp(4rem, 8vw, 7rem);
 }
 
 .tool-groups {
@@ -533,7 +554,7 @@ main {
 	padding: 0.6rem 0;
 	/* A literal rgba, not `color-mix` — the fallback for a browser without it
 	   would be a fully transparent bar with text sitting on the cards behind. */
-	background: rgba(244, 241, 232, 0.9);
+	background: var(--jump-bg);
 	backdrop-filter: blur(8px);
 	box-shadow: 0 1px 0 var(--line);
 }
@@ -583,7 +604,7 @@ main {
 .tool-jump-link[aria-current="true"] {
 	background: var(--accent);
 	border-color: var(--accent);
-	color: #fffdf7;
+	color: var(--on-accent);
 }
 
 /*
@@ -1304,14 +1325,14 @@ legend.field-label {
 
 .roadmap-grid {
 	display: grid;
-	grid-template-columns: repeat(3, minmax(0, 1fr));
+	grid-template-columns: repeat(2, minmax(0, 1fr));
 	gap: 0.9rem;
 }
 
 .roadmap-card {
 	padding: 1.2rem;
 	border-top: 2px solid var(--line-strong);
-	background: rgba(255, 253, 247, 0.38);
+	background: var(--subtle-card-bg);
 }
 
 .roadmap-status {
