@@ -325,3 +325,32 @@ fn subset_fonts_cli_refuses_a_pdf_without_an_eligible_font() {
     );
     assert!(!output.exists(), "no output committed on refusal");
 }
+
+/// A linearized output must open in the engine with EVERY page, not just the
+/// first. The first-page xref's free entries mean "not in this section", not
+/// "deleted"; a reader that lets them overwrite the main xref's live entries
+/// opens a 3-page document as one page.
+#[test]
+fn linearized_output_opens_with_every_page_in_the_engine() {
+    let dir = temp_dir("linearize-engine-pages");
+    let input = dir.join("in.pdf");
+    let output = dir.join("out.pdf");
+    std::fs::write(&input, three_page_pdf()).expect("write input");
+
+    let report = run_json(&[
+        "linearize",
+        &input.to_string_lossy(),
+        "-o",
+        &output.to_string_lossy(),
+    ]);
+    assert_eq!(verification_of(&report)["verdict"], "ok");
+
+    let bytes = std::fs::read(&output).expect("read output");
+    let budget = Budget::unlimited();
+    let clock = selis_sandbox::shell_clock();
+    let session = selis_pdf_engine::Session::open(bytes, &budget, &clock)
+        .expect("the engine reopens its own linearized output");
+    let mut g = budget.guard_with(&clock, selis_sandbox::CancelToken::new());
+    let health = session.health(&budget, &mut g);
+    assert_eq!(health.pages, 3, "the engine sees all three pages");
+}
