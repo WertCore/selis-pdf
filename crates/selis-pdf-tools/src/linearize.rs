@@ -318,6 +318,26 @@ mod tests {
 
     use super::*;
 
+    fn parse_h(text: &str) -> Vec<u64> {
+        let marker = "/H [";
+        let start = text.find(marker).expect("/H") + marker.len();
+        let rest = &text[start..];
+        let end = rest.find(']').expect("/H close");
+        rest[..end]
+            .split_whitespace()
+            .map(|v| v.parse().expect("int"))
+            .collect()
+    }
+
+    fn parse_int_after(text: &str, marker: &str) -> usize {
+        let start = text.find(marker).expect(marker) + marker.len();
+        let rest = &text[start..];
+        let end = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
+        rest[..end].parse().expect("integer")
+    }
+
     fn temp_dir(name: &str) -> std::path::PathBuf {
         let dir =
             std::env::temp_dir().join(format!("selis-linearize-{}-{name}", std::process::id()));
@@ -367,6 +387,36 @@ mod tests {
             text.contains(&format!("/L {}", out.len())),
             "/L {} not found",
             out.len()
+        );
+        // /H points at a real hint stream carrying /S (the shared-object
+        // table offset) and both hint tables in its payload.
+        let h = parse_h(&text);
+        assert_eq!(h.len(), 2, "/H is a 2-element array");
+        let hint_at = h[0] as usize;
+        let hint_head = String::from_utf8_lossy(&out[hint_at..hint_at + 40]);
+        assert!(
+            hint_head.contains(" obj"),
+            "/H points at an object: {hint_head:?}"
+        );
+        let stream_at = hint_at
+            + out[hint_at..]
+                .windows(7)
+                .position(|w| w == b"stream\n")
+                .expect("hint stream marker");
+        let dict = String::from_utf8_lossy(&out[hint_at..stream_at]);
+        assert!(dict.contains("/S "), "hint stream has /S");
+        let s = parse_int_after(&dict, "/S ");
+        let data_start = stream_at + 7;
+        let data_end = data_start
+            + out[data_start..]
+                .windows(10)
+                .position(|w| w == b"\nendstream")
+                .expect("hint endstream");
+        assert!(s < data_end - data_start, "/S within hint payload");
+        assert_eq!(
+            h[1] as usize,
+            data_end - data_start,
+            "/H length == payload length"
         );
         // All page contents survived; verify *logical* order via the engine,
         // not raw byte position (linearization deliberately reorders objects).
