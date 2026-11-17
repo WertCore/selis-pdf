@@ -28,6 +28,9 @@
     )
 )]
 
+#[cfg(test)]
+mod adversarial_redaction;
+
 pub mod annot;
 pub mod attachments;
 pub mod batch;

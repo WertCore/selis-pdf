@@ -262,3 +262,61 @@ And the redaction leg, which used to fail:
 | The tools plumbing | `crates/selis-pdf-tools/src/annot.rs` |
 | The wire | `crates/selis-pdf-wasm-tools/src/lib.rs` (ops 35 and 36) |
 | The editor | `apps/web/host/src/editor/markup.ts`, `editor-page.ts` |
+
+---
+
+## 6. The adversarial redaction corpus (SL-5.REDACT.06) — honest status
+
+**The DoD is NOT met: 3 of the 7 cases pass, 4 fail. Any failure blocks G5.**
+This section records the real state; it is not a "known issue" waiver.
+
+The corpus and its verification suite live in
+`crates/selis-pdf-tools/src/adversarial_redaction.rs`. Each case builds a
+one-page PDF in memory with a unique byte marker, redacts the region that
+covers it through the real `tools::redact`, then runs an **independent**
+ADR-P0023 proof: grep the raw output bytes for the marker (and, for the split
+case, each of its fragments), re-parse the output with a fresh parser, and run
+a structural survey. The verifier never trusts the writer's own report.
+
+The **"test the test" control**
+(`control_verifier_catches_a_redaction_that_missed_the_secret`) redacts the
+*wrong* region, asserts the marker is still in the output, and asserts the
+verifier **rejects** it. It passes — so a redaction that misses the secret
+would be caught. That is the one part of the proof that is fully sound today.
+
+### Pass / fail per case
+
+| # | Spec case | Marker | Result | Why |
+|---|---|---|---|---|
+| 01 | Text split across runs | `ADV-SPLIT-RUN-SECRET` (two `Tj` fragments) | **PASS** | Both runs sit under the region; `strip_content_in_regions` drops both. |
+| 02 | Text in a form XObject | `ADV-FORM-XOBJECT-SECRET` | **FAIL** (`#[ignore]`) | The page only draws `/Fm1 Do` at identity CTM; the engine never recurses into the form's stream and treats the `Do` as an image whose unit-square misses the region, so both the draw and the resource survive. |
+| 03 | Text in an annotation appearance | `ADV-ANNOT-AP-SECRET` | **FAIL** (`#[ignore]`) | Annotations are copied with every object they reference, including the `/AP /N` stream; redaction does not strip appearance text. |
+| 04 | Text in a prior revision | `ADV-PRIOR-REV-SECRET` | **PASS** | Redaction does a full rewrite, not an incremental append: the earlier revision's bytes never reach the output. |
+| 05 | Text in an embedded file | `ADV-EMBEDDED-FILE-SECRET` | **FAIL** (`#[ignore]`) | `reconcile_single_input` carries `/Names /EmbeddedFiles` through with `PRESERVE_ALL`; the embedded stream's bytes survive. |
+| 06 | Text as an image with an OCR layer | `ADV-OCR-IMAGE-SECRET` | **PASS** | The named image's bytes are removed (draw dropped + resource omitted) *and* the hidden `Tr 3` OCR text under the region is stripped. Both halves are gone. |
+| 07 | Text in metadata | `ADV-METADATA-SECRET` | **FAIL** (`#[ignore]`) | The catalog's `/Metadata` XMP stream is carried through with `carry_metadata = true`, secret intact. |
+
+Run everything, including the four honest failures, with:
+
+```
+cargo test -p selis-pdf-tools adversarial_redaction -- --include-ignored --nocapture
+```
+
+### What engine work each failure needs
+
+- **02 (form XObject):** recurse into form-XObject streams, composing the
+  `Do` placement matrix into the CTM, and strip their text; drop the form
+  when every draw is covered.
+- **03 (annotation appearance):** strip or regenerate annotation appearance
+  streams whose `/Rect` intersects a redaction region before the page is
+  materialised.
+- **05 (embedded file):** give redaction a content-removal path that drops
+  embedded files and relaxes the embedded-file count gate for the operation.
+- **07 (metadata):** scrub the XMP packet (and `/Info`) for the redacted
+  strings rather than carrying it through.
+
+Until all four are closed and the four `#[ignore]`s are removed, SL-5.REDACT.06
+does not meet its "100% pass" DoD, and G5 is blocked. The default crate suite
+is green (`cargo test -p selis-pdf-tools`: 136 passed, 4 ignored); the ignored
+tests are the four honest failures above, kept visible so the gap cannot be
+forgotten.
