@@ -7510,6 +7510,27 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
             "the reload did not restore the document: {restored:?}"
         ));
     }
+    // SL-5.EDIT.01: the session survives as a typed journal bundle, not just
+    // as the last bytes.
+    if session.get("journalSchema").and_then(Json::as_str) != Some("selis-session/1") {
+        return Err("the restored session carries no .selis journal bundle".into());
+    }
+    if session
+        .get("journalEntries")
+        .and_then(Json::as_u64)
+        .unwrap_or(0)
+        < 1
+    {
+        return Err("the .selis journal records no mutations".into());
+    }
+    if session
+        .get("journalGroups")
+        .and_then(Json::as_u64)
+        .unwrap_or(0)
+        < 1
+    {
+        return Err("the .selis journal records no undo groups".into());
+    }
 
     // The inline editor must BE the line it is over.
     let inline = report

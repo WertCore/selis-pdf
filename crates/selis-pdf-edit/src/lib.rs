@@ -44,6 +44,10 @@
 #![forbid(unsafe_code)]
 
 mod font;
+pub mod journal;
+
+#[cfg(test)]
+mod journal_tests;
 mod reflow;
 
 use std::collections::BTreeMap;

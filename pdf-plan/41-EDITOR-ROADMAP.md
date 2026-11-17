@@ -639,12 +639,24 @@ These are the blockers named above, in the order they unlock the most.
       an entry is the bytes of the state before it — a snapshot inverse, which
       is why undo is still byte-exact. Unit tests cover order, ids, times and
       inverses, and the browser check reads `edit_text` back out of the panel.
-- [ ] **I4b — Materialise from the journal (`SL-5.EDIT.01`).** The spec's full
-      model is still ahead: typed `Mutation` with `inverse()`, `source_id`
-      revalidation, `.selis` persistence and reload, undo groups with
-      coalescing, and un-stubbing the engine's `mutate`/`save` ops. Until
-      those land the byte snapshot stays the restore source, so undo remains
-      exact rather than a re-derivation that only looks the same.
+- [x] **I4b — Materialise from the journal (`SL-5.EDIT.01`).** The journal
+      model is in place on both sides. The web editor has a typed `Mutation`
+      with a total `inverse()`, `Journal::apply`/`undo`/`redo`, undo groups
+      with coalescing (typing, dragging, explicit), a source fingerprint that
+      refuses a changed source, and a `.selis` session bundle in IndexedDB —
+      proven by the browser check reading the bundle back after a reload. The
+      engine has the same model in `selis-pdf-edit::journal` with its own DoD
+      tests (apply-then-revert, bundle reload, fingerprint). Undo still restores
+      byte-exact snapshots, so it cannot return something that merely renders
+      the same.
+- [ ] **I4c — Object-level mutations and the engine `mutate`/`save` ops
+      (`SL-5.EDIT.03`, owner HUMAN).** The spec's full taxonomy (SetObject,
+      ReplaceStream, InsertPage, …) needs an object-level COS editor in the
+      engine and the incremental writer's 100 000-mutation property suite.
+      Mutations here are document-level (whole-file before/after), which is
+      exact and invertible but has the whole document as its blast radius.
+      The core worker's `mutate`/`save` wire ops stay capability-gated until
+      that editor lands; they are not the surface the web workspace uses.
 
 ### Things that are NOT worth doing
 

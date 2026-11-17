@@ -2135,12 +2135,28 @@
         const pages = after.querySelectorAll(".selis-editor-page").length;
         const filename = (after.getElementById("selis-editor-filename").textContent || "").trim();
         const status = statusText(after);
+        // SL-5.EDIT.01: the session keeps a .selis journal bundle, not just
+        // the last bytes. Read it out of IndexedDB and prove it is there.
+        const bundle = await new Promise((resolve) => {
+          const request = indexedDB.open("selis-editor", 1);
+          request.onsuccess = () => {
+            const db = request.result;
+            const tx = db.transaction("document", "readonly");
+            const get = tx.objectStore("document").get("current");
+            get.onsuccess = () => resolve(get.result?.bundle ?? null);
+            get.onerror = () => resolve(null);
+          };
+          request.onerror = () => resolve(null);
+        });
         return {
           openShown: openShown,
           closeShown: closeShown,
           restoredPages: pages,
           restoredName: filename,
           restoredStatus: status,
+          journalSchema: bundle?.schema ?? null,
+          journalEntries: bundle?.entries?.length ?? 0,
+          journalGroups: bundle?.groups?.length ?? 0,
         };
       }
 

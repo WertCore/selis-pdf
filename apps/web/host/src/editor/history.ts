@@ -1,3 +1,5 @@
+import { Journal } from "./journal.js";
+
 /**
  * Undo and redo for the editor workspace.
  *
@@ -5,7 +7,7 @@
  *
  * `23-EDIT-MODEL-SPEC.md` describes the long-term edit model: a mutation
  * journal, undo groups, and a document materialised from the journal. None of
- * that is built — every `SL-5.EDIT.*` box in `15-PHASE-5-edit.md` is unticked —
+ * that is built G�� every `SL-5.EDIT.*` box in `15-PHASE-5-edit.md` is unticked G��
  * and a workspace cannot borrow the spec's model without the spec's engine.
  *
  * So the workspace keeps the document's **bytes** for each step and restores
@@ -18,10 +20,10 @@
  * order it happened, with an id and a time. That is the journal's spine: the
  * reader can see what each step did, and a later slice can materialise the
  * document from the operations instead of keeping a byte copy per step. The
- * inverse of an entry is the bytes of the entry before it — a snapshot
+ * inverse of an entry is the bytes of the entry before it G�� a snapshot
  * inverse, which is why undo is exact today.
  *
- * The cost is memory — one copy of the document per step — so the depth is
+ * The cost is memory G�� one copy of the document per step G�� so the depth is
  * capped. The cap is a constant here and nowhere else.
  */
 
@@ -32,6 +34,8 @@ export const HISTORY_LIMIT = 25;
 export interface OperationRecord {
 	/** The operation's wire name, e.g. `edit_text` or `redact`. */
 	readonly op: string;
+	/** The options the operation was called with, for the journal. */
+	readonly options?: Readonly<Record<string, unknown>>;
 }
 
 /** One journal entry: a state of the document, and the change that made it. */
@@ -144,7 +148,7 @@ export class DocumentHistory {
 	/**
 	 * Move the cursor to a state without changing it.
 	 *
-	 * The caller restores the bytes itself — this only says which state the
+	 * The caller restores the bytes itself G�� this only says which state the
 	 * document is in, so the history and the document agree afterwards.
 	 */
 	setCursor(index: number): void {
@@ -200,13 +204,43 @@ export class DocumentHistory {
 	 *
 	 * The spec's inverse is a typed Mutation; this one is a snapshot, which is
 	 * why an undo here is byte-exact. A journal entry at index 0 has no inverse
-	 * — it is the document as it was opened.
+	 * G�� it is the document as it was opened.
 	 */
 	inverseOf(index: number): Uint8Array | null {
 		if (index <= 0 || index >= this.#states.length) {
 			return null;
 		}
 		return this.#states[index - 1]?.bytes ?? null;
+	}
+
+	/**
+	 * The typed mutation journal for these states, rebuilt on demand.
+	 *
+	 * The workspace keeps byte snapshots so an undo is an exact restore, but
+	 * every state is a typed mutation with a before and after; the journal is
+	 * therefore reconstructible from the history and is what the .selis bundle
+	 * persists. materialise(source, journal) is the current bytes.
+	 */
+	toJournal(source: Uint8Array): Journal {
+		const journal = new Journal(source);
+		for (let index = 1; index < this.#states.length; index += 1) {
+			const state = this.#states[index];
+			const before = this.#states[index - 1];
+			if (state === undefined || before === undefined) continue;
+			journal.apply(
+				{
+					kind: "replace-document",
+					op: state.operation?.op ?? "unknown",
+					options: state.operation?.options ?? {},
+					before: before.bytes,
+					after: state.bytes,
+				},
+				state.label,
+				{ kind: "explicit" },
+			);
+		}
+		journal.setCursor(this.#cursor - 1);
+		return journal;
 	}
 
 	/**

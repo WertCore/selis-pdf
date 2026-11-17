@@ -247,6 +247,8 @@ interface EditorState {
 	pageSizes: readonly { readonly width: number; readonly height: number }[];
 	/** The document's bytes — the state every operation works from. */
 	bytes: Uint8Array | null;
+	/** The bytes as the document was opened: the source the journal materialises over. */
+	sourceBytes: Uint8Array | null;
 	/** The document's name, for the download and the produced file names. */
 	name: string;
 	history: DocumentHistory;
@@ -313,6 +315,7 @@ const state: EditorState = {
 	pages: 0,
 	pageSizes: [],
 	bytes: null,
+	sourceBytes: null,
 	name: "document.pdf",
 	history: new DocumentHistory(HISTORY_DEPTH),
 	page: 0,
@@ -1987,6 +1990,7 @@ async function openFile(file: File): Promise<void> {
 		dom.filename.textContent = state.name;
 		await openInEngine(bytes);
 		state.bytes = bytes;
+		state.sourceBytes = bytes.slice();
 		state.history.reset(`Opened ${state.name}`, bytes);
 		renderDirty();
 		renderDocumentState();
@@ -2039,11 +2043,17 @@ async function rememberDocument(): Promise<void> {
 	}
 	const name = state.name;
 	const dirty = state.dirty;
-	// The writes are chained, so the copy in the storage is always the LAST
-	// one and never an older document that arrived late.
+	// The .selis bundle carries the typed mutation journal: a crash or a
+	// refresh does not lose the steps that produced this document.
+	const source = state.sourceBytes;
+	const bundle = source === null ? undefined : state.history.toJournal(source).toBundle();
 	await keeping
 		.then(async () => {
-			state.kept = await keepDocument({ name, bytes, dirty });
+			state.kept = await keepDocument(
+				bundle === undefined
+					? { name, bytes, dirty }
+					: { name, bytes, dirty, bundle },
+			);
 		})
 		.catch(() => {
 			// The storage is not there, or it refused. The workspace simply
@@ -2073,6 +2083,7 @@ async function restoreDocument(): Promise<void> {
 	try {
 		await openInEngine(kept.bytes);
 		state.bytes = kept.bytes;
+		state.sourceBytes = kept.bytes.slice();
 		state.history.reset(`Restored ${state.name}`, kept.bytes);
 		renderDirty();
 		renderDocumentState();

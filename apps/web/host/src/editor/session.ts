@@ -1,3 +1,5 @@
+import type { JournalBundle } from "./journal.js";
+
 /**
  * The document the reader had open, kept so that a reload does not lose it.
  *
@@ -29,6 +31,8 @@ export interface KeptDocument {
 	readonly bytes: Uint8Array;
 	/** Whether the document carries changes the reader has not taken away. */
 	readonly dirty: boolean;
+	/** The .selis session bundle: the journal that reconstructs the document. */
+	readonly bundle?: JournalBundle;
 }
 
 /** The database the workspace keeps its document in. */
@@ -105,6 +109,7 @@ export async function keepDocument(document: KeptDocument): Promise<boolean> {
 					name: document.name,
 					bytes: document.bytes,
 					dirty: document.dirty,
+					bundle: document.bundle,
 				},
 				KEY,
 			);
@@ -136,14 +141,16 @@ export async function readKeptDocument(): Promise<KeptDocument | null> {
 		if (typeof stored !== "object" || stored === null) {
 			return null;
 		}
-		const record = stored as { name?: unknown; bytes?: unknown; dirty?: unknown };
+		const record = stored as { name?: unknown; bytes?: unknown; dirty?: unknown; bundle?: unknown };
 		if (typeof record.name !== "string" || !(record.bytes instanceof Uint8Array)) {
 			return null;
 		}
+		const bundle = record.bundle as JournalBundle | undefined;
 		return {
 			name: record.name,
 			bytes: record.bytes,
 			dirty: record.dirty === true,
+			...(bundle !== undefined && typeof bundle === "object" ? { bundle } : {}),
 		};
 	} catch {
 		return null;
