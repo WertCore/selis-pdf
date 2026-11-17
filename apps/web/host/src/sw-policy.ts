@@ -85,6 +85,9 @@ export const TOOL_PAGE_PATHS: readonly string[] = TOOL_PAGE_SLUGS.map((slug) => 
  * module graph are new URLs, and an install that predates them has no entry
  * to serve them from.
  *
+ * v13 puts the trust-list icons inline with their text. CSS is cached, so
+ * bump to replace the old stylesheet.
+ *
  * v12 renders EVERY page in the preview (the old one only did page one),
  * fixes the light-theme icon pair, and drops the header "No upload" pill.
  * Both the CSS and the module are cached, so bump.
@@ -118,7 +121,7 @@ export const TOOL_PAGE_PATHS: readonly string[] = TOOL_PAGE_SLUGS.map((slug) => 
  * removed weeks ago. Cache-first is what makes offline work and what makes a
  * version bump the only honest way to replace it.
  */
-export const CACHE_VERSION = "12";
+export const CACHE_VERSION = "13";
 
 /** Prefix every cache this app owns carries, so `activate` purges our own and nothing else. */
 export const CACHE_PREFIX = "selis-";

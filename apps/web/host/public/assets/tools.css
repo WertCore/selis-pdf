@@ -427,6 +427,9 @@ main {
 }
 
 .trust-list li {
+	display: flex;
+	align-items: baseline;
+	gap: 0.5rem;
 	padding-top: 0.9rem;
 	border-top: 1px solid var(--line-strong);
 	color: var(--muted);
@@ -434,13 +437,15 @@ main {
 	line-height: 1.45;
 }
 
+/* The icon sits INLINE with the words, not on a line of its own. */
 .trust-list span {
-	display: block;
-	margin-bottom: 0.55rem;
+	display: inline-flex;
+	align-items: baseline;
+	flex: none;
 	color: var(--accent);
 	font-family: var(--mono);
-	font-size: 0.7rem;
-	letter-spacing: 0.08em;
+	font-size: 0.9rem;
+	line-height: 1;
 }
 
 .section-head {
