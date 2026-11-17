@@ -42,6 +42,11 @@ budget = 800000
 # 136 633 B brotli (424 456 B raw) measured together, all behind their format
 # codes. The 2% regression rule accepted the +11.7% drift when the OOXML
 # readers landed; the budget stays at 600 000.
+# The inbound-fidelity slice (real URI link annotations, narrow inline style=
+# colour/size/align, GFM/HTML table column alignment) added a measured +4.5 KB
+# to 142 546 B brotli. Every byte is the fidelity work itself behind the HTML
+# and Markdown format codes, not a new dependency; the baseline moves with it
+# and the 2% rule gates the next slice.
 [[budget]]
 chunk = "convert"
 artifact = "selis_pdf_wasm_convert"
@@ -90,10 +95,17 @@ budget = 900000
 # web editor can bake marks into the page: +8 KB brotli to 411761, still under
 # the 420000 ceiling. The baseline moves with it; the 2% rule gates the next
 # slice.
+# Parity #3 wired the TrueType font subsetter (SL-3.FONT.11, op 41) into this
+# chunk: the subsetter plus the document-wide glyph walk and CIDToGIDMap
+# rewrite add a measured +52 KB to 464 740 B brotli. The budget moves one step
+# to 480 000 to cover the operation, and the baseline moves to the measurement;
+# the 2% rule still gates every later slice. A dedicated lazy chunk would keep
+# this off the common tools page, but the tools chunk already links the form,
+# flatten and text-edit engine work, so the subsetter stays here for now.
 [[budget]]
 chunk = "tools"
 artifact = "selis_pdf_wasm_tools"
-budget = 420000
+budget = 480000
 
 # The raster page's lazy chunk (PDF → PNG, JPG, TIFF and WebP). It carries the
 # whole render walk, tiny-skia, the built-in Liberation fallback faces, the owned

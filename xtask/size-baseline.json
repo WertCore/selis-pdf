@@ -1,15 +1,15 @@
 {
-  "selis_pdf_wasm": 1291205,
+  "selis_pdf_wasm": 1289722,
   "selis_pdf_wasm_cjk": 5000,
-  "selis_pdf_wasm_convert": 137654,
+  "selis_pdf_wasm_convert": 142546,
   "selis_pdf_wasm_editor": 4988,
-  "selis_pdf_wasm_html": 231666,
+  "selis_pdf_wasm_html": 231760,
   "selis_pdf_wasm_jpx": 5008,
   "selis_pdf_wasm_ocr": 4981,
-  "selis_pdf_wasm_raster": 1127438,
-  "selis_pdf_wasm_security": 144504,
-  "selis_pdf_wasm_sign": 220102,
-  "selis_pdf_wasm_text": 320488,
-  "selis_pdf_wasm_tools": 411761,
-  "xtask": 188203
+  "selis_pdf_wasm_raster": 1128232,
+  "selis_pdf_wasm_security": 144371,
+  "selis_pdf_wasm_sign": 220773,
+  "selis_pdf_wasm_text": 320603,
+  "selis_pdf_wasm_tools": 464740,
+  "xtask": 188344
 }
