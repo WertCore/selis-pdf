@@ -565,12 +565,17 @@ and extraction tests, and a lazy raster chunk under budget. No raster claim befo
       core and the CLI deliver the feature today.
 - [ ] **Flatten forms** — form appearance generation is its own correctness surface.
       *Implemented (core + CLI; web card + render-check deferred):* two halves now exist.
-      (1) **Field-appearance synthesis (SL-5.FORM.02, text fields):** `fill_form` writes a real
-      `/AP /N` Form XObject per filled text field when `FillFormsOptions.synthesize_appearances` is
-      set — the ISO 32000-1 §12.7.3.3 variable-text appearance from the field's effective `/DA`
-      (font/size/colour resolved against `/DR`), honouring `/Q` quadding, the multiline flag and
-      auto-size — so the value is visible without `/NeedAppearances`. Choice/button appearances are
-      untouched (buttons already carry them; the fill selects `/AS`). (2) **The flatten itself:**
+      (1) **Field-appearance synthesis (SL-5.FORM.02, text + choice/list-box fields):** `fill_form`
+      writes a real `/AP /N` Form XObject per filled text field and per filled single-select
+      choice (`/Ch` with the Combo flag) or list box (`/Ch` with the flag clear) when
+      `FillFormsOptions.synthesize_appearances` is set — the ISO 32000-1 §12.7.3.3 variable-text
+      appearance from the field's effective `/DA` (font/size/colour resolved against `/DR`),
+      honouring `/Q` quadding, the multiline flag and auto-size — so the value is visible without
+      `/NeedAppearances`. A non-edit choice draws the selected `/Opt` display label while `/V`/`/I`
+      keep the export value and index; an editable combo whose typed value matches no option draws
+      that value. Multi-select choices are refused by type; a field with no resolvable `/DR` font,
+      no widget or no usable `/Rect` keeps `/NeedAppearances` rather than claiming an appearance it
+      did not write. Buttons already carry appearances (the fill selects `/AS`). (2) **The flatten itself:**
       `selis-pdf-tools::flatten_forms` bakes each widget's `/AP /N` into page content by the §12.5.5
       placement (the annotation-flatten machinery with the widget filter flipped), drops the widgets
       from `/Annots`, and removes `/AcroForm` (`catalog_extra_mut` + `retain_reachable`). A
@@ -578,10 +583,14 @@ and extraction tests, and a lazy raster chunk under budget. No raster claim befo
       `synthesize_appearances` first to bake its value. CLI twin `selis flatten-forms <in> -o <out>
       [--json]`. **Tests:** `synthesizes_a_text_field_appearance_stream` (the widget's `/AP /N` is a
       Form XObject whose `/BBox` matches `/Rect` and whose content draws the value; no forced
-      `/NeedAppearances`) and `flatten_forms_bakes_widgets_and_drops_the_acroform` (appearance baked
+      `/NeedAppearances`), `synthesizes_choice_and_listbox_appearance_streams` (re-opens the output:
+      `/AP /N` draws the `/Opt` label, `/V`/`/I` round-trip, no `/NeedAppearances`), plus
+      `multi_select_choice_is_refused_by_type`, `choice_synthesis_keeps_need_appearances_without_a_font`
+      and the CLI-path `cli_fill_draws_choice_labels_in_real_appearance_streams` in
+      `selis-pdf-tools`; `flatten_forms_bakes_widgets_and_drops_the_acroform` (appearance baked
       into content + `Do`, widget and `/AcroForm` gone, annotation count zero).
-      **Deferred:** choice/listbox appearance synthesis, the WASM op + web card, and a pixel-level
-      render-check of the baked field (needs the raster harness; the structural proof stands today).
+      **Deferred:** the WASM op + web card, and a pixel-level render-check of the baked field (needs
+      the raster harness; the structural proof stands today).
 - [ ] **Compare two PDFs** — pixel and text diff with render determinism.
       *Implemented (core + CLI; web card deferred):* `selis-pdf-tools::compare_pdfs` (behind the
       `text` feature, which links both the renderer and the text ladder) renders each page of both
@@ -978,8 +987,10 @@ form values survive a round trip. Human-owned correctness.
       read-only controls are disabled, and the downloaded Blob carries `(Browser Ada Lovelace)` and
       `/NeedAppearances true` with zero foreign requests. 39 cards. Tools chunk 321 569 B brotli of
       340 000 (the budget moved one round step with a note in `xtask/size-budgets.toml`).
-      Still open: appearance-stream synthesis, so this relies on `/NeedAppearances` and a viewer that
-      honours it; flattening remains its own task.
+      Appearance-stream synthesis has since shipped for text and single-select choice/list-box
+      fields (see the Flatten forms row); a fill without `synthesize_appearances`, or one whose field
+      has no resolvable `/DR` font or widget, still relies on `/NeedAppearances` and a viewer that
+      honours it. Flattening remains its own task.
 - [x] **Sign PDF** — certificate/signature UI, local keys, invalidation warnings. Shipped as the core
       crate `selis-pdf-sign` (27 tests: visual-stamp geometry and WinAnsi refusal, incremental digital
       signature, `/ByteRange` patching, CMS verification and re-read of the field) plus `selis-crypto`

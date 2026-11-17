@@ -120,3 +120,6 @@ pub fn fill_forms(
     verification.emit_line();
     Ok(verification)
 }
+
+#[cfg(test)]
+mod forms_test;
