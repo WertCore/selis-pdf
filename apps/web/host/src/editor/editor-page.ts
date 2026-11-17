@@ -276,6 +276,10 @@ interface EditorState {
 	drawColourName: string;
 	/** The width of the Draw tool's line, in points. */
 	drawWidth: number;
+	/** The diameter of the eraser, in the canvas's CSS pixels. */
+	eraseSize: number;
+	/** A mark picked up with the Select tool, for the selection outline. */
+	selectedMark: EditorAnnotation | null;
 	/** What the colour picker is changing: the text's colour or the pen's. */
 	pickerTarget: "box" | "draw";
 	/** The style of the text the reader is adding. */
@@ -330,6 +334,8 @@ const state: EditorState = {
 	drawColour: CLASSIC_COLOURS[0]?.colour ?? { red: 0, green: 0, blue: 0 },
 	drawColourName: "Black",
 	drawWidth: 2,
+	eraseSize: 20,
+	selectedMark: null,
 	pickerTarget: "box",
 	boxStyle: PLAIN_STYLE,
 	annotations: [],
@@ -422,6 +428,8 @@ const dom = {
 	drawKinds: el<HTMLElement>("selis-editor-draw-kinds"),
 	drawGroup: el<HTMLElement>("selis-editor-draw-group"),
 	drawWidth: el<HTMLSelectElement>("selis-editor-draw-width"),
+	eraseSize: el<HTMLSelectElement>("selis-editor-erase-size"),
+	eraserCursor: el<HTMLDivElement>("selis-editor-eraser-cursor"),
 	drawColour: el<HTMLButtonElement>("selis-editor-draw-colour"),
 	history: el<HTMLOListElement>("selis-editor-history"),
 	historyClear: el<HTMLButtonElement>("selis-editor-history-clear"),
@@ -2809,6 +2817,31 @@ function renderSelection(): void {
 }
 
 /**
+ * Draw a hairline outline around the mark the reader picked up, so a shape
+ * that was just drawn can be seen to be selected and knows it can be moved.
+ */
+function renderMarkSelection(): void {
+	for (const outline of document.querySelectorAll(".selis-editor-mark-outline")) {
+		outline.remove();
+	}
+	const mark = state.selectedMark;
+	if (mark === null) {
+		return;
+	}
+	const wrap = document.querySelector(`.selis-editor-page[data-page="${state.page}"]`);
+	if (!(wrap instanceof HTMLElement)) {
+		return;
+	}
+	const outline = document.createElement("div");
+	outline.className = "selis-editor-mark-outline";
+	outline.style.left = `${mark.rect.x}px`;
+	outline.style.top = `${mark.rect.y}px`;
+	outline.style.width = `${mark.rect.width}px`;
+	outline.style.height = `${mark.rect.height}px`;
+	wrap.appendChild(outline);
+}
+
+/**
  * Put the selected text on the clipboard.
  *
  * The clipboard API needs a user gesture, and the button is one. A browser
@@ -2841,6 +2874,9 @@ function renderDrawControls(): void {
 	if (width !== null) {
 		width.value = String(state.drawWidth);
 	}
+	if (dom.eraseSize !== null) {
+		dom.eraseSize.value = String(state.eraseSize);
+	}
 	const colour = dom.drawColour;
 	if (colour !== null) {
 		colour.style.background = toHex(state.drawColour);
@@ -2850,6 +2886,21 @@ function renderDrawControls(): void {
 			`The pen in ${state.drawColourName.toLowerCase()}`,
 		);
 	}
+}
+
+/**
+ * Size the eraser's on-screen circle and put it on the tool that is armed.
+ * The circle is a real element rather than a CSS cursor so it can be sized
+ * from the reader's choice and seen against the page.
+ */
+function showEraserCursor(): void {
+	const cursor = dom.eraserCursor;
+	if (cursor === null) {
+		return;
+	}
+	cursor.hidden = state.tool !== "erase";
+	cursor.style.width = `${state.eraseSize}px`;
+	cursor.style.height = `${state.eraseSize}px`;
 }
 
 /**
@@ -2914,6 +2965,36 @@ function startSelection(event: PointerEvent): void {
 	if (hit === null) {
 		return;
 	}
+	// A shape the reader drew is an annotation. With the Select tool it can
+	// be picked up and moved, just as the markup tool moves a highlight.
+	// The mark wins over the words under it: the reader can see the shape,
+	// and the shape is what they mean to take hold of.
+	const mark = annotationAt(state.annotations, hit.x, hit.y);
+	if (mark !== null) {
+		state.selectedMark = mark;
+		state.selection = null;
+		paintSelection();
+		renderSelection();
+		renderMarkSelection();
+		drag = {
+			page: hit.page,
+			startX: hit.x,
+			startY: hit.y,
+			x: hit.x,
+			y: hit.y,
+			band: null,
+			path: [],
+			moving: mark,
+		};
+		try {
+			hit.canvas.setPointerCapture(event.pointerId);
+		} catch {
+			// Capture is a convenience; synthetic events still deliver moves.
+		}
+		return;
+	}
+	state.selectedMark = null;
+	renderMarkSelection();
 	const lines = state.characters.get(hit.page);
 	if (lines === undefined) {
 		return;
@@ -3425,8 +3506,12 @@ function setTool(tool: EditorTool): void {
 	dom.doc.dataset.tool = tool;
 	// The Draw tool's kinds and controls are only there when the Draw tool
 	// is in hand.
-	dom.drawGroup.hidden = tool !== "draw";
+	dom.drawGroup.hidden = tool !== "draw" && tool !== "erase";
+	if (dom.eraseSize !== null) {
+		dom.eraseSize.hidden = tool !== "erase";
+	}
 	renderDrawControls();
+	showEraserCursor();
 	for (const button of dom.drawKinds.querySelectorAll<HTMLButtonElement>(
 		"button[data-draw]",
 	)) {
@@ -3610,16 +3695,21 @@ function endDrag(event: PointerEvent): void {
 		setStatus("That page could not be drawn, so nothing was placed on it.", "error");
 		return;
 	}
-	if (state.tool === "markup" && current.moving !== null) {
+	if ((state.tool === "markup" || state.tool === "select") && current.moving !== null) {
 		// The mark goes where the pointer let go of it.
 		const dx = hit === null ? 0 : hit.x - current.startX;
 		const dy = hit === null ? 0 : hit.y - current.startY;
 		const from = current.moving.rect;
-		void moveAnnotation(
-			current.page,
-			current.moving.index,
-			{ x: from.x + dx, y: from.y + dy, width: from.width, height: from.height },
-			geometry,
+		const moved = { x: from.x + dx, y: from.y + dy, width: from.width, height: from.height };
+		// Moving a mark re-renders the page, which throws away the selection
+		// outline drawn over the old DOM. Remember the mark at its new place
+		// and put the outline back once the new page is up, so a shape the
+		// reader just picked up stays visibly selected.
+		if (state.selectedMark !== null) {
+			state.selectedMark = { ...state.selectedMark, rect: moved };
+		}
+		void moveAnnotation(current.page, current.moving.index, moved, geometry).then(() =>
+			renderMarkSelection(),
 		);
 		return;
 	}
@@ -4708,6 +4798,14 @@ async function eraseMarks(
 	// The workspace may not have read the marks yet.
 	await readComments();
 	const band = bandOf(points);
+	// The eraser has a real size: widen the touched band by half the chosen
+	// diameter on every side, so a broad eraser takes off marks the pointer
+	// passed near without touching a fine one's precision.
+	const radius = state.eraseSize / 2;
+	band.x0 -= radius;
+	band.y0 -= radius;
+	band.x1 += radius;
+	band.y1 += radius;
 	const under = (): EditorAnnotation[] =>
 		state.annotations.filter((annotation) => {
 			const rect = annotation.rect;
@@ -6303,6 +6401,10 @@ function wire(): void {
 		startDrag(event);
 	});
 	dom.doc.addEventListener("pointermove", (event) => {
+		if (state.tool === "erase" && dom.eraserCursor !== null) {
+			dom.eraserCursor.style.left = `${event.clientX}px`;
+			dom.eraserCursor.style.top = `${event.clientY}px`;
+		}
 		if (selectionDrag !== null) {
 			moveSelection(event);
 			return;
@@ -6615,6 +6717,13 @@ function wire(): void {
 	dom.drawColour.addEventListener("click", () => {
 		state.pickerTarget = "draw";
 		togglePicker();
+	});
+	dom.eraseSize.addEventListener("change", () => {
+		const chosen = Number(dom.eraseSize.value);
+		if (Number.isFinite(chosen) && chosen > 0) {
+			state.eraseSize = chosen;
+			showEraserCursor();
+		}
 	});
 
 	// The Draw tool's kinds: the pen, the line, the rectangle, the ellipse

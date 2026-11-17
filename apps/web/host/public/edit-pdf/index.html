@@ -33,7 +33,7 @@
 		<link
 			rel="stylesheet"
 			href="/assets/editor.css"
-			integrity="sha384-pHl0SSkP7jS5ldEOFvuuUVRp+f/mZYqw/jUEh9ehRC57xNZTP2mwTL8S0Y97Wm4O"
+			integrity="sha384-Pjq2wHYXeJTr3zN1UPqUwaRXp8qc2d1JwIwQDUhG0KyKHe1bbilLicSBP4kxxxdO"
 			crossorigin="anonymous"
 		/>
 	</head>
@@ -644,6 +644,15 @@
 							<option value="4">Marker</option>
 							<option value="8">Brush</option>
 						</select>
+						<label class="selis-editor-sr-only" for="selis-editor-erase-size">
+							The size of the eraser
+						</label>
+						<select id="selis-editor-erase-size" class="selis-editor-inline__size" hidden>
+							<option value="10">Fine</option>
+							<option value="20" selected>Medium</option>
+							<option value="40">Broad</option>
+							<option value="80">Wide</option>
+						</select>
 						<button
 							type="button"
 							id="selis-editor-draw-colour"
@@ -1057,6 +1066,7 @@
 			workspace replacing its own contents, and always present for the
 			editor to populate.
 		-->
+		<div id="selis-editor-eraser-cursor" class="selis-editor-eraser-cursor" aria-hidden="true" hidden></div>
 		<div id="selis-editor-failure" class="selis-failure" role="alert" aria-live="assertive"></div>
 
 		<main id="selis-editor" class="selis-editor">

@@ -2125,3 +2125,41 @@
 		flex-basis: 100%;
 	}
 }
+
+/* ── the eraser cursor and the selected mark ───────────────────────────── */
+
+/* With the Erase tool armed the page hides the native pointer: the circle
+   that follows it IS the cursor, so the reader sees exactly what will be
+   taken off. The toolbars keep their own pointer. */
+.selis-editor-doc[data-tool="erase"] {
+	cursor: none;
+}
+
+/* A circle that follows the pointer while the Erase tool is armed, sized
+   from the reader's choice. It is a real element, not a CSS cursor, so the
+   diameter can change without a stylesheet rewrite. */
+.selis-editor-eraser-cursor {
+	position: fixed;
+	z-index: 40;
+	margin: 0;
+	transform: translate(-50%, -50%);
+	border: 1.5px solid var(--selis-color-accent);
+	border-radius: var(--selis-radius-full);
+	background: color-mix(in srgb, var(--selis-color-accent) 16%, transparent);
+	box-shadow: 0 0 0 1px rgb(255 255 255 / 0.5);
+	pointer-events: none;
+}
+
+.selis-editor-eraser-cursor[hidden] {
+	display: none;
+}
+
+/* The shape a reader picked up with the Select tool. */
+.selis-editor-mark-outline {
+	position: absolute;
+	z-index: 5;
+	border: 1.5px dashed var(--selis-color-accent);
+	border-radius: 4px;
+	box-shadow: 0 0 0 1px rgb(255 255 255 / 0.6);
+	pointer-events: none;
+}
