@@ -193,8 +193,8 @@ const HEADER = `		<header class="site-header">
 /** The footer markup shared with `tools.html`. */
 const FOOTER = `		<footer class="site-footer">
 			<p>
-				<strong>Selis Tools</strong> is part of the Selis PDF project. Local-only
-				by construction, not by policy alone.
+				Built on <strong>Selis PDF</strong>, our own engine. The
+				<strong>Selis SDK</strong> and desktop app are on the way.
 			</p>
 			<p><a href="/viewer.html">Viewer</a> · <a href="/">All tools</a></p>
 		</footer>`;

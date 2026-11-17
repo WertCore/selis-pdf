@@ -36,6 +36,7 @@
 	--subtle-card-bg: rgba(255, 253, 247, 0.38);
 	--hint-bg: rgba(255, 253, 247, 0.62);
 	--on-accent: #fffdf7;
+	--footer-bg: rgba(244, 241, 232, 0.92);
 	--radius: 20px;
 	--radius-small: 12px;
 	--font: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia,
@@ -75,6 +76,7 @@
 	--subtle-card-bg: rgba(30, 33, 36, 0.55);
 	--hint-bg: rgba(30, 33, 36, 0.7);
 	--on-accent: #0c1513;
+	--footer-bg: rgba(22, 24, 27, 0.92);
 }
 
 *,
@@ -1441,17 +1443,28 @@ legend.field-label {
 	background: #fff;
 }
 
+/*
+ * A sticky footer that tells the reader what is behind the tools: our own
+ * engine, and the SDK on the way. It is deliberately one short line and a
+ * translucent surface, so it stays out of the way of the workspace while it
+ * is on screen. At the end of the page it settles into normal flow.
+ */
 .site-footer {
+	position: sticky;
+	bottom: 0;
+	z-index: 20;
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
 	gap: 1rem;
-	width: min(1180px, calc(100% - 2.5rem));
+	width: 100%;
 	margin: 0 auto;
-	padding: 1.5rem 0 2.2rem;
+	padding: 0.7rem max(1.25rem, calc((100% - 1180px) / 2));
 	border-top: 1px solid var(--line);
+	background: var(--footer-bg);
+	backdrop-filter: blur(10px);
 	color: var(--muted);
-	font-size: 0.78rem;
+	font-size: 0.76rem;
 }
 
 .site-footer p {
