@@ -386,6 +386,47 @@ function ensurePreviewDialog(): void {
 	});
 }
 
+function renderPdfPageToPng(wasm: RasterWasm, bytes: Uint8Array, page: number, dpi: number): Uint8Array | null {
+	const exports = wasm.exports;
+	const memory = exports.memory;
+	const inputPtr = exports.selis_raster_alloc(bytes.length);
+	if (inputPtr === 0) return null;
+	new Uint8Array(memory.buffer, inputPtr, bytes.length).set(bytes);
+	const pages = new TextEncoder().encode(String(page));
+	const pagesPtr = exports.selis_raster_alloc(pages.length);
+	const outLenPtr = exports.selis_raster_alloc(4);
+	const outFilesPtr = exports.selis_raster_alloc(4);
+	if (pagesPtr === 0 || outLenPtr === 0 || outFilesPtr === 0) {
+		exports.selis_raster_free(inputPtr, bytes.length);
+		return null;
+	}
+	new Uint8Array(memory.buffer, pagesPtr, pages.length).set(pages);
+	const resultPtr = exports.selis_raster_run(
+		inputPtr,
+		bytes.length,
+		pagesPtr,
+		pages.length,
+		dpi,
+		0,
+		90,
+		outLenPtr,
+		outFilesPtr,
+	);
+	exports.selis_raster_free(inputPtr, bytes.length);
+	exports.selis_raster_free(pagesPtr, pages.length);
+	if (resultPtr === 0) {
+		exports.selis_raster_free(outLenPtr, 4);
+		exports.selis_raster_free(outFilesPtr, 4);
+		return null;
+	}
+	const outLen = new DataView(memory.buffer).getUint32(outLenPtr, true);
+	const png = new Uint8Array(memory.buffer, resultPtr, outLen).slice();
+	exports.selis_raster_free(resultPtr, outLen);
+	exports.selis_raster_free(outLenPtr, 4);
+	exports.selis_raster_free(outFilesPtr, 4);
+	return png;
+}
+
 function openBlobUrl(url: string, name: string, kind: "pdf" | "image"): void {
 	ensurePreviewDialog();
 	const dialog = previewDialog;
@@ -407,18 +448,22 @@ function openBlobUrl(url: string, name: string, kind: "pdf" | "image"): void {
 	if (previewTitle !== null) {
 		previewTitle.textContent = name;
 	}
-	// Always an image: an <iframe> of a blob PDF depends on the browser's PDF
-	// plugin, which is absent in more environments than you would expect and
-	// leaves an empty box. Rendering page one with our own chunk is reliable.
-	const image = make("img", "preview-dialog__frame");
-	image.alt = `Preview of ${name}`;
-	previewFrame = image;
-	dialog.querySelector(".preview-dialog__panel")?.appendChild(image);
+	// A scrollable stack of real page images. An <iframe> of a blob PDF depends
+	// on the browser's PDF plugin, which is absent in more environments than
+	// you would expect; rendering every page with our own chunk always works.
+	const pages = make("div", "preview-dialog__pages");
+	previewFrame = pages;
+	dialog.querySelector(".preview-dialog__panel")?.appendChild(pages);
 	if (!dialog.open) {
 		dialog.showModal();
 	}
 	if (kind === "image") {
+		const figure = make("figure", "preview-dialog__page");
+		const image = make("img", "preview-dialog__image");
 		image.src = url;
+		image.alt = name;
+		figure.appendChild(image);
+		pages.appendChild(figure);
 		return;
 	}
 	void (async () => {
@@ -426,46 +471,33 @@ function openBlobUrl(url: string, name: string, kind: "pdf" | "image"): void {
 			const buffer: ArrayBuffer = await fetch(url).then((r) => r.arrayBuffer());
 			const bytes = new Uint8Array(buffer);
 			const wasm = await getRasterWasm();
-			const exports = wasm.exports;
-			const memory = exports.memory;
-			const inputPtr = exports.selis_raster_alloc(bytes.length);
-			if (inputPtr === 0) return;
-			new Uint8Array(memory.buffer, inputPtr, bytes.length).set(bytes);
-			const pages = new TextEncoder().encode("1");
-			const pagesPtr = exports.selis_raster_alloc(pages.length);
-			const outLenPtr = exports.selis_raster_alloc(4);
-			const outFilesPtr = exports.selis_raster_alloc(4);
-			if (pagesPtr === 0 || outLenPtr === 0 || outFilesPtr === 0) {
-				exports.selis_raster_free(inputPtr, bytes.length);
-				return;
+			const total = Math.max(1, Math.min(64, countPdfPages(bytes)));
+			for (let page = 1; page <= total; page += 1) {
+				if (previewFrame !== pages) return; // a newer preview replaced this one
+				if (previewTitle !== null) {
+					previewTitle.textContent = `${name} · rendering page ${page} of ${total}`;
+				}
+				const png = renderPdfPageToPng(wasm, bytes, page, 150);
+				if (png === null) break;
+				const figure = make("figure", "preview-dialog__page");
+				const image = make("img", "preview-dialog__image");
+				const imageUrl = URL.createObjectURL(new Blob([new Uint8Array(png)], { type: "image/png" }));
+				previewImageUrls.push(imageUrl);
+				image.src = imageUrl;
+				image.alt = `Page ${page} of ${name}`;
+				const caption = make("figcaption", "preview-dialog__caption");
+				caption.textContent = `Page ${page}`;
+				figure.append(image, caption);
+				pages.appendChild(figure);
+				figure.scrollIntoView({ block: "nearest" });
+				await nextPaint();
 			}
-			new Uint8Array(memory.buffer, pagesPtr, pages.length).set(pages);
-			const resultPtr = exports.selis_raster_run(
-				inputPtr,
-				bytes.length,
-				pagesPtr,
-				pages.length,
-				220,
-				0,
-				90,
-				outLenPtr,
-				outFilesPtr,
-			);
-			exports.selis_raster_free(inputPtr, bytes.length);
-			exports.selis_raster_free(pagesPtr, pages.length);
-			if (resultPtr === 0) return;
-			const view = new DataView(memory.buffer);
-			const outLen = view.getUint32(outLenPtr, true);
-			const png = new Uint8Array(memory.buffer, resultPtr, outLen).slice();
-			exports.selis_raster_free(resultPtr, outLen);
-			exports.selis_raster_free(outLenPtr, 4);
-			exports.selis_raster_free(outFilesPtr, 4);
-			const imageUrl = URL.createObjectURL(new Blob([new Uint8Array(png)], { type: "image/png" }));
-			previewImageUrls.push(imageUrl);
-			image.src = imageUrl;
+			if (previewTitle !== null) {
+				previewTitle.textContent = total === 1 ? name : `${name} · ${pages.children.length} page(s)`;
+			}
 		} catch {
-			// The dialog still shows the file's name; the thumbnail on the tile
-			// is a second rendering path if this one cannot read the document.
+			// The dialog still shows the file's name; the tile thumbnail is a
+			// second rendering path if this one cannot read the document.
 		}
 	})();
 }

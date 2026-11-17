@@ -186,7 +186,7 @@ const HEADER = `		<header class="site-header">
 						d="M12 7.5a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.2 5.2l1.4 1.4M17.4 17.4l1.4 1.4M18.8 5.2l-1.4 1.4M6.6 17.4l-1.4 1.4"
 					/>
 				</svg>
-			</button>				<span class="privacy-pill"><span aria-hidden="true">●</span> No upload</span>
+			</button>				
 			</nav>
 		</header>`;
 

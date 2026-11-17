@@ -256,15 +256,18 @@ button {
 	height: 100%;
 }
 
-.selis-theme-toggle__sun {
+/* .selis-theme-toggle svg has (0,1,1) and sets display:block, so a plain
+   .selis-theme-toggle__sun (0,1,0) cannot hide it. Name the button in the
+   selector to win, or both glyphs show in the light theme. */
+.selis-theme-toggle .selis-theme-toggle__sun {
 	display: none;
 }
 
-:root[data-theme="dark"] .selis-theme-toggle__moon {
+:root[data-theme="dark"] .selis-theme-toggle .selis-theme-toggle__moon {
 	display: none;
 }
 
-:root[data-theme="dark"] .selis-theme-toggle__sun {
+:root[data-theme="dark"] .selis-theme-toggle .selis-theme-toggle__sun {
 	display: block;
 }
 
@@ -1450,15 +1453,41 @@ legend.field-label {
 	color: var(--danger);
 }
 
-.preview-dialog__frame {
+.preview-dialog__pages {
 	flex: 1;
-	min-height: 20rem;
+	min-height: 0;
 	max-height: 70vh;
-	width: 100%;
+	overflow-y: auto;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 1rem;
+	padding: 0.5rem;
 	border: 1px solid var(--line);
 	border-radius: var(--radius-small);
+	background: var(--paper-deep);
+}
+
+.preview-dialog__page {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 0.35rem;
+	margin: 0;
+	max-width: 100%;
+}
+
+.preview-dialog__image {
+	display: block;
+	max-width: 100%;
+	max-height: 60vh;
 	background: #fff;
-	object-fit: contain;
+	box-shadow: 0 4px 18px rgba(0, 0, 0, 0.18);
+}
+
+.preview-dialog__caption {
+	color: var(--muted);
+	font-size: 0.72rem;
 }
 
 /*
