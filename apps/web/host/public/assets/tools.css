@@ -23,11 +23,14 @@
 	--danger-soft: #fae8e4;
 	--shadow: 0 24px 70px rgba(42, 52, 46, 0.12);
 	/* The dark aside is a dark panel, not the light foreground colour. */
-	--aside-bg: #17221f;
-	--aside-fg: #e9eee9;
-	--aside-muted: rgba(233, 238, 233, 0.76);
-	--aside-note: rgba(233, 238, 233, 0.62);
-	--aside-line: rgba(233, 238, 233, 0.18);
+	/* The action rail follows the page surface in both themes. A dark panel
+	   in the light theme looked identical to the dark theme's panel, so the
+	   card appeared not to answer the theme switch at all. */
+	--aside-bg: #fffdf7;
+	--aside-fg: #17221f;
+	--aside-muted: #65716b;
+	--aside-note: #65716b;
+	--aside-line: #d9d3c4;
 	--card-gradient: linear-gradient(145deg, rgba(255, 253, 247, 0.96), rgba(248, 245, 235, 0.86));
 	--jump-bg: rgba(244, 241, 232, 0.9);
 	--subtle-card-bg: rgba(255, 253, 247, 0.38);
