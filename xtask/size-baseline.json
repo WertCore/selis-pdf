@@ -7,9 +7,9 @@
   "selis_pdf_wasm_jpx": 5008,
   "selis_pdf_wasm_ocr": 4981,
   "selis_pdf_wasm_raster": 1128232,
-  "selis_pdf_wasm_security": 144371,
-  "selis_pdf_wasm_sign": 220773,
-  "selis_pdf_wasm_text": 320603,
-  "selis_pdf_wasm_tools": 464740,
+  "selis_pdf_wasm_security": 144349,
+  "selis_pdf_wasm_sign": 220763,
+  "selis_pdf_wasm_text": 320795,
+  "selis_pdf_wasm_tools": 479700,
   "xtask": 188344
 }

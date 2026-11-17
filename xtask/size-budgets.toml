@@ -102,6 +102,14 @@ budget = 900000
 # the 2% rule still gates every later slice. A dedicated lazy chunk would keep
 # this off the common tools page, but the tools chunk already links the form,
 # flatten and text-edit engine work, so the subsetter stays here for now.
+# The subset-pdf-fonts web card (+274 B) and the linearize op 43 then landed.
+# Op 43 pulls in the full linearisation writer: the ISO 32000-1 Annex F page
+# offset and shared-object hint tables, the linearisation-part object renumber
+# and the two-xref layout — a measured +14.7 KB to 479 700 B brotli. The growth
+# is the operations themselves behind their op codes, not a new dependency;
+# the baseline moves with it. NOTE: only ~300 B of headroom remain under the
+# 480 000 ceiling — the next tools op must either move to its own lazy chunk or
+# carry a budget step with it. The 2% rule gates the next slice.
 [[budget]]
 chunk = "tools"
 artifact = "selis_pdf_wasm_tools"
