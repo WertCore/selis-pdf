@@ -43,6 +43,7 @@ pub mod flatten;
 pub mod forms;
 pub mod images;
 mod io;
+pub mod linearize;
 mod memory;
 pub mod metadata;
 pub mod outline;
@@ -81,6 +82,7 @@ pub use forms::{
     fill_forms, form_fields, FieldEdit, FieldKind, FillFormsOptions, FormField, FormFieldsReport,
 };
 pub use images::{image_to_pdf, ImagePageSize, ImageToPdfOptions};
+pub use linearize::{linearize, linearize_file, LinearizeReport};
 pub use memory::{clear, insert_input, take_output, write_output, MemorySession};
 pub use metadata::{metadata_report, MetadataReport};
 pub use outline::{set_outline, OutlineEntry, OutlineOptions};

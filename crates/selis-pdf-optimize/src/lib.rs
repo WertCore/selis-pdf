@@ -20,6 +20,10 @@
 
 #![forbid(unsafe_code)]
 
+pub mod linearize;
+
+pub use linearize::{write_linearized, LinearizeError, LinearizeInput};
+
 use selis_bytes::Bytes;
 use selis_pdf_cos::Obj;
 use selis_sandbox::{BudgetGuard, Resource};
