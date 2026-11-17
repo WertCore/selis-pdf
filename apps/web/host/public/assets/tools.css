@@ -1450,7 +1450,9 @@ legend.field-label {
  * is on screen. At the end of the page it settles into normal flow.
  */
 .site-footer {
-	position: sticky;
+	position: fixed;
+	left: 0;
+	right: 0;
 	bottom: 0;
 	z-index: 20;
 	display: flex;
@@ -1465,6 +1467,11 @@ legend.field-label {
 	backdrop-filter: blur(10px);
 	color: var(--muted);
 	font-size: 0.76rem;
+}
+
+/* Keep the end of a page clear of the fixed bar. */
+body {
+	padding-bottom: 3.2rem;
 }
 
 .site-footer p {
