@@ -743,6 +743,10 @@ function init(): void {
 	const backButton = optionalById<HTMLElement>("back-to-tools");
 	const workspaceTitle = byId<HTMLHeadingElement>("workspace-title");
 	const workspaceBlurb = byId<HTMLParagraphElement>("workspace-blurb");
+	// The grid page shares this module but has no stage: these are optional.
+	const stageEmpty = optionalById<HTMLDivElement>("stage-empty");
+	const stageFiles = optionalById<HTMLDivElement>("stage-files");
+	const choosePrimary = optionalById<HTMLButtonElement>("choose-primary");
 	const dropzone = byId<HTMLDivElement>("dropzone");
 	const dropTitle = byId<HTMLSpanElement>("drop-title");
 	const dropLink = byId<HTMLSpanElement>("drop-link");
@@ -837,6 +841,11 @@ function init(): void {
 
 	function updateRunState(): void {
 		const tool = currentTool();
+		const hasFiles = files.length > 0;
+		if (stageEmpty !== null && stageFiles !== null) {
+			stageEmpty.hidden = hasFiles;
+			stageFiles.hidden = !hasFiles;
+		}
 		if (tool === null) {
 			runButton.disabled = true;
 			return;
@@ -1588,8 +1597,8 @@ function init(): void {
 			const note = make("p", "option-note");
 			note.textContent =
 				tool.id === "merge"
-					? "Files are merged top to bottom. Use ↑ and ↓, drag rows, or Sort by name."
-					: "Pages alternate round-robin: page 1 of each file, then page 2, and so on. Use ↑ and ↓ to change the rotation order.";
+					? "Files are merged top to bottom. Drag the tiles to reorder, or use Sort by name."
+					: "Pages alternate round-robin: page 1 of each file, then page 2, and so on. Drag the tiles to change the order.";
 			options.append(note);
 			return;
 		}
@@ -2780,6 +2789,7 @@ function init(): void {
 		}
 		selectedTool = null;
 		files = [];
+		releaseThumbUrls();
 		pageCounts.clear();
 		clearResult();
 		optionControls.clear();
@@ -2807,116 +2817,192 @@ function init(): void {
 			: `${index + 1}. ${formatBytes(file.size)} · ${pages} page${pages === 1 ? "" : "s"}`;
 	}
 
+/**
+ * First-page thumbnails, rendered here by the same chunk that powers the
+ * PDF-to-PNG card. Nothing leaves the tab: the PDF bytes go into the raster
+ * module's own memory and the PNG comes back as a Blob URL.
+ */
+const thumbCache = new Map<File, string>();
+const thumbUrls: string[] = [];
+const pendingThumbs = new Set<File>();
+
+function releaseThumbUrls(): void {
+	for (const url of thumbUrls) {
+		URL.revokeObjectURL(url);
+	}
+	thumbUrls.length = 0;
+	thumbCache.clear();
+}
+
+function paintThumb(file: File, image: HTMLImageElement): void {
+	const cached = thumbCache.get(file);
+	if (cached !== undefined) {
+		image.src = cached;
+		return;
+	}
+	if (file.type.startsWith("image/")) {
+		const url = URL.createObjectURL(file);
+		thumbCache.set(file, url);
+		thumbUrls.push(url);
+		image.src = url;
+		return;
+	}
+	if (pendingThumbs.has(file)) {
+		return;
+	}
+	pendingThumbs.add(file);
+	void (async () => {
+		try {
+			const bytes = new Uint8Array(await file.arrayBuffer());
+			if (!hasPdfHeader(bytes)) {
+				return;
+			}
+			const wasm = await getRasterWasm();
+			const exports = wasm.exports;
+			const memory = exports.memory;
+			const inputPtr = exports.selis_raster_alloc(bytes.length);
+			if (inputPtr === 0) return;
+			new Uint8Array(memory.buffer, inputPtr, bytes.length).set(bytes);
+			const pages = new TextEncoder().encode("1");
+			const pagesPtr = exports.selis_raster_alloc(pages.length);
+			const outLenPtr = exports.selis_raster_alloc(4);
+			const outFilesPtr = exports.selis_raster_alloc(4);
+			if (pagesPtr === 0 || outLenPtr === 0 || outFilesPtr === 0) {
+				exports.selis_raster_free(inputPtr, bytes.length);
+				return;
+			}
+			new Uint8Array(memory.buffer, pagesPtr, pages.length).set(pages);
+			const resultPtr = exports.selis_raster_run(
+				inputPtr,
+				bytes.length,
+				pagesPtr,
+				pages.length,
+				48,
+				0,
+				90,
+				outLenPtr,
+				outFilesPtr,
+			);
+			exports.selis_raster_free(inputPtr, bytes.length);
+			exports.selis_raster_free(pagesPtr, pages.length);
+			if (resultPtr === 0) {
+				return;
+			}
+			const view = new DataView(memory.buffer);
+			const outLen = view.getUint32(outLenPtr, true);
+			const outBytes = new Uint8Array(memory.buffer, resultPtr, outLen).slice();
+			exports.selis_raster_free(resultPtr, outLen);
+			exports.selis_raster_free(outLenPtr, 4);
+			exports.selis_raster_free(outFilesPtr, 4);
+			const url = URL.createObjectURL(new Blob([new Uint8Array(outBytes)], { type: "image/png" }));
+			thumbCache.set(file, url);
+			thumbUrls.push(url);
+			renderFiles();
+		} catch (error) {
+			console.error("thumb failed", error);
+			// A file we cannot render still has its name and size on the tile.
+		} finally {
+			pendingThumbs.delete(file);
+		}
+	})();
+}
+
+/** One file tile: a first-page preview, a name, a size, and its controls. */
+function fileTile(file: File, index: number, tool: ToolDef | null): HTMLLIElement {
+	const tile = make("li", "file-row file-tile");
+	const preview = document.createElement("div");
+	preview.className = "file-tile__preview";
+	const image = document.createElement("img");
+	image.className = "file-tile__image";
+	image.alt = `First page of ${file.name}`;
+	image.hidden = true;
+	const glyph = make("span", "file-tile__glyph");
+	glyph.textContent = file.type.startsWith("image/") ? "▧" : "▤";
+	glyph.setAttribute("aria-hidden", "true");
+	preview.append(glyph, image);
+	paintThumb(file, image);
+	image.addEventListener("load", () => {
+		image.hidden = false;
+		glyph.hidden = true;
+	});
+
+	const info = make("div", "file-tile__info");
+	const name = make("span", "file-name");
+	name.textContent = file.name;
+	name.title = file.name;
+	const meta = make("span", "file-meta");
+	meta.textContent = fileMeta(file, index);
+	info.append(name, meta);
+
+	const controls = make("div", "file-tile__controls");
+	const open = button("Preview", "file-tile__action");
+	open.title = `Preview ${file.name}`;
+	open.addEventListener("click", () => {
+		openBlobUrl(
+			URL.createObjectURL(file),
+			file.name,
+			file.type.startsWith("image/") ? "image" : "pdf",
+		);
+	});
+	controls.appendChild(open);
+	const remove = button("×", "file-tile__remove");
+	remove.title = `Remove ${file.name}`;
+	remove.setAttribute("aria-label", `Remove ${file.name}`);
+	remove.addEventListener("click", () => removeFile(index));
+	controls.appendChild(remove);
+
+	tile.append(preview, info, controls);
+	if (tool?.multiple === true) {
+		tile.setAttribute("draggable", "true");
+		tile.title = "Drag to change the order";
+		tile.addEventListener("dragstart", (event) => {
+			draggedFileIndex = index;
+			event.dataTransfer?.setData("text/plain", String(index));
+			if (event.dataTransfer !== null) event.dataTransfer.effectAllowed = "move";
+			tile.classList.add("dragging");
+		});
+		tile.addEventListener("dragend", () => {
+			draggedFileIndex = null;
+			tile.classList.remove("dragging");
+		});
+		tile.addEventListener("dragover", (event) => {
+			event.preventDefault();
+			if (event.dataTransfer !== null) event.dataTransfer.dropEffect = "move";
+		});
+		tile.addEventListener("drop", (event) => {
+			event.preventDefault();
+			if (draggedFileIndex === null || draggedFileIndex === index) return;
+			const next = [...files];
+			const [moved] = next.splice(draggedFileIndex, 1);
+			if (moved === undefined) return;
+			next.splice(index, 0, moved);
+			files = next;
+			clearResult();
+			renderFiles();
+			updateRunState();
+		});
+	}
+	return tile;
+}
+
 	function renderFiles(): void {
 		const tool = currentTool();
-		const rows: HTMLElement[] = [];
-		files.forEach((file, index) => {
-			const row = make("li", "file-row");
-			const info = make("div", "file-info");
-			const name = make("span", "file-name");
-			name.textContent = file.name;
-			const meta = make("span", "file-meta");
-			meta.textContent = fileMeta(file, index);
-			info.append(name, meta);
-
-			const actions = make("div", "file-actions");
-			const preview = button("Preview", "text-button");
-			preview.setAttribute("aria-label", `Preview ${file.name} in the browser`);
-			preview.addEventListener("click", () => {
-				openBlobUrl(
-					URL.createObjectURL(file),
-					file.name,
-					file.type.startsWith("image/") ? "image" : "pdf",
-				);
-			});
-			actions.append(preview);
-
-			if (tool?.multiple === true) {
-				const up = button("↑", "icon-button");
-				up.setAttribute("aria-label", `Move ${file.name} up`);
-				up.disabled = index === 0;
-				up.addEventListener("click", () => {
-					moveFile(index, -1);
-				});
-				const down = button("↓", "icon-button");
-				down.setAttribute("aria-label", `Move ${file.name} down`);
-				down.disabled = index === files.length - 1;
-				down.addEventListener("click", () => {
-					moveFile(index, 1);
-				});
-				actions.append(up, down);
-			}
-
-			const remove = button("Remove", "text-button danger");
-			remove.setAttribute("aria-label", `Remove ${file.name}`);
-			remove.addEventListener("click", () => {
-				removeFile(index);
-			});
-			actions.append(remove);
-			row.append(info, actions);
-			if (tool?.multiple === true) {
-				row.setAttribute("draggable", "true");
-				row.addEventListener("dragstart", (event) => {
-					draggedFileIndex = index;
-					event.dataTransfer?.setData("text/plain", String(index));
-					if (event.dataTransfer !== null) {
-						event.dataTransfer.effectAllowed = "move";
-					}
-					row.classList.add("dragging");
-				});
-				row.addEventListener("dragend", () => {
-					draggedFileIndex = null;
-					row.classList.remove("dragging");
-				});
-				row.addEventListener("dragover", (event) => {
-					event.preventDefault();
-					if (event.dataTransfer !== null) {
-						event.dataTransfer.dropEffect = "move";
-					}
-				});
-				row.addEventListener("drop", (event) => {
-					event.preventDefault();
-					if (draggedFileIndex === null || draggedFileIndex === index) {
-						return;
-					}
-					const from = draggedFileIndex;
-					const to = index;
-					const next = [...files];
-					const [moved] = next.splice(from, 1);
-					if (moved === undefined) {
-						return;
-					}
-					next.splice(to, 0, moved);
-					files = next;
-					clearResult();
-					renderFiles();
-					updateRunState();
-				});
-			}
-			rows.push(row);
-		});
-		fileList.replaceChildren(...rows);
+		const tiles: HTMLElement[] = files.map((file, index) => fileTile(file, index, tool));
+		if (tool?.multiple === true && files.length > 0) {
+			const add = make("li", "file-tile file-tile--add");
+			const addButton = button("＋", "file-tile__add");
+			addButton.title = "Add more files";
+			addButton.setAttribute("aria-label", "Add more files");
+			addButton.addEventListener("click", () => fileInput.click());
+			const count = make("span", "file-tile__count");
+			count.textContent = `${files.length} file${files.length === 1 ? "" : "s"}`;
+			add.append(addButton, count);
+			tiles.push(add);
+		}
+		fileList.replaceChildren(...tiles);
 		fileToolbar.hidden = !(tool?.multiple === true && files.length > 1);
-	}
-
-	function moveFile(index: number, delta: number): void {
-		const target = index + delta;
-		if (target < 0 || target >= files.length) {
-			return;
-		}
-		const current = files[index];
-		const other = files[target];
-		if (current === undefined || other === undefined) {
-			return;
-		}
-		files[index] = other;
-		files[target] = current;
-		clearResult();
-		renderFiles();
 		updateRunState();
 	}
-
-	/** Sort the pick by name (what the merge note promises). Stable and case-folded. */
 	function sortFilesByName(): void {
 		files = [...files].sort((a, b) =>
 			a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true }),
@@ -5096,6 +5182,10 @@ function init(): void {
 			type: "application/pdf",
 		});
 		void addFiles([file]);
+	});
+
+	choosePrimary?.addEventListener("click", () => {
+		fileInput.click();
 	});
 
 	dropzone.addEventListener("click", () => {

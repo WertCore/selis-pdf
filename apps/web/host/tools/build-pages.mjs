@@ -208,7 +208,7 @@ const FOOTER = `		<footer class="site-footer">
  * `/tools.html` keeps its own `h2` inside the same shell.
  */
 function workspace(tool) {
-	// The dropzone copy names what the tool eats, not what the app is for:
+	// The stage copy names what the tool eats, not what the app is for:
 	// image tools must not say "Drop PDFs here". Mirrors selectTool in
 	// tools-page.ts, so the static page and the JS-updated page agree.
 	const drop =
@@ -218,6 +218,7 @@ function workspace(tool) {
 					link: "choose images",
 					label: "Choose images",
 					list: "Selected images",
+					button: "Choose images",
 				}
 			: tool.accepts === "text"
 				? {
@@ -225,12 +226,14 @@ function workspace(tool) {
 						link: "choose a file",
 						label: "Choose a file",
 						list: "Selected files",
+						button: "Choose a file",
 					}
 				: {
 						title: "Drop PDFs here",
 						link: "choose files",
 						label: "Choose PDF files",
 						list: "Selected PDFs",
+						button: "Choose PDF files",
 					};
 	return `			<section id="workspace" class="workspace" aria-labelledby="workspace-title">
 				<a id="back-to-tools" class="back" href="/">← All tools</a>
@@ -241,16 +244,32 @@ function workspace(tool) {
 						<p id="workspace-blurb" class="workspace-blurb">${escapeHtml(tool.blurb)}</p>
 						<p class="workspace-note">${escapeHtml(tool.note)}</p>
 
-						<!-- Same shell as tools.html: the dropzone is a mouse/drag
-						     target only and the input inside is the control; see the
-						     note in tools.html about why it carries no role/tabindex. -->
-						<div id="dropzone" class="dropzone">
-							<span class="drop-icon" aria-hidden="true">↓</span>
-							<span id="drop-title" class="drop-title">${escapeHtml(drop.title)}</span>
-							<span class="drop-hint"
-								>or <span id="drop-link" class="drop-link">${escapeHtml(drop.link)}</span> ·
-								up to 256 MiB per run</span
-							>
+						<div id="stage" class="stage">
+							<!-- The empty state is one clear next action, not a form. -->
+							<div id="stage-empty" class="stage-empty">
+								<button id="choose-primary" class="choose-button" type="button">
+									<span class="choose-button__icon" aria-hidden="true">＋</span>
+									${escapeHtml(drop.button)}
+								</button>
+								<p class="stage-hint">or drop files anywhere on this page</p>
+							</div>
+
+							<!-- Filled state: the dropzone stays as the drag target,
+							     and files become thumbnails a reader can reorder. -->
+							<div id="stage-files" class="stage-files" hidden>
+								<div id="dropzone" class="dropzone dropzone--compact">
+									<span id="drop-title" class="drop-title">${escapeHtml(drop.title)}</span>
+									<span class="drop-hint"
+										>or <span id="drop-link" class="drop-link">${escapeHtml(drop.link)}</span></span
+									>
+								</div>
+								<div id="file-toolbar" class="file-toolbar" hidden>
+									<button id="sort-files" class="text-button" type="button">
+										Sort by name
+									</button>
+								</div>
+								<ul id="file-list" class="file-tiles" aria-label="${escapeHtml(drop.list)}"></ul>
+							</div>
 							<input
 								id="file-input"
 								class="visually-hidden"
@@ -261,20 +280,7 @@ function workspace(tool) {
 							/>
 						</div>
 
-						<div id="file-toolbar" class="file-toolbar" hidden>
-							<button id="sort-files" class="text-button" type="button">
-								Sort by name
-							</button>
-						</div>
-						<ul id="file-list" class="file-list" aria-label="${escapeHtml(drop.list)}"></ul>
 						<div id="options" class="options"></div>
-
-						<div class="run-row">
-							<button id="run-tool" class="run-button" type="button" disabled>
-								Run
-							</button>
-							<p id="status" class="status" role="status" aria-live="polite"></p>
-						</div>
 
 						<section id="result" class="result" aria-labelledby="result-title" hidden>
 							<div class="result-head">
@@ -307,18 +313,23 @@ function workspace(tool) {
 						</section>
 					</div>
 
+					<!-- The action rail: one primary action, and the promise that
+					     makes this page different from every tool that uploads. -->
 					<aside class="workspace-aside" aria-labelledby="aside-title">
-						<h2 id="aside-title">What stays local</h2>
-						<ul>
-							<li>Your PDFs are read in this tab and copied into WebAssembly memory.</li>
-							<li>No request carries a document body, filename, or page text.</li>
-							<li>The result is downloaded with a Blob URL created here.</li>
-							<li>No watermark, no daily limit, no account.</li>
-						</ul>
-						<p class="aside-note">
-							The first run fetches a small WebAssembly chunk from this same
-							site. That request has no document bytes; after it loads, the
-							operation does not touch the network.
+						<div class="rail-head">
+							<h2 id="aside-title">What stays local</h2>
+							<p class="rail-sub">Your files never leave this device.</p>
+						</div>
+						<p class="privacy-strip"><span aria-hidden="true">●</span> No upload · No account · No watermark</p>
+						<div class="rail-action">
+							<button id="run-tool" class="primary-cta" type="button" disabled>
+								Run
+							</button>
+							<p id="status" class="status" role="status" aria-live="polite"></p>
+						</div>
+						<p class="rail-local">
+							Files are read here and written back here. The only request is
+							for the local engine itself; it never carries a document.
 						</p>
 					</aside>
 				</div>

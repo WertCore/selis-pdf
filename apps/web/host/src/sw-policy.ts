@@ -85,6 +85,11 @@ export const TOOL_PAGE_PATHS: readonly string[] = TOOL_PAGE_SLUGS.map((slug) => 
  * module graph are new URLs, and an install that predates them has no entry
  * to serve them from.
  *
+ * v7 reprecaches the tool pages again: their file input is now a stage with
+ * first-page thumbnails and a right-hand action rail, and the result lives in
+ * that rail. A v6 install would keep serving the old form to every precached
+ * tool page.
+ *
  * v6 reprecaches the HTML that changed without the URL set changing: the
  * directory page now drops its hero and roadmap sections, and the tool pages
  * got a working preview and dark theme. A v5 install keeps serving those
@@ -92,7 +97,7 @@ export const TOOL_PAGE_PATHS: readonly string[] = TOOL_PAGE_SLUGS.map((slug) => 
  * removed weeks ago. Cache-first is what makes offline work and what makes a
  * version bump the only honest way to replace it.
  */
-export const CACHE_VERSION = "6";
+export const CACHE_VERSION = "7";
 
 /** Prefix every cache this app owns carries, so `activate` purges our own and nothing else. */
 export const CACHE_PREFIX = "selis-";
