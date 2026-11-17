@@ -84,8 +84,15 @@ export const TOOL_PAGE_PATHS: readonly string[] = TOOL_PAGE_SLUGS.map((slug) => 
  * v5 adds the editor workspace (`/edit-pdf/`). Same reason: the route and its
  * module graph are new URLs, and an install that predates them has no entry
  * to serve them from.
+ *
+ * v6 reprecaches the HTML that changed without the URL set changing: the
+ * directory page now drops its hero and roadmap sections, and the tool pages
+ * got a working preview and dark theme. A v5 install keeps serving those
+ * pages out of its shell cache indefinitely, so a reader sees layout that was
+ * removed weeks ago. Cache-first is what makes offline work and what makes a
+ * version bump the only honest way to replace it.
  */
-export const CACHE_VERSION = "5";
+export const CACHE_VERSION = "6";
 
 /** Prefix every cache this app owns carries, so `activate` purges our own and nothing else. */
 export const CACHE_PREFIX = "selis-";
