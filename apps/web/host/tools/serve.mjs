@@ -104,7 +104,7 @@ const server = createServer((request, response) => {
 	if (file === null) {
 		const body =
 			'<!doctype html><html lang="en"><meta charset="utf-8">' +
-			"<title>Not found — Selis Tools</title><h1>404</h1>" +
+			"<title>Not found | Selis Tools</title><h1>404</h1>" +
 			"<p>That path is not a page on this site.</p>" +
 			'<p><a href="/">All tools</a></p>';
 		response.writeHead(404, {

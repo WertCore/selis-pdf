@@ -359,11 +359,11 @@ describe("signatureRows", () => {
 			throw new Error("expected a report");
 		}
 		expect(signatureRows(result.report)).toEqual([
-			{ label: "Signatures", value: "none — this document carries no signature" },
+			{ label: "Signatures", value: "none, this document carries no signature" },
 			{
 				label: "Revocation",
 				value:
-					"not checked — this build has no network, so no CRL or OCSP response was fetched",
+					"not checked, this build has no network, so no CRL or OCSP response was fetched",
 			},
 		]);
 	});
@@ -395,7 +395,7 @@ describe("signatureRows", () => {
 			"Signature1: NOT verified",
 		);
 		expect(rows.find((row) => row.label === "Coverage 1")?.value).toBe(
-			"part of the document — later bytes are not covered",
+			"part of the document, later bytes are not covered",
 		);
 		expect(rows.find((row) => row.label === "Problem 1")?.value).toBe(
 			"the digest does not match the bytes it covers",

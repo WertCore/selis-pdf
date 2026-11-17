@@ -570,7 +570,7 @@ export function signatureRows(report: SignaturesReport): VerificationRow[] {
 			label: "Signatures",
 			value:
 				report.unsignedFields === 0
-					? "none — this document carries no signature"
+					? "none, this document carries no signature"
 					: `none signed; ${report.unsignedFields} unsigned signature field(s)`,
 		});
 	}
@@ -587,7 +587,7 @@ export function signatureRows(report: SignaturesReport): VerificationRow[] {
 			label: `Coverage ${number}`,
 			value: signature.coversWholeDocument
 				? "the whole document"
-				: "part of the document — later bytes are not covered",
+				: "part of the document, later bytes are not covered",
 		});
 		if (signature.error !== null) {
 			rows.push({ label: `Problem ${number}`, value: signature.error });
@@ -597,8 +597,8 @@ export function signatureRows(report: SignaturesReport): VerificationRow[] {
 			rows.push({
 				label: `Trust ${number}`,
 				value: trust.trusted
-					? `trusted — the chain ends at a supplied anchor (${trust.subject})`
-					: `NOT trusted — ${trust.reason ?? "the chain does not end at a supplied anchor"}`,
+					? `trusted, the chain ends at a supplied anchor (${trust.subject})`
+					: `NOT trusted, ${trust.reason ?? "the chain does not end at a supplied anchor"}`,
 			});
 		}
 	}
@@ -606,7 +606,7 @@ export function signatureRows(report: SignaturesReport): VerificationRow[] {
 		label: "Revocation",
 		value: report.revocationChecked
 			? "checked"
-			: "not checked — this build has no network, so no CRL or OCSP response was fetched",
+			: "not checked, this build has no network, so no CRL or OCSP response was fetched",
 	});
 	return rows;
 }

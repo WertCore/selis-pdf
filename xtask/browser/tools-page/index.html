@@ -609,8 +609,21 @@
       async function readOutput(win, row, label, needles, absent) {
         const download = row.querySelector("a.primary-link");
         if (!download) throw new Error("a result row had no download link (" + label + ")");
-        const preview = row.querySelector("a.text-button");
+        const preview = row.querySelector("a.text-button, button.text-button");
         const href = download.getAttribute("href") || "";
+        // A result preview is now an in-page dialog rather than a new tab: a
+        // synthetic anchor click was being swallowed as a popup. Prove the
+        // button actually opens the file, then close it so the next leg sees
+        // the page as it was.
+        let previewWorks = null;
+        if (preview instanceof win.HTMLButtonElement) {
+          preview.click();
+          const dialog = win.document.querySelector("dialog.preview-dialog");
+          previewWorks = dialog ? dialog.open : false;
+          dialog?.close();
+        } else if (preview) {
+          previewWorks = (preview.getAttribute("href") || "").startsWith("blob:");
+        }
         const output = {
           kind: row.dataset.kind || "",
           name: row.dataset.name || "",
@@ -618,9 +631,7 @@
           overTarget: row.dataset.overTarget === "true",
           declaredBytes: Number(row.dataset.bytes || "0"),
           blob: href.startsWith("blob:"),
-          previewBlob: preview
-            ? (preview.getAttribute("href") || "").startsWith("blob:")
-            : null,
+          previewBlob: previewWorks,
           downloadName: download.getAttribute("download"),
         };
         if (!output.blob) throw new Error("the download was not a Blob URL (" + label + ")");

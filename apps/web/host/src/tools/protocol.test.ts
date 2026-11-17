@@ -486,8 +486,8 @@ describe("formatBytes", () => {
 		expect(formatBytes(512)).toBe("512 B");
 		expect(formatBytes(2048)).toBe("2.0 KiB");
 		expect(formatBytes(1024 * 1024)).toBe("1.0 MiB");
-		expect(formatBytes(-1)).toBe("—");
-		expect(formatBytes(Number.NaN)).toBe("—");
+		expect(formatBytes(-1)).toBe("-");
+		expect(formatBytes(Number.NaN)).toBe("-");
 	});
 });
 

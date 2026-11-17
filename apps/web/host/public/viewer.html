@@ -6,16 +6,16 @@
 		<meta name="theme-color" content="#f2f4f7" />
 		<meta
 			name="description"
-			content="Read PDFs privately in your browser. Your document is opened on your own device and never uploaded — no account, no limits."
+			content="Read PDFs privately in your browser. Your document is opened on your own device and never uploaded, no account, no limits."
 		/>
-		<title>Selis PDF Viewer — read PDFs privately, no upload</title>
+		<title>Selis PDF Viewer | read PDFs privately, no upload</title>
 		<link rel="canonical" href="https://pdf.selis.com/viewer.html" />
 		<!--
 			SL-4.WEB.01 static shell for the document viewer, reached from the tools
 			grid's "Open a PDF to read" action. The React viewer app (boot.js) mounts
 			into #selis-app; style.css is its design system, assembled by place-assets
 			from @selis/ui-kit (tokens + base) + the app's own CSS + the viewer-shell
-			header/footer — one design system, so the page frame and the app match.
+			header/footer, one design system, so the page frame and the app match.
 			- CSP via response headers (src/headers.ts); every asset carries integrity
 			  (sha384) + crossorigin, same-origin only (ADR-P0016). Recompute
 			  style.css's digest when the ui-kit/app CSS changes (the build prints it);
@@ -140,14 +140,14 @@
 		<main id="selis-app" aria-busy="true">
 			<p class="selis-boot">Loading the private PDF viewer…</p>
 			<noscript>
-				<p>The Selis PDF Viewer needs JavaScript — it reads your document on
+				<p>The Selis PDF Viewer needs JavaScript, it reads your document on
 				this device, with no upload.</p>
 			</noscript>
 		</main>
 
 		<footer class="selis-viewer-foot">
 			<strong>Selis Viewer</strong> is part of the Selis PDF project.
-			Local-only by construction — your document never leaves your machine.
+			Local-only by construction, your document never leaves your machine.
 			<a href="/">All tools</a>
 		</footer>
 

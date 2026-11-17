@@ -109,7 +109,7 @@ export function responseFactsFrom(response: Response): ResponseFacts {
 export function offlineFallback(): Response {
 	return new Response(
 		'<!doctype html><html lang="en"><head><meta charset="utf-8">' +
-			"<title>Selis PDF Viewer — offline</title></head><body>" +
+			"<title>Selis PDF Viewer | offline</title></head><body>" +
 			"<h1>Not available offline yet</h1>" +
 			"<p>This copy of the Selis viewer has not finished installing. " +
 			"Reconnect once, then it will open local files with no network at all.</p>" +

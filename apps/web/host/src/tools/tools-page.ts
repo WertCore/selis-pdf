@@ -298,15 +298,81 @@ function nextPaint(): Promise<void> {
 	});
 }
 
-function openBlobUrl(url: string): void {
-	const anchor = document.createElement("a");
-	anchor.href = url;
-	anchor.target = "_blank";
-	anchor.rel = "noopener";
-	anchor.textContent = "Open PDF";
-	document.body.append(anchor);
-	anchor.click();
-	anchor.remove();
+/**
+ * The preview lives in the page, not in a new tab.
+ *
+ * A synthetic click on a temporary anchor with target="_blank" is treated as a
+ * popup by several browsers, so the old preview did nothing at all. A dialog
+ * with the blob URL in a frame is both reliable and a better way to look at a
+ * file: the reader never loses the tool they were using.
+ */
+let previewDialog: HTMLDialogElement | null = null;
+let previewFrame: HTMLElement | null = null;
+let previewTitle: HTMLElement | null = null;
+let previewObjectUrl: string | null = null;
+
+function ensurePreviewDialog(): void {
+	if (previewDialog !== null) {
+		return;
+	}
+	const dialog = make("dialog", "preview-dialog");
+	dialog.setAttribute("aria-label", "File preview");
+	const panel = make("div", "preview-dialog__panel");
+	const head = make("div", "preview-dialog__head");
+	previewTitle = make("h2", "preview-dialog__title");
+	const close = button("Close", "preview-dialog__close");
+	close.setAttribute("aria-label", "Close the preview");
+	close.addEventListener("click", () => dialog.close());
+	head.append(previewTitle, close);
+	panel.appendChild(head);
+	dialog.appendChild(panel);
+	document.body.appendChild(dialog);
+	previewDialog = dialog;
+
+	// A new preview replaces the old frame, so a previous PDF viewer cannot
+	// keep holding the blob URL we are about to release.
+	dialog.addEventListener("close", () => {
+		if (previewFrame !== null) {
+			previewFrame.remove();
+			previewFrame = null;
+		}
+		if (previewObjectUrl !== null) {
+			URL.revokeObjectURL(previewObjectUrl);
+			previewObjectUrl = null;
+		}
+	});
+}
+
+function openBlobUrl(url: string, name: string, kind: "pdf" | "image"): void {
+	ensurePreviewDialog();
+	const dialog = previewDialog;
+	if (dialog === null) {
+		return;
+	}
+	if (previewFrame !== null) {
+		previewFrame.remove();
+		previewFrame = null;
+	}
+	if (previewObjectUrl !== null) {
+		URL.revokeObjectURL(previewObjectUrl);
+	}
+	previewObjectUrl = url;
+	if (previewTitle !== null) {
+		previewTitle.textContent = name;
+	}
+	const frame = kind === "image" ? make("img", "preview-dialog__frame") : make("iframe", "preview-dialog__frame");
+	if (frame instanceof HTMLImageElement) {
+		frame.src = url;
+		frame.alt = `Preview of ${name}`;
+	} else {
+		frame.src = url;
+		frame.title = `Preview of ${name}`;
+	}
+	previewFrame = frame;
+	dialog.querySelector(".preview-dialog__panel")?.appendChild(frame);
+	if (!dialog.open) {
+		dialog.showModal();
+	}
 }
 
 /** How many `/Info` fields the card lists before pointing at the JSON file. */
@@ -358,7 +424,7 @@ function metadataRows(report: MetadataReportJson): VerificationRow[] {
 		return [
 			{
 				label: "Metadata",
-				value: "encrypted — every dictionary is still ciphertext, so nothing is shown",
+				value: "encrypted, every dictionary is still ciphertext, so nothing is shown",
 			},
 		];
 	}
@@ -433,7 +499,7 @@ function fingerprintRows(report: FingerprintReportJson): VerificationRow[] {
 		return [
 			{
 				label: "Fingerprint",
-				value: "encrypted — only the envelope and the /ID are readable without the password",
+				value: "encrypted, only the envelope and the /ID are readable without the password",
 			},
 			{ label: "Identifier", value: report.ids?.current ?? "none" },
 		];
@@ -550,7 +616,7 @@ function reportRows(
 			{ label: "Rows", value: String(report.rows ?? 0) },
 			{
 				label: "Lowest confidence",
-				value: typeof report.min_confidence === "number" ? report.min_confidence.toFixed(2) : "—",
+				value: typeof report.min_confidence === "number" ? report.min_confidence.toFixed(2) : "-",
 			},
 		];
 	}
@@ -653,7 +719,7 @@ function batchRows(batch: BatchSummary | undefined): VerificationRow[] {
 		const reason = file.error ?? "this file could not be processed";
 		rows.push({
 			label: file.input,
-			value: `not processed — ${reason.length > MAX_BATCH_VALUE ? `${reason.slice(0, MAX_BATCH_VALUE)}…` : reason}`,
+			value: `not processed, ${reason.length > MAX_BATCH_VALUE ? `${reason.slice(0, MAX_BATCH_VALUE)}…` : reason}`,
 		});
 	}
 	return rows;
@@ -1302,7 +1368,7 @@ function init(): void {
 			case "radio": {
 				const states = field.states ?? [];
 				if (states.length === 0) {
-					return disabledFormControl(id, "No appearance states — not fillable");
+					return disabledFormControl(id, "No appearance states, not fillable");
 				}
 				const select = make("select", "control");
 				select.id = id;
@@ -1320,7 +1386,7 @@ function init(): void {
 			}
 			case "choice": {
 				if (field.multi_select === true) {
-					return disabledFormControl(id, "Multiple values — not supported by this tool");
+					return disabledFormControl(id, "Multiple values, not supported by this tool");
 				}
 				const options = field.options ?? [];
 				if (options.length > 0 && field.editable !== true) {
@@ -1359,9 +1425,9 @@ function init(): void {
 				return input;
 			}
 			case "signature":
-				return disabledFormControl(id, "Signature — filling is a signing operation");
+				return disabledFormControl(id, "Signature, filling is a signing operation");
 			case "push_button":
-				return disabledFormControl(id, "Button — no value to fill");
+				return disabledFormControl(id, "Button, no value to fill");
 			default:
 				return disabledFormControl(id, "Field type not supported");
 		}
@@ -1478,7 +1544,7 @@ function init(): void {
 		warning.id = "form-fields-signature";
 		warning.hidden = true;
 		warning.textContent =
-			"This document is signed. Filling it here invalidates the signature — re-sign the filled file if it must stay valid.";
+			"This document is signed. Filling it here invalidates the signature, re-sign the filled file if it must stay valid.";
 		options.append(note, list, warning);
 	}
 
@@ -1493,7 +1559,7 @@ function init(): void {
 		if (tool.id === "edit_text") {
 			const note = make("p", "option-note");
 			note.textContent =
-				"The first run of text on the chosen page that matches Find is replaced. Standard-font (WinAnsi) text only; the file is saved as an incremental update and the result is verified before you download it — nothing leaves this device.";
+				"The first run of text on the chosen page that matches Find is replaced. Standard-font (WinAnsi) text only; the file is saved as an incremental update and the result is verified before you download it, nothing leaves this device.";
 			options.append(note);
 			addField(
 				"find",
@@ -1511,7 +1577,7 @@ function init(): void {
 				"page",
 				"Page number",
 				textInput("page", "number", "1"),
-				"1-based — the page the text is on.",
+				"1-based, the page the text is on.",
 			) as HTMLInputElement;
 			page.value = "1";
 			page.min = "1";
@@ -2143,9 +2209,9 @@ function init(): void {
 				"level",
 				"Compression level",
 				[
-					["less", "Less — higher quality, larger file"],
-					["recommended", "Recommended — balanced"],
-					["extreme", "Extreme — smallest file"],
+					["less", "Less, higher quality, larger file"],
+					["recommended", "Recommended, balanced"],
+					["extreme", "Extreme, smallest file"],
 				],
 				"recommended",
 			);
@@ -2355,7 +2421,7 @@ function init(): void {
 			);
 			const note = make("p", "option-note");
 			note.textContent =
-				"Every page is rendered on this device, its colours complemented, and embedded as a lossless image in a new PDF the same size — so text, vectors and images all invert together, for dark-mode reading. The whole document is processed; there is no page selection.";
+				"Every page is rendered on this device, its colours complemented, and embedded as a lossless image in a new PDF the same size, so text, vectors and images all invert together, for dark-mode reading. The whole document is processed; there is no page selection.";
 			options.append(note);
 			return;
 		}
@@ -2368,7 +2434,7 @@ function init(): void {
 			);
 			const note = make("p", "option-note");
 			note.textContent =
-				"Every selected page becomes one <section> of a single HTML file, sized by that page's own box at 72 dpi — the same canvas PDF to PNG paints at 72 — and each word the engine recovers is placed where the page puts it. The file is read back and compared with the extraction before it is offered, so a document that does not carry its own pages comes back as a failure instead of a download. This is a positioned text layer, not a picture of the page: no colour, no images, no font faces and no spaces between words, so it reads as prose only once you style it. A page that drew text the engine could not recover says so in the file rather than going blank.";
+				"Every selected page becomes one <section> of a single HTML file, sized by that page's own box at 72 dpi, the same canvas PDF to PNG paints at 72, and each word the engine recovers is placed where the page puts it. The file is read back and compared with the extraction before it is offered, so a document that does not carry its own pages comes back as a failure instead of a download. This is a positioned text layer, not a picture of the page: no colour, no images, no font faces and no spaces between words, so it reads as prose only once you style it. A page that drew text the engine could not recover says so in the file rather than going blank.";
 			options.append(note);
 			return;
 		}
@@ -2381,7 +2447,7 @@ function init(): void {
 			);
 			const note = make("p", "option-note");
 			note.textContent =
-				"The document is decrypted and rewritten on this device, then re-opened and checked page for page before it is offered as a download. A wrong password is refused and nothing is produced — you never get an unencrypted-looking file that is actually still locked. A PDF that was never protected has no password to remove, so its own bytes are copied through and the result says so.";
+				"The document is decrypted and rewritten on this device, then re-opened and checked page for page before it is offered as a download. A wrong password is refused and nothing is produced, you never get an unencrypted-looking file that is actually still locked. A PDF that was never protected has no password to remove, so its own bytes are copied through and the result says so.";
 			options.append(note);
 			return;
 		}
@@ -2400,7 +2466,7 @@ function init(): void {
 				textInput(
 					"ownerPassword",
 					"password",
-					tool.id === "protect" ? "Optional — defaults to the open password" : "Required",
+					tool.id === "protect" ? "Optional, defaults to the open password" : "Required",
 				),
 				"Changes or removes the permissions below. Without it they are fixed as written.",
 			);
@@ -2416,7 +2482,7 @@ function init(): void {
 			const note = make("p", "option-note");
 			note.textContent =
 				tool.id === "protect"
-					? "Written with AES-256 (revision 6), the newest handler the PDF specification defines, using a 256-bit key this page generates from your browser's own random source and never sends anywhere. The passwords are used to write the file and then thrown away; only the derived keys go into it. Permission flags are a convention rather than a lock: a reader that respects them will not print, copy, modify or annotate against your wishes, and a reader that ignores them can still do those things — the page cannot force a program it has never met to behave. A PDF that already carries a password is refused: removing one is the Remove password tool."
+					? "Written with AES-256 (revision 6), the newest handler the PDF specification defines, using a 256-bit key this page generates from your browser's own random source and never sends anywhere. The passwords are used to write the file and then thrown away; only the derived keys go into it. Permission flags are a convention rather than a lock: a reader that respects them will not print, copy, modify or annotate against your wishes, and a reader that ignores them can still do those things, the page cannot force a program it has never met to behave. A PDF that already carries a password is refused: removing one is the Remove password tool."
 					: "This card writes the permission flags onto a document that still opens without a password, which is what the flags are for. The owner password is required because changing permissions is the owner's decision, and it is what lets you change them again later. The flags are a convention, not enforcement: a reader that respects them will not print, copy, modify or annotate against your wishes, and a reader that ignores them can. To lift restrictions instead, use Clear permissions with the owner password; a document that already carries a password is refused here, so remove it first.";
 			options.append(note);
 			return;
@@ -2430,7 +2496,7 @@ function init(): void {
 			);
 			const note = make("p", "option-note");
 			note.textContent =
-				"Only the flags change. The page content is left exactly as it is — on a modern encrypted file the document is appended to rather than rewritten, so the bytes underneath are untouched — and the result is re-read and checked before it is offered. What this lifts is reported afterwards by name, read back out of the flag the tool actually wrote. A wrong owner password is refused with nothing produced, and a document that needs a password just to open keeps needing it: that is the Remove password tool.";
+				"Only the flags change. The page content is left exactly as it is, on a modern encrypted file the document is appended to rather than rewritten, so the bytes underneath are untouched, and the result is re-read and checked before it is offered. What this lifts is reported afterwards by name, read back out of the flag the tool actually wrote. A wrong owner password is refused with nothing produced, and a document that needs a password just to open keeps needing it: that is the Remove password tool.";
 			options.append(note);
 			return;
 		}
@@ -2473,7 +2539,7 @@ function init(): void {
 				"certKey",
 				"Private key (PEM)",
 				fileChooser("certKey", ".pem,.key,application/x-pem-file,application/octet-stream", false),
-				"A PKCS#8 or PKCS#1 RSA key of at least 2048 bits. It is read in this tab, used once, and never written anywhere — not into the PDF, not into a download, not into a request.",
+				"A PKCS#8 or PKCS#1 RSA key of at least 2048 bits. It is read in this tab, used once, and never written anywhere, not into the PDF, not into a download, not into a request.",
 			);
 			addField(
 				"certChain",
@@ -2506,7 +2572,7 @@ function init(): void {
 			(field as HTMLInputElement).value = "Signature";
 			const note = make("p", "option-note");
 			note.textContent =
-				"Signing is an incremental revision: the bytes already in the document are kept, so an earlier signature stays verifiable. A certificate signature proves the file has not changed since it was signed; it does not by itself prove the signer is trusted — use Certificate validation with the certificates you trust for that. Signing a document that already carries a signature appends a revision, and the report shows which bytes each signature covers rather than hiding the difference.";
+				"Signing is an incremental revision: the bytes already in the document are kept, so an earlier signature stays verifiable. A certificate signature proves the file has not changed since it was signed; it does not by itself prove the signer is trusted, use Certificate validation with the certificates you trust for that. Signing a document that already carries a signature appends a revision, and the report shows which bytes each signature covers rather than hiding the difference.";
 			options.append(note);
 			const syncMode = (): void => {
 				const certificate = mode.value === "certificate";
@@ -2757,9 +2823,11 @@ function init(): void {
 			const preview = button("Preview", "text-button");
 			preview.setAttribute("aria-label", `Preview ${file.name} in the browser`);
 			preview.addEventListener("click", () => {
-				const url = URL.createObjectURL(file);
-				openBlobUrl(url);
-				window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+				openBlobUrl(
+					URL.createObjectURL(file),
+					file.name,
+					file.type.startsWith("image/") ? "image" : "pdf",
+				);
 			});
 			actions.append(preview);
 
@@ -4797,11 +4865,14 @@ function init(): void {
 			// An HTML result is deliberately not previewed: a blob: document opens
 			// in this page's own origin, so the only honest action is a download.
 			if (report.kind === "pdf" || (report.kind === "image" && raster.preview)) {
-				const preview = make("a", "text-button");
-				preview.href = url;
-				preview.target = "_blank";
-				preview.rel = "noopener";
-				preview.textContent = "Preview";
+				const preview = button("Preview", "text-button");
+				preview.addEventListener("click", () => {
+					openBlobUrl(
+						url,
+						output.name,
+						report.kind === "image" ? "image" : "pdf",
+					);
+				});
 				actions.append(preview);
 			}
 			const download = make("a", "primary-link");

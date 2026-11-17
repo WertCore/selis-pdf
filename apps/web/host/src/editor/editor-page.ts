@@ -1992,7 +1992,7 @@ async function openFile(file: File): Promise<void> {
 		renderDocumentState();
 		await assertLocalOnly();
 		await rememberDocument();
-		opened = `Opened ${state.name} — ${state.pages} page${state.pages === 1 ? "" : "s"}.`;
+		opened = `Opened ${state.name}, ${state.pages} page${state.pages === 1 ? "" : "s"}.`;
 	} catch (error) {
 		showFailure(`The document could not be opened: ${messageOf(error)}`);
 		failed = "The document could not be opened.";
@@ -2078,7 +2078,7 @@ async function restoreDocument(): Promise<void> {
 		renderDocumentState();
 		await assertLocalOnly();
 		setStatus(
-			`Restored ${state.name} — ${state.pages} page${state.pages === 1 ? "" : "s"}. It was the document you had open.`,
+			`Restored ${state.name}, ${state.pages} page${state.pages === 1 ? "" : "s"}. It was the document you had open.`,
 		);
 	} catch (error) {
 		showFailure(`The document could not be restored: ${messageOf(error)}`);
@@ -2736,7 +2736,7 @@ async function lineChanged(
  */
 const TOOL_HINTS: Record<EditorTool, string> = {
 	select:
-		"Drag over the words to select them, then press Ctrl+C to copy. This is the tool for reading a document rather than changing it — nothing you select is written into the file.",
+		"Drag over the words to select them, then press Ctrl+C to copy. This is the tool for reading a document rather than changing it, nothing you select is written into the file.",
 	text: "Click a line of text to change it. The text is replaced where it is drawn, and what follows it on the same line is pushed along to make room. The paragraph does not re-flow, so a line that grows past the margin still runs off it.",
 	draw:
 		"Drag on the page to draw. The pen follows the pointer; the line, the rectangle, the ellipse and the arrow are drawn from where you start to where you stop. What you draw is a mark on the page, so you can pick it up and take it off again.",
@@ -2746,7 +2746,7 @@ const TOOL_HINTS: Record<EditorTool, string> = {
 	image:
 		"Pick a PNG or JPEG, then drag a rectangle to place it. The image is drawn on top of the page.",
 	redact:
-		"Drag a rectangle over what should not be there: the text under it is removed from the file and covered with a black box. An image under it is taken out of the file as well — its pixels do not reach the output at all.",
+		"Drag a rectangle over what should not be there: the text under it is removed from the file and covered with a black box. An image under it is taken out of the file as well, its pixels do not reach the output at all.",
 	measure:
 		"Drag between two points to measure the page. The measurement is drawn on the screen and is not put in the document.",
 	sign: "Draw your signature on the page. It is stamped onto the page as part of the document's own drawing, not as a cryptographic signature.",
@@ -3850,7 +3850,7 @@ async function pickImage(file: File): Promise<void> {
 	}
 	state.image = { name: file.name === "" ? "image.png" : file.name, bytes, width, height };
 	setTool("image");
-	setStatus(`${file.name} picked — drag a rectangle on the page to place it.`);
+	setStatus(`${file.name} picked, drag a rectangle on the page to place it.`);
 }
 
 /**
@@ -5167,7 +5167,7 @@ function renderComments(annotations: readonly PageAnnotation[]): void {
 		if (annotation.contents !== "") {
 			const text = document.createElement("span");
 			text.className = "selis-editor-comment";
-			text.textContent = ` — ${annotation.contents}`;
+			text.textContent = `, ${annotation.contents}`;
 			item.appendChild(text);
 		}
 		if (annotation.author !== "") {

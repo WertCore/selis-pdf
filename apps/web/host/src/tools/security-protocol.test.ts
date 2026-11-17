@@ -242,7 +242,7 @@ describe("securityRows", () => {
 		expect(securityRows(copied)).toEqual([
 			{
 				label: "Password",
-				value: "Nothing to remove — this PDF was not password-protected, so its bytes were copied",
+				value: "Nothing to remove, this PDF was not password-protected, so its bytes were copied",
 			},
 		]);
 	});
@@ -297,7 +297,7 @@ describe("securityRows", () => {
 			),
 		);
 		expect(securityRows(alreadyFree)[0]?.value).toBe(
-			"nothing — no permission was restricted before",
+			"nothing, no permission was restricted before",
 		);
 	});
 });

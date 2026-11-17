@@ -6,16 +6,16 @@
 		<meta name="theme-color" content="#f2f4f7" />
 		<meta
 			name="description"
-			content="Edit a PDF in your browser: change text where it is drawn, add text boxes and images, redact, organize pages, fill forms, and set bookmarks. Your document stays on your device — nothing is uploaded."
+			content="Edit a PDF in your browser: change text where it is drawn, add text boxes and images, redact, organize pages, fill forms, and set bookmarks. Your document stays on your device, nothing is uploaded."
 		/>
-		<title>Selis PDF Editor — edit your PDF privately, no upload</title>
+		<title>Selis PDF Editor | edit your PDF privately, no upload</title>
 		<link rel="canonical" href="https://pdf.selis.com/edit-pdf/" />
 		<!--
 			The editor workspace (pdf-plan/39-EDIT-PDF-WORKSPACE.md, and the
 			redesign in pdf-plan/42-EDITOR-UI-REDESIGN.md).
 
-			Two stylesheets: `style.css` is the viewer's design system — the same
-			tokens, the same shell — so the workspace and the reader are one
+			Two stylesheets: `style.css` is the viewer's design system, the same
+			tokens, the same shell, so the workspace and the reader are one
 			product; `editor.css` is the workspace's own shell.
 
 			Every stylesheet carries integrity + crossorigin (SL-4.WEB.01). The
@@ -27,7 +27,7 @@
 		<link
 			rel="stylesheet"
 			href="/assets/style.css"
-			integrity="sha384-12hi88RYFteIKIEnYiVh8Bi2SPYMf9++NsRPDydxgotjCvHuFxYPVZZkft/bgO8p"
+			integrity="sha384-fsnhK7ulj4FUIin/SPXQVD8yxUHuhvgLNg0mPcDImwtDQybKbOEjS55EYHFrUOQz"
 			crossorigin="anonymous"
 		/>
 		<link
@@ -203,7 +203,7 @@
 		<!--
 			The ribbon: the tabs every established editor has, and the commands
 			under each of them. The commands are grouped the way a ribbon groups
-			them — a cluster of related buttons, a rule between the clusters, and
+			them, a cluster of related buttons, a rule between the clusters, and
 			the group's name under it.
 		-->
 		<div id="selis-editor-tabs" class="selis-editor-tabs" role="tablist" aria-label="Editor tools">
@@ -1043,8 +1043,8 @@
 				</div>
 				<div class="selis-editor-group selis-editor-group--wide">
 					<p class="selis-editor-ribbon__note">
-						The export is made from the document as it is now — with every change
-						you have made — and it is written here, on this device. A deck carries
+						The export is made from the document as it is now, with every change
+						you have made, and it is written here, on this device. A deck carries
 						each page as its own picture; a Word document carries the text in
 						reading order.
 					</p>
@@ -1086,7 +1086,7 @@
 					<h2>Open a PDF to start editing</h2>
 					<p>
 						Choose a file, or drop one onto this page. It is read on this
-						device and never uploaded — every change is made here, and the
+						device and never uploaded, every change is made here, and the
 						result downloads straight to you.
 					</p>
 					<button
@@ -1147,7 +1147,7 @@
 					>
 						<summary>Comments</summary>
 						<p class="selis-editor-hint">
-							The notes and marks in the document — standard PDF annotations.</p>
+							The notes and marks in the document, standard PDF annotations.</p>
 						<div id="selis-editor-comments" class="selis-editor-report">
 							<p class="selis-editor-hint">Read the comments to see what is there.</p>
 						</div>
@@ -1360,7 +1360,7 @@
 <details class="selis-editor-details" id="selis-editor-section-watermark">
 						<summary>Watermark</summary>
 						<p class="selis-editor-hint">
-							A line of text across every page — a draft mark, a confidential
+							A line of text across every page, a draft mark, a confidential
 							stamp.
 						</p>
 						<div class="selis-editor-grid">
@@ -1386,7 +1386,7 @@
 <details class="selis-editor-details" id="selis-editor-section-bates">
 						<summary>Bates numbers</summary>
 						<p class="selis-editor-hint">
-							A number on every page, padded and prefixed — the legal way to
+							A number on every page, padded and prefixed, the legal way to
 							mark a set of pages.
 						</p>
 						<div class="selis-editor-grid">
@@ -1564,7 +1564,7 @@
 <details class="selis-editor-details" id="selis-editor-section-fingerprint">
 						<summary>Fingerprint</summary>
 						<p class="selis-editor-hint">
-							What is inside the document — its pages, its fonts, its images.
+							What is inside the document, its pages, its fonts, its images.
 							The report changes nothing.
 						</p>
 						<div class="selis-editor-report"></div>
@@ -1573,7 +1573,7 @@
 <details class="selis-editor-details" id="selis-editor-section-export" open>
 						<summary>Last export</summary>
 						<p class="selis-editor-hint">
-							The file the last export produced — the link takes it again.</p>
+							The file the last export produced, the link takes it again.</p>
 						<div id="selis-editor-export-result"></div>
 					</details>
 				</aside>
@@ -1670,7 +1670,7 @@
 
 		<noscript>
 			<p class="selis-editor-status">
-				The Selis PDF editor needs JavaScript — it reads your document on this
+				The Selis PDF editor needs JavaScript, it reads your document on this
 				device, with no upload.
 			</p>
 		</noscript>

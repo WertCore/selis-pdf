@@ -122,7 +122,7 @@ export function validateRegistry(tools, groups = TOOL_GROUPS) {
 			const previous = descriptions.get(tool.blurb);
 			if (previous !== undefined) {
 				problems.push(
-					`${tool.id}: description is identical to ${previous} — each page must describe a different job`,
+					`${tool.id}: description is identical to ${previous}, each page must describe a different job`,
 				);
 			}
 			descriptions.set(tool.blurb, tool.id);
@@ -336,7 +336,7 @@ function related(tool, byId) {
 		.filter((other) => other !== undefined)
 		.map(
 			(other) =>
-				`					<li><a href="/${other.slug}/">${escapeHtml(other.title)}</a> — ${escapeHtml(other.blurb)}</li>`,
+				`					<li><a href="/${other.slug}/">${escapeHtml(other.title)}</a>, ${escapeHtml(other.blurb)}</li>`,
 		)
 		.join("\n");
 	return `			<section class="related" aria-labelledby="related-title">
@@ -350,7 +350,7 @@ ${items}
 /** Render one tool's document. */
 export function renderToolPage(tool, byId) {
 	const canonical = `${SITE_ORIGIN}/${tool.slug}/`;
-	const title = `${tool.title} — Selis Tools`;
+	const title = `${tool.title} | Selis Tools`;
 	const description = tool.blurb;
 	const relatedBlock = related(tool, byId);
 	return `<!doctype html>

@@ -964,7 +964,7 @@ const VIEWER_CSS_SOURCES = [
 	"apps/web/host/assets-src/viewer-shell.css",
 ];
 let viewerCss =
-	"/* Selis viewer stylesheet — assembled by place-assets from @selis/ui-kit + apps/ui + viewer-shell. Do not edit by hand. */\n";
+	"/* Selis viewer stylesheet, assembled by place-assets from @selis/ui-kit + apps/ui + viewer-shell. Do not edit by hand. */\n";
 for (const rel of VIEWER_CSS_SOURCES) {
 	const abs = join(workspaceRoot, rel);
 	if (!existsSync(abs)) {

@@ -5020,7 +5020,7 @@ const UNLOCK_LEG: SecuritySpec = SecuritySpec {
     pages: 3,
     rows: &[(
         "Password",
-        "Removed — the output opens without one and carries no /Encrypt",
+        "Removed, the output opens without one and carries no /Encrypt",
     )],
     needles: &["/Type /Pages", "/Count 3"],
     absent: &["/Encrypt", "/Filter /Standard", "/AESV3"],
@@ -5036,7 +5036,7 @@ const UNLOCK_OWN_LEG: SecuritySpec = SecuritySpec {
     pages: 3,
     rows: &[(
         "Password",
-        "Removed — the output opens without one and carries no /Encrypt",
+        "Removed, the output opens without one and carries no /Encrypt",
     )],
     needles: &["/Type /Pages", "/Count 3"],
     absent: &["/Encrypt", "/Filter /Standard", "/AESV3"],
@@ -5407,11 +5407,11 @@ const SIGNATURE_REPORT_LEG: SignatureReportSpec = SignatureReportSpec {
         ("Coverage 1", "the whole document"),
         (
             "Trust 1",
-            "trusted \u{2014} the chain ends at a supplied anchor (Selis Test Signer)",
+            "trusted, the chain ends at a supplied anchor (Selis Test Signer)",
         ),
         (
             "Revocation",
-            "not checked \u{2014} this build has no network, so no CRL or OCSP response was fetched",
+            "not checked, this build has no network, so no CRL or OCSP response was fetched",
         ),
     ],
 };
@@ -5866,7 +5866,7 @@ fn check_batch_leg(leg: &Json, label: &str) -> Result<(), String> {
         ));
     }
     let skipped = row_value("broken.pdf");
-    if !skipped.starts_with("not processed \u{2014} ") {
+    if !skipped.starts_with("not processed, ") {
         return Err(format!(
             "the {label} card did not say the failed file was skipped with a reason (row = {skipped:?})"
         ));
@@ -11795,7 +11795,7 @@ mod tests {
             "src": "http://127.0.0.1:51845/doc.pdf",
             "origin": "http://127.0.0.1:51845",
             "composedMs": 400,
-            "status": "Opened doc.pdf — 2 pages.",
+            "status": "Opened doc.pdf, 2 pages.",
             "mount": {
                 "hidden": false,
                 "children": 1,
@@ -11812,7 +11812,7 @@ mod tests {
             },
             "pageList": {
                 "tiles": 2,
-                "live": "Page 1 of 2 — fit page",
+                "live": "Page 1 of 2, fit page",
                 "scrollTop": 0,
                 "scrollHeight": 866,
                 "clientHeight": 441,
@@ -11849,7 +11849,7 @@ mod tests {
                 "title": "Second layer",
                 "label": "Second layer, Page 2 of 2",
                 "before": {
-                    "live": "Page 1 of 2 — fit page",
+                    "live": "Page 1 of 2, fit page",
                     "navLive": "",
                     "currentRow": 0,
                     "currentRowPage": "0",
@@ -11865,7 +11865,7 @@ mod tests {
                     },
                 },
                 "after": {
-                    "live": "Page 2 of 2 — fit page",
+                    "live": "Page 2 of 2, fit page",
                     "navLive": "Moved to Page 2 of 2",
                     "currentRow": 1,
                     "currentRowPage": "1",
@@ -11895,7 +11895,7 @@ mod tests {
                 "prevented": true,
                 "moved": true,
                 "before": {
-                    "live": "Page 2 of 2 — fit page",
+                    "live": "Page 2 of 2, fit page",
                     "navLive": "Moved to Page 2 of 2",
                     "currentRow": 1,
                     "currentRowPage": "1",
@@ -11911,7 +11911,7 @@ mod tests {
                     },
                 },
                 "after": {
-                    "live": "Page 1 of 2 — fit page",
+                    "live": "Page 1 of 2, fit page",
                     "navLive": "Moved to Page 2 of 2",
                     "currentRow": 0,
                     "currentRowPage": "0",
@@ -12944,7 +12944,7 @@ mod tests {
                     },
                     {
                         "label": "broken.pdf",
-                        "value": "not processed \u{2014} in/1: [E1101] This PDF's index is damaged. (during xref-int) (at byte 9)"
+                        "value": "not processed, in/1: [E1101] This PDF's index is damaged. (during xref-int) (at byte 9)"
                     },
                     {
                         "label": "beta.pdf",
@@ -14049,7 +14049,7 @@ mod tests {
                 "cards": TOOLS_PAGE_CARDS.len(),
                 "controlled": true,
                 "script": "http://127.0.0.1:1234/sw.js",
-                "pageTitle": "Selis Tools — PDFs, handled here",
+                "pageTitle": "Selis Tools | PDFs, handled here",
                 "fileRows": 2,
                 "runLabel": "Merge PDFs",
                 "noUpload": "verified",
@@ -15983,7 +15983,7 @@ mod tests {
         let from_wat = i64::from(call_probe(&wat));
         assert_eq!(
             from_wasm, from_wat,
-            "probe.wasm and probe.wat disagree — update both together"
+            "probe.wasm and probe.wat disagree, update both together"
         );
         assert_eq!(from_wasm, WASM_PROBE_SUM);
     }

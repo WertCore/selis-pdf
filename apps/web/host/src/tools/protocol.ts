@@ -611,7 +611,7 @@ export function runTool(wasm: ToolsWasm, request: ToolRequest): ToolResult {
 /** Human-readable byte size. */
 export function formatBytes(bytes: number): string {
 	if (!Number.isFinite(bytes) || bytes < 0) {
-		return "—";
+		return "-";
 	}
 	if (bytes < 1024) {
 		return `${bytes} B`;

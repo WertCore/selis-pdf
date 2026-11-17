@@ -352,8 +352,8 @@ export function securityRows(result: SecurityResult): VerificationRow[] {
 		rows.push({
 			label: "Password",
 			value: outcome.encrypted
-				? "Removed — the output opens without one and carries no /Encrypt"
-				: "Nothing to remove — this PDF was not password-protected, so its bytes were copied",
+				? "Removed, the output opens without one and carries no /Encrypt"
+				: "Nothing to remove, this PDF was not password-protected, so its bytes were copied",
 		});
 	}
 	if (outcome.algorithm !== undefined) {
@@ -382,7 +382,7 @@ export function securityRows(result: SecurityResult): VerificationRow[] {
 			label: "Now granted",
 			value:
 				outcome.previouslyDenied.length === 0
-					? "nothing — no permission was restricted before"
+					? "nothing, no permission was restricted before"
 					: outcome.previouslyDenied.join(", "),
 		});
 	}
