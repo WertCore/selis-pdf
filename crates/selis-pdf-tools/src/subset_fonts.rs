@@ -52,13 +52,19 @@ pub fn subset_fonts(path: &str, output: &str) -> CliResult<(SubsetReport, Verifi
     crate::tools::page_refs_of(&bytes, &out_doc, &budget, &mut g)
         .map_err(|e| CliError(format!("{path}: output has no usable page tree: {e}")))?;
 
-    let verification = Verification::from_gate(
+    let mut verification = Verification::from_gate(
         Some(&observed),
         &verdict,
         &expected,
         u64::try_from(in_bytes).unwrap_or(u64::MAX),
         u64::try_from(bytes.len()).unwrap_or(u64::MAX),
     );
+    // Surface the measured subset report on the machine-readable verification
+    // object too, so the CLI's `--json` twin and the browser card report the
+    // same fonts/glyphs counts (the standard verification rows already carry
+    // bytes_in -> bytes_out).
+    verification.fonts_subset = u64::try_from(report.fonts_subset).ok();
+    verification.glyphs_kept = u64::try_from(report.glyphs_kept).ok();
     Ok((report, verification))
 }
 
@@ -404,6 +410,13 @@ mod tests {
         assert_eq!(verification.verdict, "ok");
         assert_eq!(verification.pages_out, 1);
         assert_eq!(report.fonts_subset, 1);
+        // The measured report is mirrored onto the verification object that
+        // both the CLI `--json` twin and the web card consume.
+        assert_eq!(verification.fonts_subset, Some(1));
+        assert_eq!(
+            verification.glyphs_kept,
+            u64::try_from(report.glyphs_kept).ok()
+        );
         assert!(
             report.glyphs_kept >= 8,
             "kept at least the distinct letters of the text"

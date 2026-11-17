@@ -41,6 +41,7 @@ export type ToolId =
 	| "header_footer"
 	| "bates"
 	| "compress"
+	| "subset_fonts"
 	| "attachments"
 	| "attach"
 	| "detach"
@@ -419,6 +420,20 @@ export const TOOLS: readonly ToolDef[] = [
 		note: "Choose Less, Recommended or Extreme and an optional target size in KiB. Images are re-encoded; text and structure stay intact, and the result is never larger than the input.",
 		verb: "Compress PDF",
 		multiple: false,
+	},
+	{
+		id: "subset_fonts",
+		slug: "subset-pdf-fonts",
+		group: "repair",
+		mark: "SS",
+		title: "Subset fonts",
+		blurb:
+			"Shrink a PDF by replacing its embedded fonts with subsets that keep only the glyphs the text uses. Runs on this device; the file never leaves it.",
+		note: "Only the glyphs the document actually shows are kept, so the pages look the same and the file gets smaller. WinAnsi TrueType and Identity-H CID fonts are supported; a font the engine cannot subset is refused with a reason rather than silently skipped. The result is verified before it downloads.",
+		verb: "Subset fonts",
+		multiple: false,
+		accepts: "pdf",
+		related: ["compress"],
 	},
 	{
 		id: "attachments",

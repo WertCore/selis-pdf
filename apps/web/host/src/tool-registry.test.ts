@@ -23,7 +23,7 @@ describe("registry shape", () => {
 	it("holds every card the grid renders", () => {
 		// The browser harness names the same count. A change here without the
 		// harness and the offline precache changing is a tool nobody exercises.
-		expect(TOOLS.length).toBe(47);
+		expect(TOOLS.length).toBe(48);
 		expect(TOOL_PAGE_SLUGS.length).toBe(TOOLS.length);
 	});
 
@@ -83,6 +83,23 @@ describe("registry shape", () => {
 			expect(tool.note.trim(), tool.id).not.toBe("");
 		}
 		expect(SITE_ORIGIN).toBe("https://pdf.selis.com");
+	});
+});
+
+describe("the subset-fonts card", () => {
+	it("is registered as a single-PDF, local-only repair card on op 41", () => {
+		const card = TOOL_BY_ID.get("subset_fonts");
+		expect(card).toBeDefined();
+		expect(card?.slug).toBe("subset-pdf-fonts");
+		expect(TOOL_BY_SLUG.get("subset-pdf-fonts")).toBe(card);
+		expect(card?.group).toBe("repair");
+		expect(card?.accepts).toBe("pdf");
+		expect(card?.multiple).toBe(false);
+		expect(card?.minimum).toBeUndefined();
+		// The card's own description says the file stays on the device; the
+		// request recorder is the mechanical check behind that claim.
+		expect(card?.blurb).toContain("never leaves it");
+		expect(TOOL_PAGE_SLUGS).toContain("subset-pdf-fonts");
 	});
 });
 

@@ -70,6 +70,7 @@ import {
 	signatureRows,
 	signingStamp,
 } from "./sign-protocol.js";
+import { SUBSET_FONTS_NOTE, subsetReportRows } from "./subset.js";
 import {
 	type TextOp,
 	type TextOutput,
@@ -2340,6 +2341,12 @@ function init(): void {
 			);
 			return;
 		}
+		if (tool.id === "subset_fonts") {
+			const note = make("p", "option-note");
+			note.textContent = SUBSET_FONTS_NOTE;
+			options.append(note);
+			return;
+		}
 		if (tool.id === "compress") {
 			radioGroup(
 				"level",
@@ -3580,6 +3587,11 @@ function fileTile(file: File, index: number, tool: ToolDef | null): HTMLLIElemen
 				options.targetKiB = numberInRange("target-kib", "Target size", 1, 100_000_000, 1, true);
 			}
 			return { op: "compress", options, files: wireFiles };
+		}
+		if (tool.id === "subset_fonts") {
+			// The op needs no options: it walks the document's own text and
+			// embedded font programs. One PDF in, one verified PDF out.
+			return { op: "subset_fonts", files: wireFiles };
 		}
 		if (tool.id === "zip") {
 			return { op: "zip", files: wireFiles };
@@ -5222,7 +5234,12 @@ function fileTile(file: File, index: number, tool: ToolDef | null): HTMLLIElemen
 				);
 			}
 			document.documentElement.dataset.noUpload = "verified";
-			showResult(result);
+			// The subset card shows the engine's measured fonts/glyphs report
+			// beside the standard verification rows; other tools have none.
+			showResult(
+				result,
+				tool.id === "subset_fonts" ? subsetReportRows(result.verification) : [],
+			);
 			setStatus("Done. The result was verified on this device.", "ok");
 		} catch (error) {
 			const message =

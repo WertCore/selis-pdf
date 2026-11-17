@@ -108,6 +108,24 @@ describe("encodeToolRequest", () => {
 		expect(readU32(encodeToolRequest({ op: "detach", files }), 8)).toBe(21);
 	});
 
+	it("encodes subset_fonts as op 41 with one PDF and no options", () => {
+		const encoded = encodeToolRequest({
+			op: "subset_fonts",
+			files: [{ name: "doc.pdf", bytes: new Uint8Array([0x25, 0x50, 0x44, 0x46]) }],
+		});
+		expect(readU32(encoded, 8)).toBe(41);
+		expect(readU32(encoded, 12)).toBe(0); // empty options block
+	});
+
+	it("encodes linearize as op 43 with one PDF and no options", () => {
+		const encoded = encodeToolRequest({
+			op: "linearize",
+			files: [{ name: "doc.pdf", bytes: new Uint8Array([0x25, 0x50, 0x44, 0x46]) }],
+		});
+		expect(readU32(encoded, 8)).toBe(43);
+		expect(readU32(encoded, 12)).toBe(0);
+	});
+
 	it("encodes repair at 22", () => {
 		const files = [{ name: "a.pdf", bytes: new Uint8Array([0x25]) }];
 		expect(readU32(encodeToolRequest({ op: "repair", files }), 8)).toBe(22);
@@ -168,6 +186,27 @@ describe("decodeToolResponse", () => {
 		expect(result.reports[0]?.kind).toBe("pdf");
 		expect(result.reports[0]?.pages).toBe(2);
 		expect(result.reports[0]?.bytes).toBe(4);
+	});
+
+	it("carries the subset report's fonts/glyphs counts through the wire", () => {
+		const message = {
+			...verification,
+			fonts_subset: 2,
+			glyphs_kept: 37,
+			outputs: [{ name: "doc-subset.pdf", kind: "pdf", pages: 2, bytes: 4, verdict: "ok" }],
+		};
+		const result = decodeToolResponse(
+			response(0, JSON.stringify(message), [{ name: "doc-subset.pdf", bytes: [0x25, 0x50, 0x44, 0x46] }]),
+		);
+		expect(result.verification.fonts_subset).toBe(2);
+		expect(result.verification.glyphs_kept).toBe(37);
+		expect(result.verification.bytes_in).toBe(2048);
+		expect(result.verification.bytes_out).toBe(1024);
+	});
+
+	it("surfaces the engine's typed refusal message on a failed run", () => {
+		const reason = "in/0: no embedded TrueType font is used by this document's text";
+		expect(() => decodeToolResponse(response(1, reason, []))).toThrow(reason);
 	});
 
 	it("keeps every output and its per-file report", () => {

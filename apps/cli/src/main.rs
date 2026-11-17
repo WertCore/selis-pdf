@@ -34,10 +34,12 @@ mod failure;
 mod forms;
 mod img2pdf;
 mod inspect;
+mod linearize;
 mod protect;
 mod render;
 mod search;
 mod sign;
+mod subset_fonts;
 mod topdf;
 mod unlock;
 
@@ -943,6 +945,33 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Subset a PDF's embedded TrueType fonts to the glyphs its text uses.
+    /// Writes a strictly smaller, structurally verified PDF; encrypted files,
+    /// CFF/other unsupported fonts and rewrites that would grow the file are
+    /// refused with a reason.
+    SubsetFonts {
+        /// The input PDF.
+        path: String,
+        /// The output PDF.
+        #[arg(short, long)]
+        output: String,
+        /// Emit the verification object (with fonts/glyphs counts) as JSON on stdout.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Linearize a PDF ("fast web view"): write first-page objects first with
+    /// a real /Linearized dictionary. Encrypted documents are refused; use
+    /// `unlock` first.
+    Linearize {
+        /// The input PDF.
+        path: String,
+        /// The output PDF.
+        #[arg(short, long)]
+        output: String,
+        /// Emit the verification object as JSON on stdout (SL-1A.UI.02).
+        #[arg(long)]
+        json: bool,
+    },
     /// Remove password protection from a PDF (decrypt and rewrite).
     Unlock {
         /// The input PDF.
@@ -1477,6 +1506,16 @@ fn run() {
         Command::Compress { path, output, json } => {
             finish(compress::run(&path, &output), json)
         }
+        Command::SubsetFonts {
+            path,
+            output,
+            json,
+        } => finish(subset_fonts::run(&path, &output), json),
+        Command::Linearize {
+            path,
+            output,
+            json,
+        } => finish(linearize::run(&path, &output), json),
         Command::Unlock {
             path,
             output,
