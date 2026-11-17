@@ -18,6 +18,54 @@ function text(state: { readonly bytes: Uint8Array }): string {
 	return new TextDecoder().decode(state.bytes);
 }
 
+describe("the journal", () => {
+	it("records which operation made each state, when, and in what order", () => {
+		let now = 1000;
+		const history = new DocumentHistory(5, () => {
+			now += 10;
+			return now;
+		});
+		history.reset("Opened", bytes("one"));
+		history.push("Changed the text", bytes("two"), { op: "edit_text" });
+		history.push("Redacted a region", bytes("three"), { op: "redact" });
+
+		const entries = history.entries;
+		expect(entries.map((entry) => entry.operation?.op ?? null)).toEqual([
+			null,
+			"edit_text",
+			"redact",
+		]);
+		expect(entries.map((entry) => entry.id)).toEqual([1, 2, 3]);
+		expect(entries.map((entry) => entry.at)).toEqual([1010, 1020, 1030]);
+	});
+
+	it("the inverse of an entry is the bytes of the state before it", () => {
+		const history = new DocumentHistory();
+		history.reset("Opened", bytes("one"));
+		history.push("Rotated", bytes("two"), { op: "rotate" });
+		history.push("Deleted", bytes("three"), { op: "delete" });
+
+		expect(history.inverseOf(0)).toBeNull();
+		expect(
+			new TextDecoder().decode(history.inverseOf(1) ?? new Uint8Array()),
+		).toBe("one");
+		expect(
+			new TextDecoder().decode(history.inverseOf(2) ?? new Uint8Array()),
+		).toBe("two");
+		expect(history.inverseOf(3)).toBeNull();
+	});
+
+	it("keeps operation records across undo and redo", () => {
+		const history = new DocumentHistory();
+		history.reset("Opened", bytes("one"));
+		history.push("Changed", bytes("two"), { op: "edit_text" });
+		history.undo();
+		expect(history.current?.operation).toBeNull();
+		history.redo();
+		expect(history.current?.operation?.op).toBe("edit_text");
+	});
+});
+
 describe("the undo stack", () => {
 	it("starts with the document as it was opened, and nothing to undo", () => {
 		const history = new DocumentHistory();

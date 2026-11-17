@@ -7573,6 +7573,9 @@ fn verdict_editor(report: &Json) -> Result<(), String> {
     if reflow.get("carriesPush").and_then(Json::as_bool) != Some(true) {
         return Err("the text that followed the edit did not move in the file".into());
     }
+    if reflow.get("journalNamesEdit").and_then(Json::as_bool) != Some(true) {
+        return Err("the history did not record edit_text as the operation".into());
+    }
 
     // A REDACTION OF AN IMAGE must take the image out of the file, not cover
     // it. A black box over a picture leaves the picture in the file, and

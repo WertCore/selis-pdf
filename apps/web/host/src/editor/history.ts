@@ -14,6 +14,13 @@
  * button: what comes back is the document as it was, byte for byte, and not a
  * reconstruction that happens to look the same.
  *
+ * Each step ALSO records the engine operation that produced it, in the
+ * order it happened, with an id and a time. That is the journal's spine: the
+ * reader can see what each step did, and a later slice can materialise the
+ * document from the operations instead of keeping a byte copy per step. The
+ * inverse of an entry is the bytes of the entry before it — a snapshot
+ * inverse, which is why undo is exact today.
+ *
  * The cost is memory — one copy of the document per step — so the depth is
  * capped. The cap is a constant here and nowhere else.
  */
@@ -21,12 +28,31 @@
 /** How many document states the history keeps. */
 export const HISTORY_LIMIT = 25;
 
-/** One state of the document, and the change that produced it. */
+/** The engine operation that produced one journal entry. */
+export interface OperationRecord {
+	/** The operation's wire name, e.g. `edit_text` or `redact`. */
+	readonly op: string;
+}
+
+/** One journal entry: a state of the document, and the change that made it. */
 export interface DocumentState {
 	/** What produced this state, in the user's words ("Rotated page 2"). */
 	readonly label: string;
 	/** The document's bytes at this state. */
 	readonly bytes: Uint8Array;
+	/** The engine operation that produced it, when the editor drove one. */
+	readonly operation: OperationRecord | null;
+	/** A monotonic id, so an entry can be named without its bytes. */
+	readonly id: number;
+	/** When the entry was recorded, from the caller's clock. */
+	readonly at: number;
+}
+
+/** The entry to record, before its id and time are assigned. */
+export interface JournalInput {
+	readonly label: string;
+	readonly bytes: Uint8Array;
+	readonly operation?: OperationRecord | null;
 }
 
 /** Copy a byte buffer, so a later mutation cannot reach into the history. */
@@ -46,12 +72,16 @@ export class DocumentHistory {
 	readonly #limit: number;
 	#states: DocumentState[] = [];
 	#cursor = -1;
+	#nextId = 1;
+	/** Injectable for tests; production passes Date.now(). */
+	readonly #clock: () => number;
 
-	constructor(limit: number = HISTORY_LIMIT) {
+	constructor(limit: number = HISTORY_LIMIT, clock: () => number = Date.now) {
 		if (!Number.isInteger(limit) || limit < 1) {
 			throw new RangeError("the history must keep at least one state");
 		}
 		this.#limit = limit;
+		this.#clock = clock;
 	}
 
 	/** How many states are kept at once. */
@@ -130,8 +160,11 @@ export class DocumentHistory {
 	 * The baseline is not an undo step: there is nothing before it to return
 	 * to, so `canUndo` is false until the first change is recorded.
 	 */
-	reset(label: string, bytes: Uint8Array): void {
-		this.#states = [{ label, bytes: copy(bytes) }];
+	reset(label: string, bytes: Uint8Array, operation: OperationRecord | null = null): void {
+		this.#states = [
+			{ label, bytes: copy(bytes), operation, id: this.#nextId, at: this.#clock() },
+		];
+		this.#nextId += 1;
 		this.#cursor = 0;
 	}
 
@@ -141,18 +174,39 @@ export class DocumentHistory {
 	 * The oldest state is dropped once the history is full, so the depth is
 	 * bounded however long the session runs.
 	 */
-	push(label: string, bytes: Uint8Array): void {
+	push(label: string, bytes: Uint8Array, operation: OperationRecord | null = null): void {
 		if (this.#cursor < 0) {
-			this.reset(label, bytes);
+			this.reset(label, bytes, operation);
 			return;
 		}
 		this.#states = this.#states.slice(0, this.#cursor + 1);
-		this.#states.push({ label, bytes: copy(bytes) });
+		this.#states.push({
+			label,
+			bytes: copy(bytes),
+			operation,
+			id: this.#nextId,
+			at: this.#clock(),
+		});
+		this.#nextId += 1;
 		this.#cursor += 1;
 		while (this.#states.length > this.#limit) {
 			this.#states.shift();
 			this.#cursor -= 1;
 		}
+	}
+
+	/**
+	 * The inverse of an entry: the bytes of the state before it.
+	 *
+	 * The spec's inverse is a typed Mutation; this one is a snapshot, which is
+	 * why an undo here is byte-exact. A journal entry at index 0 has no inverse
+	 * — it is the document as it was opened.
+	 */
+	inverseOf(index: number): Uint8Array | null {
+		if (index <= 0 || index >= this.#states.length) {
+			return null;
+		}
+		return this.#states[index - 1]?.bytes ?? null;
 	}
 
 	/**

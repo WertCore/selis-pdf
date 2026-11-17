@@ -1639,6 +1639,16 @@
 	background: var(--selis-color-accent);
 }
 
+/* The op name in a journal row: which engine operation made this state. */
+.selis-editor-history__op {
+	margin-left: auto;
+	padding: 0 0.3rem;
+	border-radius: var(--selis-radius-sm);
+	background: var(--selis-color-bg-inset);
+	color: var(--selis-color-fg-subtle);
+	font-size: 0.7rem;
+}
+
 /*
  * The inline editor.
  *

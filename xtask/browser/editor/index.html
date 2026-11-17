@@ -2187,6 +2187,11 @@
           new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
         );
         await waitForSettled(doc, "Changed", "the text to change (" + label + ")");
+        // The history is a journal: it names the ENGINE operation that made
+        // each state, not just a friendly label.
+        const journal = [
+          ...doc.querySelectorAll("#selis-editor-history .selis-editor-history__item"),
+        ].map((item) => (item.textContent || "").trim());
 
         const produced = await download(doc, win);
         const streams = [
@@ -2200,6 +2205,7 @@
           status: statusText(doc),
           bytes: produced.bytes,
           shift,
+          journalNamesEdit: journal.some((row) => row.includes("edit_text")),
           carriesPush: /\d+(?:\.\d+)? 0 Td 80 0 Td \(USD\)/.test(newest),
         };
       }

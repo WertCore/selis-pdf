@@ -633,9 +633,18 @@ These are the blockers named above, in the order they unlock the most.
       the shift back out, so the lines below stay where they were. An absolute
       `Tm` carries the shift in its own coordinates. The PARAGRAPH does not
       re-flow: a line that grows past the margin still runs off it.
-- [ ] **I4 — The mutation journal (`SL-5.EDIT.01`).** The spec's own model.
-      The workspace's undo is a stack of bytes, which is exact but keeps a
-      copy of the document per step.
+- [x] **I4a — The history is a journal.** Each undo state now records the
+      ENGINE operation that produced it (its wire name), a monotonic id and a
+      time, and the panel shows the operation beside the label. The inverse of
+      an entry is the bytes of the state before it — a snapshot inverse, which
+      is why undo is still byte-exact. Unit tests cover order, ids, times and
+      inverses, and the browser check reads `edit_text` back out of the panel.
+- [ ] **I4b — Materialise from the journal (`SL-5.EDIT.01`).** The spec's full
+      model is still ahead: typed `Mutation` with `inverse()`, `source_id`
+      revalidation, `.selis` persistence and reload, undo groups with
+      coalescing, and un-stubbing the engine's `mutate`/`save` ops. Until
+      those land the byte snapshot stays the restore source, so undo remains
+      exact rather than a re-derivation that only looks the same.
 
 ### Things that are NOT worth doing
 

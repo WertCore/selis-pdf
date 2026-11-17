@@ -65,7 +65,7 @@ import {
 	type RenderedPage,
 } from "./engine.js";
 import { type LinePlacement, placeLine } from "./geometry.js";
-import { DocumentHistory } from "./history.js";
+import { DocumentHistory, type OperationRecord } from "./history.js";
 import { type IconName, icon } from "./icons.js";
 import {
 	type AnnotateOptions,
@@ -1858,6 +1858,15 @@ function renderHistoryList(): void {
 		const label = document.createElement("span");
 		label.textContent = entry.label;
 		button.append(dot, label);
+		// The journal says which ENGINE operation made this state, not just
+		// the label a person typed: a reader can tell code that changed a
+		// number from a stamp that covered it.
+		if (entry.operation !== null) {
+			const op = document.createElement("code");
+			op.className = "selis-editor-history__op";
+			op.textContent = entry.operation.op;
+			button.appendChild(op);
+		}
 		item.appendChild(button);
 		list.appendChild(item);
 	});
@@ -1927,11 +1936,15 @@ async function openInEngine(bytes: Uint8Array): Promise<void> {
  * The history is recorded only once the new document has actually opened, so
  * the stack never describes a state the workspace is not in.
  */
-async function commit(bytes: Uint8Array, label: string): Promise<void> {
+async function commit(
+	bytes: Uint8Array,
+	label: string,
+	operation: OperationRecord | null = null,
+): Promise<void> {
 	try {
 		await openInEngine(bytes);
 		state.bytes = bytes;
-		state.history.push(label, bytes);
+		state.history.push(label, bytes, operation);
 		state.dirty = true;
 		renderDirty();
 		await assertLocalOnly();
@@ -2177,7 +2190,7 @@ async function runOperation(operation: EditorOperation): Promise<boolean> {
 		if (produced === undefined) {
 			throw new Error("the engine produced no document");
 		}
-		await commit(produced.bytes, operation.label);
+		await commit(produced.bytes, operation.label, { op: operation.op });
 		return true;
 	} catch (error) {
 		setStatus(`${operation.label} did not work: ${messageOf(error)}`, "error");
@@ -2667,7 +2680,7 @@ async function applyInlineNow(editor: InlineEditor): Promise<void> {
 				);
 				continue;
 			}
-			await commit(produced, `Changed the text on page ${page + 1}`);
+			await commit(produced, `Changed the text on page ${page + 1}`, { op: "edit_text" });
 			closeInline();
 			return;
 		}
@@ -3712,7 +3725,7 @@ async function applyTextBox(page: number, click: Rect, text: string): Promise<vo
 		if (response.kind !== "document") {
 			throw new Error("the signing chunk returned no document");
 		}
-		await commit(response.output.bytes, `Added a text box on page ${page + 1}`);
+		await commit(response.output.bytes, `Added a text box on page ${page + 1}`, { op: "stamp" });
 		closeInline();
 	} catch (error) {
 		setStatus(`The text box could not be added: ${messageOf(error)}`, "error");
@@ -3762,7 +3775,7 @@ async function placeImage(page: number, rect: Rect, geometry: PageGeometry): Pro
 		if (output === undefined) {
 			throw new Error("the engine produced no document");
 		}
-		await commit(output.bytes, `Added an image on page ${page + 1}`);
+		await commit(output.bytes, `Added an image on page ${page + 1}`, { op: "image_watermark" });
 	} catch (error) {
 		setStatus(`The image could not be added: ${messageOf(error)}`, "error");
 	} finally {
@@ -3804,7 +3817,7 @@ async function redactRegion(page: number, rect: Rect, geometry: PageGeometry): P
 		if (output === undefined) {
 			throw new Error("the engine produced no document");
 		}
-		await commit(output.bytes, `Redacted a region on page ${page + 1}`);
+		await commit(output.bytes, `Redacted a region on page ${page + 1}`, { op: "redact" });
 	} catch (error) {
 		setStatus(`The region could not be redacted: ${messageOf(error)}`, "error");
 	} finally {
@@ -4127,7 +4140,7 @@ async function attachFile(file: File): Promise<void> {
 		if (output === undefined) {
 			throw new Error("the engine produced no document");
 		}
-		await commit(output.bytes, `Attached ${file.name}`);
+		await commit(output.bytes, `Attached ${file.name}`, { op: "attach" });
 		setStatus(`${file.name} now travels with the document.`);
 	} catch (error) {
 		setStatus(`The file could not be attached: ${messageOf(error)}`, "error");
@@ -4157,7 +4170,7 @@ async function clearAttachments(): Promise<void> {
 		if (output === undefined) {
 			throw new Error("the engine produced no document");
 		}
-		await commit(output.bytes, "Removed the attachments");
+		await commit(output.bytes, "Removed the attachments", { op: "detach" });
 		renderAttachments([]);
 		dom.attachmentsClear.disabled = true;
 	} catch (error) {
@@ -4206,7 +4219,7 @@ async function keepPages(): Promise<void> {
 		if (output === undefined) {
 			throw new Error("the engine produced no document");
 		}
-		await commit(output.bytes, `Kept pages ${from} to ${to}`);
+		await commit(output.bytes, `Kept pages ${from} to ${to}`, { op: "split" });
 	} catch (error) {
 		setStatus(`Those pages could not be kept: ${messageOf(error)}`, "error");
 	} finally {
@@ -4255,7 +4268,7 @@ async function protectDocument(): Promise<void> {
 			},
 			file: { name: state.name, bytes },
 		});
-		await commit(result.output.bytes, "Protected the document");
+		await commit(result.output.bytes, "Protected the document", { op: "protect" });
 		dom.unlockApply.disabled = false;
 		setStatus(
 			`The document is protected with ${result.outcome.algorithm ?? "a password"}. The password is held in this tab's memory only.`,
@@ -4286,7 +4299,7 @@ async function unlockDocument(): Promise<void> {
 			options: { password },
 			file: { name: state.name, bytes },
 		});
-		await commit(result.output.bytes, "Removed the password");
+		await commit(result.output.bytes, "Removed the password", { op: "unlock" });
 		setStatus(
 			result.outcome.encrypted === true
 				? "The password is off and the result was verified on this device."
@@ -4505,7 +4518,7 @@ async function stampSignature(
 		if (response.kind !== "document") {
 			throw new Error("the signing chunk returned no document");
 		}
-		await commit(response.output.bytes, `Signed page ${page + 1}`);
+		await commit(response.output.bytes, `Signed page ${page + 1}`, { op: "stamp" });
 	} catch (error) {
 		setStatus(`The signature could not be placed: ${messageOf(error)}`, "error");
 	} finally {
@@ -4659,7 +4672,7 @@ async function stampDrawing(
 		if (output === undefined) {
 			throw new Error("the engine produced no document");
 		}
-		await commit(output.bytes, `Drew on page ${page + 1}`);
+		await commit(output.bytes, `Drew on page ${page + 1}`, { op: "annotate" });
 	} catch (error) {
 		setStatus(`The drawing could not be placed: ${messageOf(error)}`, "error");
 	} finally {
@@ -4873,6 +4886,7 @@ async function placeMarkup(
 		await commit(
 			output.bytes,
 			kind === "note" ? `Added a note on page ${page + 1}` : `Added a mark on page ${page + 1}`,
+			{ op: "annotate" },
 		);
 	} catch (error) {
 		setStatus(`The mark could not be added: ${messageOf(error)}`, "error");
@@ -4958,7 +4972,7 @@ async function flattenMarks(): Promise<void> {
 		if (output === undefined) {
 			throw new Error("the engine produced no document");
 		}
-		await commit(output.bytes, "Flattened the marks into the page");
+		await commit(output.bytes, "Flattened the marks into the page", { op: "flatten_annotations" });
 		await readComments();
 		setStatus("The marks are part of the page now.");
 	} catch (error) {
@@ -5036,7 +5050,7 @@ async function replyToMark(
 		if (output === undefined) {
 			throw new Error("the engine produced no document");
 		}
-		await commit(output.bytes, `Replied to a mark on page ${page + 1}`);
+		await commit(output.bytes, `Replied to a mark on page ${page + 1}`, { op: "annotate" });
 		await readComments();
 		setStatus(`Replied on page ${page + 1}.`);
 	} catch (error) {
@@ -5075,6 +5089,7 @@ async function setMarkState(
 		await commit(
 			output.bytes,
 			`${review === "resolved" ? "Resolved" : "Reopened"} a mark on page ${page + 1}`,
+			{ op: "annotate_update" },
 		);
 		await readComments();
 		setStatus(
@@ -5276,7 +5291,7 @@ async function moveAnnotation(
 		if (output === undefined) {
 			throw new Error("the engine produced no document");
 		}
-		await commit(output.bytes, "Moved the mark");
+		await commit(output.bytes, "Moved the mark", { op: "annotate_update" });
 	} catch (error) {
 		setStatus(`The mark could not be moved: ${messageOf(error)}`, "error");
 	} finally {
@@ -5306,7 +5321,7 @@ async function removeAnnotation(page: number, index: number): Promise<void> {
 		if (output === undefined) {
 			throw new Error("the engine produced no document");
 		}
-		await commit(output.bytes, "Removed the mark");
+		await commit(output.bytes, "Removed the mark", { op: "annotate_update" });
 	} catch (error) {
 		setStatus(`The mark could not be removed: ${messageOf(error)}`, "error");
 	} finally {
