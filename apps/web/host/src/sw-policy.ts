@@ -85,6 +85,10 @@ export const TOOL_PAGE_PATHS: readonly string[] = TOOL_PAGE_SLUGS.map((slug) => 
  * module graph are new URLs, and an install that predates them has no entry
  * to serve them from.
  *
+ * v11 hides a closed preview dialog fully (the old CSS kept its header on
+ * screen), centres the × optically, and gives Preview and Delete one shared
+ * button style. Cached module again, so bump.
+ *
  * v10 ships the preview polish: a single backdrop, an icon close button,
  * a 220-DPI render, and Escape/backdrop-click to dismiss. The module graph is
  * cache-first, so a cached v9 tools-page.js would keep the old behaviour.
@@ -110,7 +114,7 @@ export const TOOL_PAGE_PATHS: readonly string[] = TOOL_PAGE_SLUGS.map((slug) => 
  * removed weeks ago. Cache-first is what makes offline work and what makes a
  * version bump the only honest way to replace it.
  */
-export const CACHE_VERSION = "10";
+export const CACHE_VERSION = "11";
 
 /** Prefix every cache this app owns carries, so `activate` purges our own and nothing else. */
 export const CACHE_PREFIX = "selis-";
