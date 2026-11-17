@@ -1379,7 +1379,10 @@ legend.field-label {
 	justify-content: center;
 	padding: 2rem;
 	border: 0;
-	background: rgba(18, 24, 21, 0.55);
+	/* The dim belongs to ::backdrop alone. Giving the dialog its own
+	   translucent background painted a dark rectangle inside the viewport
+	   (a ring around the panel) on top of the backdrop's dim. */
+	background: transparent;
 }
 
 .preview-dialog[open] {
@@ -1419,13 +1422,17 @@ legend.field-label {
 
 .preview-dialog__close {
 	flex: none;
+	display: grid;
+	place-items: center;
 	width: 2.2rem;
 	height: 2.2rem;
+	padding: 0;
 	border: 1px solid var(--line);
 	border-radius: var(--radius-small);
 	background: var(--card);
 	color: var(--ink);
 	cursor: pointer;
+	font-size: 1.25rem;
 	line-height: 1;
 }
 
@@ -1437,10 +1444,12 @@ legend.field-label {
 .preview-dialog__frame {
 	flex: 1;
 	min-height: 20rem;
+	max-height: 70vh;
 	width: 100%;
 	border: 1px solid var(--line);
 	border-radius: var(--radius-small);
 	background: #fff;
+	object-fit: contain;
 }
 
 /*

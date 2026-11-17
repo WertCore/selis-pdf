@@ -343,7 +343,7 @@ function ensurePreviewDialog(): void {
 	const panel = make("div", "preview-dialog__panel");
 	const head = make("div", "preview-dialog__head");
 	previewTitle = make("h2", "preview-dialog__title");
-	const close = button("Close", "preview-dialog__close");
+	const close = button("×", "preview-dialog__close");
 	close.setAttribute("aria-label", "Close the preview");
 	close.addEventListener("click", () => dialog.close());
 	head.append(previewTitle, close);
@@ -354,6 +354,22 @@ function ensurePreviewDialog(): void {
 
 	// A new preview replaces the old frame, so a previous PDF viewer cannot
 	// keep holding the blob URL we are about to release.
+	// A click on the dimmed area (the dialog, outside its panel) closes the
+	// preview, as does Escape. Both are what a reader expects of a dialog.
+	dialog.addEventListener("click", (event) => {
+		if (event.target === dialog) {
+			dialog.close();
+		}
+	});
+	dialog.addEventListener("cancel", () => {
+		// The native dialog already closes on Escape; this just makes the
+		// close event fire for our cleanup, which it does anyway.
+	});
+	dialog.addEventListener("keydown", (event) => {
+		if (event.key === "Escape") {
+			dialog.close();
+		}
+	});
 	dialog.addEventListener("close", () => {
 		if (previewFrame !== null) {
 			previewFrame.remove();
@@ -429,7 +445,7 @@ function openBlobUrl(url: string, name: string, kind: "pdf" | "image"): void {
 				bytes.length,
 				pagesPtr,
 				pages.length,
-				110,
+				220,
 				0,
 				90,
 				outLenPtr,
