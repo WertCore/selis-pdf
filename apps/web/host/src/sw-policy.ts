@@ -85,6 +85,10 @@ export const TOOL_PAGE_PATHS: readonly string[] = TOOL_PAGE_SLUGS.map((slug) => 
  * module graph are new URLs, and an install that predates them has no entry
  * to serve them from.
  *
+ * v9 ships the long-filename fix and the PNG preview. Navigations are
+ * network-first now, but the module graph is still cache-first: an old
+ * tools-page.js would keep the iframe preview and the overflowing tile.
+ *
  * v8 purges every older cache once (the tool stage, the blended category bar
  * and the network-first navigation all landed). Navigations are now
  * network-first, so future HTML changes no longer need a version bump to be
@@ -102,7 +106,7 @@ export const TOOL_PAGE_PATHS: readonly string[] = TOOL_PAGE_SLUGS.map((slug) => 
  * removed weeks ago. Cache-first is what makes offline work and what makes a
  * version bump the only honest way to replace it.
  */
-export const CACHE_VERSION = "8";
+export const CACHE_VERSION = "9";
 
 /** Prefix every cache this app owns carries, so `activate` purges our own and nothing else. */
 export const CACHE_PREFIX = "selis-";

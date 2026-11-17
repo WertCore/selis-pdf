@@ -1780,6 +1780,12 @@ body {
 	position: relative;
 	display: flex;
 	flex-direction: column;
+	/* The tile also carries .file-row for the browser check, whose old
+	   align-items:center sizes a column child to its content. A long filename
+	   then measured ~650px inside a 180px tile and spilled out. Stretch makes
+	   the name a real child of the tile, so ellipsis can do its job. */
+	align-items: stretch;
+	justify-content: flex-start;
 	gap: 0.35rem;
 	min-width: 0;
 	padding: 0.55rem;
