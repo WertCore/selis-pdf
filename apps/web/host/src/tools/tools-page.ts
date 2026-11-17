@@ -2935,15 +2935,20 @@ function fileTile(file: File, index: number, tool: ToolDef | null): HTMLLIElemen
 	info.append(name, meta);
 
 	const controls = make("div", "file-tile__controls");
-	const open = button("Preview", "file-tile__action");
-	open.title = `Preview ${file.name}`;
-	open.addEventListener("click", () => {
+	const openPreview = (): void => {
 		openBlobUrl(
 			URL.createObjectURL(file),
 			file.name,
 			file.type.startsWith("image/") ? "image" : "pdf",
 		);
-	});
+	};
+	// The thumbnail is the preview: click the page, not a separate text link.
+	preview.title = `Preview ${file.name}`;
+	preview.addEventListener("click", openPreview);
+	const open = button("◎", "file-tile__action");
+	open.title = `Preview ${file.name}`;
+	open.setAttribute("aria-label", `Preview ${file.name}`);
+	open.addEventListener("click", openPreview);
 	controls.appendChild(open);
 	const remove = button("×", "file-tile__remove");
 	remove.title = `Remove ${file.name}`;

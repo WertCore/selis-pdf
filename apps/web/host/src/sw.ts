@@ -186,12 +186,43 @@ export function createWorkerHandlers(deps: WorkerDeps): WorkerHandlers {
 	}
 
 	/**
-	 * Serve the shell. On a miss the network is tried, and the result is returned
-	 * but **never stored** — the shell cache is written only by `precacheShell`.
+	 * Serve a shell asset.
+	 *
+	 * Navigations are NETWORK-FIRST. A deploy changes the HTML of pages whose
+	 * URLs did not change, and a cache-first navigation keeps serving the old
+	 * document for ever: the reader sees a layout that was removed weeks ago
+	 * and no amount of reloading helps, because the service worker answers
+	 * before the origin is asked. The fresh response replaces the cached copy,
+	 * so the offline fall-through still serves the newest HTML we have seen.
+	 *
+	 * Static shell assets stay cache-first — they are versioned by the build
+	 * and a network round trip on every load would be wasteful.
 	 */
-	async function respondShell(request: Request, path: string): Promise<Response> {
+	async function respondShell(
+		request: Request,
+		path: string,
+		networkFirst: boolean,
+	): Promise<Response> {
 		const cache = await deps.caches.open(SHELL_CACHE);
-		for (const candidate of shellLookupPaths(path)) {
+		const candidates = shellLookupPaths(path);
+		if (networkFirst) {
+			try {
+				const fresh = await deps.fetch(request);
+				if (fresh.ok) {
+					const key = candidates[0];
+					if (key !== undefined) {
+						await cache.put(key, fresh.clone());
+					}
+					return fresh;
+				}
+				// A 503 from an offline harness (or a broken origin) must fall
+				// through to the cached page: "offline" is not always a thrown
+				// network error.
+			} catch {
+				// Offline, or the origin is down: fall through to the cached page.
+			}
+		}
+		for (const candidate of candidates) {
 			// Keyed by URL, not by Request: the shell has no `Vary` to honour
 			// (it is HTML the origin told us not to vary), and the alias list is
 			// the whole of the matching logic.
@@ -279,7 +310,7 @@ export function createWorkerHandlers(deps: WorkerDeps): WorkerHandlers {
 			// are exhaustive here and neither is a cache *write* of the shell.
 			return decision.kind === "runtime"
 				? respondRuntime(request)
-				: respondShell(request, decision.path);
+				: respondShell(request, decision.path, request.mode === "navigate");
 		},
 		install: precacheShell,
 		async activate() {

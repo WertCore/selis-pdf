@@ -518,8 +518,10 @@ describe("airplane mode: the DoD's precondition", () => {
 			expect(asset.status, path).toBe(200);
 			expect((await asset.arrayBuffer()).byteLength, path).toBeGreaterThan(0);
 		}
-		// Nothing above reached the origin: the install was the only network leg.
-		expect(origin.log).toHaveLength(PRECACHE_PATHS.length);
+		// The navigation tries the origin FIRST now (network-first HTML), so an
+		// offline page costs one failed attempt before the cached copy is served.
+		// The rest of the graph still never reaches the origin.
+		expect(origin.log).toHaveLength(PRECACHE_PATHS.length + 1);
 	});
 
 	it("resolves /index.html through the shell alias when the host routes it apart", async () => {
@@ -798,9 +800,11 @@ describe("the cache allow-list is structural", () => {
 		origin.online = false;
 	});
 
-	it("has exactly two cache-write call sites in the package", () => {
-		// A third `put`/`addAll` is a third way to persist a document, so the
-		// count is asserted against the sources rather than trusted.
+	it("has exactly three cache-write call sites in the package", () => {
+		// One addAll installs the shell, one put refreshes a network-first HTML
+		// navigation, and one put stores a runtime asset. A fourth would be a
+		// fourth way to persist a document, so the count is asserted against the
+		// sources rather than trusted.
 		const srcDir = join(pkgRoot, "src");
 		const sources = readdirSync(srcDir).filter(
 			(name) => name.endsWith(".ts") && !name.endsWith(".test.ts"),
@@ -812,7 +816,7 @@ describe("the cache allow-list is structural", () => {
 			puts += (text.match(/\.put\(/g) ?? []).length;
 			addAlls += (text.match(/\.addAll\(/g) ?? []).length;
 		}
-		expect(puts, "cache write call sites").toBe(1);
+		expect(puts, "cache write call sites").toBe(2);
 		expect(addAlls, "cache write call sites").toBe(1);
 	});
 

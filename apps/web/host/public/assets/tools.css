@@ -554,9 +554,11 @@ main {
 	padding: 0.6rem 0;
 	/* A literal rgba, not `color-mix` — the fallback for a browser without it
 	   would be a fully transparent bar with text sitting on the cards behind. */
-	background: var(--jump-bg);
-	backdrop-filter: blur(8px);
-	box-shadow: 0 1px 0 var(--line);
+	/* The chips float on the page: a filled bar here competes with the
+	   heading above and the cards below. A quiet hairline is all the separation
+	   they need, and it disappears in both themes. */
+	background: transparent;
+	border-bottom: 1px solid var(--line);
 }
 
 .tool-jump {
@@ -577,10 +579,10 @@ main {
 
 .tool-jump-link {
 	display: inline-block;
-	padding: 0.62rem 0.9rem;
-	border: 1px solid var(--line);
+	padding: 0.45rem 0.8rem;
+	border: 1px solid transparent;
 	border-radius: 999px;
-	color: var(--ink-soft);
+	color: var(--muted);
 	font-size: 0.82rem;
 	line-height: 1.2;
 	white-space: nowrap;
@@ -592,7 +594,8 @@ main {
 }
 
 .tool-jump-link:hover {
-	border-color: var(--accent);
+	border-color: var(--line);
+	background: var(--card);
 	color: var(--accent-strong);
 }
 

@@ -85,6 +85,11 @@ export const TOOL_PAGE_PATHS: readonly string[] = TOOL_PAGE_SLUGS.map((slug) => 
  * module graph are new URLs, and an install that predates them has no entry
  * to serve them from.
  *
+ * v8 purges every older cache once (the tool stage, the blended category bar
+ * and the network-first navigation all landed). Navigations are now
+ * network-first, so future HTML changes no longer need a version bump to be
+ * seen — this is the last one for a page edit.
+ *
  * v7 reprecaches the tool pages again: their file input is now a stage with
  * first-page thumbnails and a right-hand action rail, and the result lives in
  * that rail. A v6 install would keep serving the old form to every precached
@@ -97,7 +102,7 @@ export const TOOL_PAGE_PATHS: readonly string[] = TOOL_PAGE_SLUGS.map((slug) => 
  * removed weeks ago. Cache-first is what makes offline work and what makes a
  * version bump the only honest way to replace it.
  */
-export const CACHE_VERSION = "7";
+export const CACHE_VERSION = "8";
 
 /** Prefix every cache this app owns carries, so `activate` purges our own and nothing else. */
 export const CACHE_PREFIX = "selis-";
