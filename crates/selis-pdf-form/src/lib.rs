@@ -16,12 +16,17 @@
 //!
 //! What this crate does not do, and must not claim:
 //!
-//! * it does not synthesize field appearance streams (SL-5.FORM.02). Text and
-//!   choice values are written to `/V` and the form's `/NeedAppearances` flag
-//!   is set, which asks a conformant viewer to build the display; button
-//!   fields are exact without it, because their appearance states already
-//!   exist and this crate selects the state (`/AS`). Flattening is a separate
-//!   task;
+//! * with `FillFormsOptions.synthesize_appearances` it writes a real `/AP /N`
+//!   Form XObject for every filled text field and for single-select choice
+//!   fields (combo boxes) and list boxes (SL-5.FORM.02), so the value shows
+//!   without a viewer rebuild and can be flattened. Without that option,
+//!   values are written to `/V` (and `/I` for choices) and `/NeedAppearances`
+//!   asks a conformant viewer to build the display. Button fields are exact
+//!   either way, because their appearance states already exist and this crate
+//!   selects the state (`/AS`). Multi-select choices are refused by type, and
+//!   a field with no resolvable font, widget or box keeps `/NeedAppearances`
+//!   rather than claiming an appearance it did not write. Flattening is a
+//!   separate task;
 //! * it does not evaluate JavaScript, `/CO` calculations, or format actions
 //!   (SL-5.FORM.03) — a value is stored as given;
 //! * it refuses an encrypted document, an XFA form (the `/XFA` packet is the
@@ -256,17 +261,28 @@ pub struct FillFormsOptions {
     /// The values to set. Every name must match exactly one field; an empty
     /// list is refused rather than silently rewriting the document.
     pub fields: Vec<FieldEdit>,
-    /// Write a real `/AP /N` appearance stream for each filled **text** field,
-    /// not only `/V` + `/NeedAppearances` (SL-5.FORM.02). With this off (the
-    /// default) a viewer that honours `/NeedAppearances` rebuilds the display
-    /// and a viewer that does not shows an empty box; with it on the value is
-    /// drawn into a Form XObject the field carries, so it is visible in every
-    /// viewer and survives flattening. The appearance follows the field's `/DA`
-    /// (font, size, colour) resolved against the form's `/DR`, honours `/Q`
+    /// Write a real `/AP /N` appearance stream for each filled **text** field
+    /// and each filled **single-select choice / list box** field, not only
+    /// `/V` + `/NeedAppearances` (SL-5.FORM.02). With this off (the default) a
+    /// viewer that honours `/NeedAppearances` rebuilds the display and a viewer
+    /// that does not shows an empty box; with it on the value is drawn into a
+    /// Form XObject the widget carries, so it is visible in every viewer and
+    /// survives flattening. The appearance follows the field's `/DA` (font,
+    /// size, colour) resolved against the form's `/DR`, honours `/Q`
     /// (quadding) and the multiline flag, and sizes auto (`/DA` size `0`) text
-    /// to the box. Choice and button fields are untouched by this flag: button
-    /// appearances already exist (the fill selects `/AS`), and choice appearance
-    /// synthesis is separate open work.
+    /// to the box.
+    ///
+    /// Choice handling: `/FT /Ch` with the Combo flag (a drop-down) or without
+    /// it (a list box) is drawn when one value is selected. A non-edit choice
+    /// draws the selected option's **display label** from `/Opt` while `/V`
+    /// keeps the export value and `/I` the index; an editable combo whose
+    /// value is not an option draws that typed value itself. Multi-select
+    /// choices (the `/Ff` MultiSelect bit), signature fields, push buttons and
+    /// read-only fields are refused by type and never get an appearance here.
+    /// A field with no resolvable font in `/DR`, no widget or no usable `/Rect`
+    /// is not given a fake appearance: `/NeedAppearances` stays set so a viewer
+    /// is asked to rebuild it instead. Button appearances already exist (the
+    /// fill selects `/AS`) and are untouched by this flag.
     pub synthesize_appearances: bool,
 }
 
@@ -458,10 +474,11 @@ pub fn fill_form(
         apply_plan(&mut objects, &remap, record, plan)?;
     }
     // Text and choice values need an appearance a viewer can show. With
-    // synthesis on, we draw text fields ourselves (a real `/AP /N` the value is
-    // visible in, and the flattener can bake); anything we do not synthesize
-    // (choice fields, or a text field with no resolvable font) still asks the
-    // viewer to rebuild via `/NeedAppearances`.
+    // synthesis on we draw text fields and single-select choices/listboxes
+    // ourselves (a real `/AP /N` the value is visible in, and the flattener can
+    // bake); anything we do not synthesize (a field with no resolvable font, no
+    // widget or a degenerate box) still asks the viewer to rebuild via
+    // `/NeedAppearances` — we never claim an appearance we did not write.
     let has_variable = planned
         .iter()
         .any(|(_, plan)| matches!(plan, Plan::Text(_) | Plan::Choice { .. }));
@@ -470,13 +487,11 @@ pub fn fill_form(
         if options.synthesize_appearances {
             let (default_da, dr_fonts) = form_defaults(&objects, &remap, root.num, acroform_ref);
             for (index, plan) in &planned {
+                let record = walked.records.get(*index).ok_or_else(|| {
+                    FormError::Malformed("a planned field disappeared from the model".to_string())
+                })?;
                 match plan {
                     Plan::Text(value) => {
-                        let record = walked.records.get(*index).ok_or_else(|| {
-                            FormError::Malformed(
-                                "a planned field disappeared from the model".to_string(),
-                            )
-                        })?;
                         if !synthesize_text_appearances(
                             &mut objects,
                             &remap,
@@ -489,7 +504,19 @@ pub fn fill_form(
                             needs_viewer_rebuild = true;
                         }
                     }
-                    Plan::Choice { .. } => needs_viewer_rebuild = true,
+                    Plan::Choice { .. } => {
+                        if !synthesize_choice_appearances(
+                            &mut objects,
+                            &remap,
+                            &mut next_num,
+                            record,
+                            plan,
+                            &default_da,
+                            &dr_fonts,
+                        ) {
+                            needs_viewer_rebuild = true;
+                        }
+                    }
                     Plan::Button { .. } => {}
                 }
             }
@@ -1443,8 +1470,10 @@ fn is_false(value: &bool) -> bool {
 // appearance ourselves — a Form XObject that draws the field's value per its
 // `/DA`, placed in the widget's `/AP /N` — makes the value visible everywhere
 // and gives the flattener a real mark to bake. This is the ISO 32000-1
-// §12.7.3.3 variable-text appearance for text fields; choice and button fields
-// are out of this slice (buttons already carry appearances).
+// §12.7.3.3 variable-text appearance: it serves text fields and choice fields
+// (combo boxes and list boxes) alike, both of which draw a text string inside
+// a `/Tx BMC … EMC` sequence. Buttons already carry their own appearance
+// states and are out of this slice.
 
 /// A read-only view of a copied object's dictionary.
 fn object_dict(objects: &[(u32, Obj)], num: u32) -> Option<&Vec<(Bytes, Obj)>> {
@@ -1596,7 +1625,8 @@ fn approx_text_width(line: &str, size: f64) -> f64 {
 
 /// Build a `/Tx` variable-text appearance content stream: one `BT…ET` that
 /// draws `value` in a `width`×`height` box, honouring quadding and (by
-/// splitting on newlines) the multiline flag.
+/// splitting on newlines) the multiline flag. Shared by text fields and by
+/// choice fields: ISO 32000-1 §12.7.3.3 draws both inside `/Tx BMC … EMC`.
 #[allow(clippy::too_many_arguments)]
 fn text_appearance_content(
     value: &str,
@@ -1699,17 +1729,18 @@ fn form_defaults(
     (da, fonts)
 }
 
-/// Synthesize `/AP /N` appearance streams for one text field's widgets, wiring
-/// each widget's `/AP /N` to a new Form XObject. Returns true when at least one
-/// widget got an appearance (false when the field has no resolvable font, no
-/// widget, or a degenerate box — in which case the caller falls back to
-/// `/NeedAppearances`).
-fn synthesize_text_appearances(
+/// Synthesize `/AP /N` appearance streams for one field's widgets, wiring each
+/// widget's `/AP /N` to a new Form XObject that draws `display`. Shared body
+/// for text fields (the value itself) and choice fields (an option's display
+/// label). Returns true when at least one widget got an appearance (false when
+/// the field has no resolvable font, no widget, or a degenerate box — in which
+/// case the caller falls back to `/NeedAppearances`).
+fn synthesize_variable_appearances(
     objects: &mut Vec<(u32, Obj)>,
     remap: &HashMap<u32, u32>,
     next_num: &mut u32,
     record: &FieldRecord,
-    value: &str,
+    display: &str,
     default_da: &[u8],
     dr_fonts: &[(Bytes, Ref)],
 ) -> bool {
@@ -1762,7 +1793,7 @@ fn synthesize_text_appearances(
             continue;
         }
         let content = text_appearance_content(
-            value, &font, size, &color, width, height, quadding, multiline,
+            display, &font, size, &color, width, height, quadding, multiline,
         );
         let xnum = *next_num;
         *next_num = next_num.saturating_add(1);
@@ -1816,6 +1847,79 @@ fn synthesize_text_appearances(
     any
 }
 
+/// Synthesize appearances for one text field: the value itself is the text the
+/// widget draws.
+///
+/// # Budget
+///
+/// No new budget charges are made here; the widgets and their geometry were
+/// copied earlier. Allocations are bounded by the number of widgets on the
+/// field, which is bounded by the number of objects in the copied graph.
+///
+/// # Malformed Input
+///
+/// A widget with a missing or non-numeric `/Rect`, a field with no `/DA` font
+/// resolvable in the form's `/DR`, or a degenerate box is skipped. When no
+/// widget can be drawn the function returns false and the caller keeps
+/// `/NeedAppearances`; no placeholder appearance is written.
+fn synthesize_text_appearances(
+    objects: &mut Vec<(u32, Obj)>,
+    remap: &HashMap<u32, u32>,
+    next_num: &mut u32,
+    record: &FieldRecord,
+    value: &str,
+    default_da: &[u8],
+    dr_fonts: &[(Bytes, Ref)],
+) -> bool {
+    synthesize_variable_appearances(
+        objects, remap, next_num, record, value, default_da, dr_fonts,
+    )
+}
+
+/// Synthesize appearances for one single-select choice field (combo box or
+/// list box). A non-edit choice draws the selected option's **display label**
+/// from `/Opt`, while the fill stores the export value in `/V` and the option
+/// index in `/I`; an editable combo whose typed value matches no option draws
+/// that value itself (there is no label to show).
+///
+/// # Budget
+///
+/// No new budget charges are made here; the widgets and their geometry were
+/// copied earlier. Allocations are bounded by the number of widgets on the
+/// field, which is bounded by the number of objects in the copied graph.
+///
+/// # Malformed Input
+///
+/// A multi-select choice never reaches this path (the edit is refused by type
+/// in `plan_edit`) and is refused here defensively. An option index that is
+/// absent or outside `/Opt` falls back to the raw value rather than drawing a
+/// guessed label. Missing fonts, widgets or boxes make this return false so
+/// the caller keeps `/NeedAppearances` instead of claiming an appearance it
+/// did not write.
+fn synthesize_choice_appearances(
+    objects: &mut Vec<(u32, Obj)>,
+    remap: &HashMap<u32, u32>,
+    next_num: &mut u32,
+    record: &FieldRecord,
+    plan: &Plan,
+    default_da: &[u8],
+    dr_fonts: &[(Bytes, Ref)],
+) -> bool {
+    let (value, index) = match plan {
+        Plan::Choice { value, index } => (value, index),
+        _ => return false,
+    };
+    if record.multi_select {
+        return false;
+    }
+    let display = index
+        .and_then(|i| record.option_labels.get(i))
+        .map_or(value.as_str(), String::as_str);
+    synthesize_variable_appearances(
+        objects, remap, next_num, record, display, default_da, dr_fonts,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(
@@ -1823,7 +1927,8 @@ mod tests {
         clippy::expect_used,
         clippy::panic,
         clippy::indexing_slicing,
-        clippy::arithmetic_side_effects
+        clippy::arithmetic_side_effects,
+        clippy::type_complexity
     )]
 
     use super::*;
@@ -1919,6 +2024,72 @@ mod tests {
             (
                 17,
                 b"<< /FT /Btn /Ff 65536 /T (Reset) /Subtype /Widget /Rect [10 170 80 190] /P 3 0 R >>",
+            ),
+        ];
+        build_pdf(objects)
+    }
+
+    /// A one-page form with a single-select combo, a single-select list box,
+    /// an editable combo, a list box with a separate widget kid, and a
+    /// multi-select list box. `/Opt` entries are `[export, label]` pairs so the
+    /// drawn text can differ from the stored `/V`.
+    fn choice_form_fixture() -> Vec<u8> {
+        let objects: &[(u32, &[u8])] = &[
+            (1, b"<< /Type /Catalog /Pages 2 0 R /AcroForm 5 0 R >>"),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+            (
+                3,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> /Contents 4 0 R /Annots [6 0 R 7 0 R 8 0 R 11 0 R 12 0 R] >>",
+            ),
+            (4, b"<< /Length 0 >>\nstream\n\nendstream"),
+            (
+                5,
+                b"<< /Fields [6 0 R 7 0 R 8 0 R 9 0 R 12 0 R] /DA (/Helv 0 Tf 0 g) /DR << /Font << /Helv 10 0 R >> >> >>",
+            ),
+            (
+                6,
+                b"<< /FT /Ch /Ff 131072 /T (Color) /V (r) /Opt [[(r) (Red)] [(g) (Green)] [(b) (Blue)]] /Q 1 /Subtype /Widget /Rect [10 70 120 90] /P 3 0 R >>",
+            ),
+            (
+                7,
+                b"<< /FT /Ch /T (Size) /V (s) /Opt [[(s) (Small)] [(m) (Medium)] [(l) (Large)]] /Subtype /Widget /Rect [10 100 120 130] /P 3 0 R >>",
+            ),
+            (
+                8,
+                b"<< /FT /Ch /Ff 393216 /T (Custom) /V (One) /Opt [(One) (Two)] /Subtype /Widget /Rect [10 140 120 160] /P 3 0 R >>",
+            ),
+            (
+                9,
+                b"<< /FT /Ch /T (Country) /V (us) /Opt [[(us) (United States)] [(ca) (Canada)]] /Kids [11 0 R] >>",
+            ),
+            (10, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"),
+            (
+                11,
+                b"<< /Type /Annot /Subtype /Widget /Parent 9 0 R /Rect [10 170 220 190] /P 3 0 R >>",
+            ),
+            (
+                12,
+                b"<< /FT /Ch /Ff 2097152 /T (Multi) /V (x) /Opt [(x) (y)] /Subtype /Widget /Rect [10 200 120 220] /P 3 0 R >>",
+            ),
+        ];
+        build_pdf(objects)
+    }
+
+    /// A one-field choice form whose `/AcroForm` has no `/DR` font map, so
+    /// synthesis must refuse to claim an appearance and keep `/NeedAppearances`.
+    fn choice_no_font_fixture() -> Vec<u8> {
+        let objects: &[(u32, &[u8])] = &[
+            (1, b"<< /Type /Catalog /Pages 2 0 R /AcroForm 5 0 R >>"),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+            (
+                3,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> /Contents 4 0 R /Annots [6 0 R] >>",
+            ),
+            (4, b"<< /Length 0 >>\nstream\n\nendstream"),
+            (5, b"<< /Fields [6 0 R] /DA (/Helv 12 Tf 0 g) >>"),
+            (
+                6,
+                b"<< /FT /Ch /Ff 131072 /T (Color) /V (r) /Opt [(r) (g)] /Subtype /Widget /Rect [10 70 120 90] /P 3 0 R >>",
             ),
         ];
         build_pdf(objects)
@@ -2021,6 +2192,14 @@ mod tests {
         let budget = test_budget();
         let mut g = budget.guard();
         fill_form(fixture, &edits(pairs), &budget, &mut g).expect("fill")
+    }
+
+    fn fill_synth(fixture: &[u8], pairs: &[(&str, &str)]) -> (Vec<u8>, FillInfo) {
+        let budget = test_budget();
+        let mut g = budget.guard();
+        let mut opts = edits(pairs);
+        opts.synthesize_appearances = true;
+        fill_form(fixture, &opts, &budget, &mut g).expect("fill with synthesis")
     }
 
     #[test]
@@ -2257,6 +2436,85 @@ mod tests {
         panic!("no field named {field_name}");
     }
 
+    /// Resolve a named field's dictionary from the output bytes.
+    fn field_dict_of(bytes: &[u8], field_name: &str) -> Vec<(Bytes, Obj)> {
+        let budget = test_budget();
+        let mut g = budget.guard();
+        let startxref = selis_pdf_cos::xref::find_startxref(bytes, 4096).unwrap_or(0);
+        let doc = selis_pdf_cos::parse_revisions(bytes, startxref, &budget, &mut g).expect("parse");
+        let acro = acroform_of(bytes);
+        let Some(Obj::Array(fields)) = dict_get(&acro, b"Fields") else {
+            panic!("/AcroForm has no /Fields");
+        };
+        for field in fields {
+            let Obj::Ref(fr) = field else { continue };
+            let Obj::Dict(fd) = resolve_ref(bytes, &doc, *fr, &budget, &mut g).unwrap() else {
+                continue;
+            };
+            if dict_get(&fd, b"T").and_then(decode_text).as_deref() == Some(field_name) {
+                return fd;
+            }
+        }
+        panic!("no field named {field_name}");
+    }
+
+    /// The `(dict, data)` of every `/AP /N` stream on a named field's widgets,
+    /// read back from the output bytes. A merged field is its own widget; an
+    /// unmerged field is walked through `/Kids`.
+    fn widget_appearances_of(bytes: &[u8], field_name: &str) -> Vec<(Vec<(Bytes, Obj)>, Vec<u8>)> {
+        let budget = test_budget();
+        let mut g = budget.guard();
+        let startxref = selis_pdf_cos::xref::find_startxref(bytes, 4096).unwrap_or(0);
+        let doc = selis_pdf_cos::parse_revisions(bytes, startxref, &budget, &mut g).expect("parse");
+        let fd = field_dict_of(bytes, field_name);
+        let mut widgets: Vec<Vec<(Bytes, Obj)>> = Vec::new();
+        if let Some(Obj::Array(kids)) = dict_get(&fd, b"Kids") {
+            for kid in kids {
+                let Obj::Ref(kr) = kid else { continue };
+                if let Obj::Dict(kd) = resolve_ref(bytes, &doc, *kr, &budget, &mut g).unwrap() {
+                    widgets.push(kd);
+                }
+            }
+        } else {
+            widgets.push(fd);
+        }
+        let mut out = Vec::new();
+        for wd in widgets {
+            let Some(ap) = dict_get(&wd, b"AP") else {
+                continue;
+            };
+            let ap = match ap {
+                Obj::Dict(d) => d.clone(),
+                Obj::Ref(r) => match resolve_ref(bytes, &doc, *r, &budget, &mut g).unwrap() {
+                    Obj::Dict(d) => d,
+                    _ => continue,
+                },
+                _ => continue,
+            };
+            let Some(Obj::Ref(nr)) = dict_get(&ap, b"N") else {
+                continue;
+            };
+            if let Obj::Stream { dict, data } =
+                resolve_ref(bytes, &doc, *nr, &budget, &mut g).unwrap()
+            {
+                assert_eq!(
+                    dict_get(&dict, b"Subtype")
+                        .and_then(as_name)
+                        .as_ref()
+                        .map(Bytes::as_slice),
+                    Some(&b"Form"[..]),
+                    "the widget's /AP /N is a Form XObject"
+                );
+                assert!(
+                    dict_get(&dict, b"BBox").is_some(),
+                    "the appearance has a /BBox"
+                );
+                out.push((dict, data.as_slice().to_vec()));
+            }
+        }
+        out
+    }
+
     #[test]
     fn synthesizes_a_text_field_appearance_stream() {
         let budget = test_budget();
@@ -2312,5 +2570,154 @@ mod tests {
             Some(&Obj::Bool(true)),
             "synthesized appearances should not force /NeedAppearances",
         );
+    }
+
+    /// Read back the choice fixtures: every filled combo/list box must carry a
+    /// real `/AP /N` Form XObject drawing the selected option's display text,
+    /// while `/V` and `/I` keep the export value and index.
+    #[test]
+    fn synthesizes_choice_and_listbox_appearance_streams() {
+        let (bytes, info) = fill_synth(
+            &choice_form_fixture(),
+            &[
+                ("Color", "b"),      // export value -> label "Blue"
+                ("Size", "Large"),   // label -> export value "l"
+                ("Custom", "typed"), // editable combo, value not an option
+                ("Country", "ca"),   // unmerged list box -> label "Canada"
+            ],
+        );
+        assert_eq!(info.filled, 4);
+
+        // Values still round-trip through the existing read-back gate.
+        let report = report_of(&bytes);
+        let find = |name: &str| {
+            report
+                .fields
+                .iter()
+                .find(|f| f.name == name)
+                .unwrap_or_else(|| panic!("field {name}"))
+        };
+        assert_eq!(find("Color").value.as_deref(), Some("b"));
+        assert_eq!(find("Size").value.as_deref(), Some("l"));
+        assert_eq!(find("Custom").value.as_deref(), Some("typed"));
+        assert_eq!(find("Country").value.as_deref(), Some("ca"));
+
+        // /V holds the export value; /I the selected index. The editable
+        // combo's typed value matched no option, so it carries no /I.
+        let color = field_dict_of(&bytes, "Color");
+        assert_eq!(
+            dict_get(&color, b"V").and_then(decode_text).as_deref(),
+            Some("b")
+        );
+        assert_eq!(
+            dict_get(&color, b"I"),
+            Some(&Obj::Array(vec![Obj::Int(2)])),
+            "the selected /Opt index"
+        );
+        let size = field_dict_of(&bytes, "Size");
+        assert_eq!(
+            dict_get(&size, b"V").and_then(decode_text).as_deref(),
+            Some("l")
+        );
+        assert_eq!(dict_get(&size, b"I"), Some(&Obj::Array(vec![Obj::Int(2)])));
+        let custom = field_dict_of(&bytes, "Custom");
+        assert_eq!(
+            dict_get(&custom, b"V").and_then(decode_text).as_deref(),
+            Some("typed")
+        );
+        assert_eq!(
+            dict_get(&custom, b"I"),
+            None,
+            "editable value has no /Opt index"
+        );
+        let country = field_dict_of(&bytes, "Country");
+        assert_eq!(
+            dict_get(&country, b"V").and_then(decode_text).as_deref(),
+            Some("ca")
+        );
+        assert_eq!(
+            dict_get(&country, b"I"),
+            Some(&Obj::Array(vec![Obj::Int(1)]))
+        );
+
+        // The widget appearances are Form XObjects whose content draws the
+        // label, per ISO 32000-1 §12.7.3.3 variable text.
+        let cases: &[(&str, &str)] = &[
+            ("Color", "(Blue) Tj"),
+            ("Size", "(Large) Tj"),
+            ("Custom", "(typed) Tj"),
+            ("Country", "(Canada) Tj"),
+        ];
+        for (name, drawn) in cases {
+            let appearances = widget_appearances_of(&bytes, name);
+            assert_eq!(appearances.len(), 1, "one appearance for {name}");
+            let content = String::from_utf8_lossy(&appearances[0].1);
+            assert!(
+                content.contains("/Tx BMC"),
+                "variable text for {name}: {content}"
+            );
+            assert!(content.contains(" Tf"), "DA font for {name}: {content}");
+            assert!(
+                content.contains(drawn),
+                "draws {drawn} for {name}: {content}"
+            );
+        }
+
+        // Everything filled was synthesized, so no viewer rebuild is needed.
+        let acro = acroform_of(&bytes);
+        assert_ne!(dict_get(&acro, b"NeedAppearances"), Some(&Obj::Bool(true)));
+    }
+
+    #[test]
+    fn multi_select_choice_is_refused_by_type() {
+        let budget = test_budget();
+        let mut g = budget.guard();
+        let mut opts = edits(&[("Multi", "x")]);
+        opts.synthesize_appearances = true;
+        let error = fill_form(&choice_form_fixture(), &opts, &budget, &mut g)
+            .expect_err("multi-select refused");
+        assert!(
+            matches!(&error, FormError::Refused(detail) if detail.contains("multiple selections")),
+            "typed refusal, got {error:?}"
+        );
+    }
+
+    #[test]
+    fn choice_synthesis_keeps_need_appearances_without_a_font() {
+        let (bytes, info) = fill_synth(&choice_no_font_fixture(), &[("Color", "g")]);
+        assert_eq!(info.filled, 1);
+        let report = report_of(&bytes);
+        assert_eq!(
+            report.fields[0].value.as_deref(),
+            Some("g"),
+            "the value still round-trips"
+        );
+        assert_eq!(
+            widget_appearances_of(&bytes, "Color").len(),
+            0,
+            "no appearance was claimed without a /DR font"
+        );
+        let acro = acroform_of(&bytes);
+        assert_eq!(
+            dict_get(&acro, b"NeedAppearances"),
+            Some(&Obj::Bool(true)),
+            "the viewer is still asked to rebuild"
+        );
+    }
+
+    #[test]
+    fn mixed_text_and_choice_fill_synthesizes_both_appearances() {
+        let (bytes, _) = fill_synth(&form_fixture(), &[("Name", "Ada"), ("Color", "Green")]);
+        for (name, drawn) in [("Name", "(Ada) Tj"), ("Color", "(Green) Tj")] {
+            let appearances = widget_appearances_of(&bytes, name);
+            assert_eq!(appearances.len(), 1, "one appearance for {name}");
+            let content = String::from_utf8_lossy(&appearances[0].1);
+            assert!(
+                content.contains(drawn),
+                "draws {drawn} for {name}: {content}"
+            );
+        }
+        let acro = acroform_of(&bytes);
+        assert_ne!(dict_get(&acro, b"NeedAppearances"), Some(&Obj::Bool(true)));
     }
 }
