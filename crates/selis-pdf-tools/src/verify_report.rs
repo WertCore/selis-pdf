@@ -80,6 +80,15 @@ pub struct Verification {
     /// salvaged document as an ordinary rewrite.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repair_mode: Option<String>,
+    /// Embedded font programs replaced by a font-subset pass, when the
+    /// operation is `subset_fonts`. Absent for every other operation so the
+    /// machine-readable object never claims a subset where none happened.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fonts_subset: Option<u64>,
+    /// Distinct glyph ids kept across all subset programs, when the operation
+    /// is `subset_fonts`. Absent for every other operation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub glyphs_kept: Option<u64>,
 }
 
 /// The stable check labels used in `checked`.
@@ -163,6 +172,8 @@ impl Verification {
             verdict: verdict_text,
             checked,
             repair_mode: None,
+            fonts_subset: None,
+            glyphs_kept: None,
         }
     }
 
@@ -188,6 +199,8 @@ impl Verification {
             verdict: "copied".to_string(),
             checked: Vec::new(),
             repair_mode: None,
+            fonts_subset: None,
+            glyphs_kept: None,
         }
     }
 
@@ -317,6 +330,10 @@ mod tests {
         assert_eq!(v.bytes_in, 12_054);
         assert_eq!(v.bytes_out, 8_231);
         assert_eq!(v.verdict, "ok");
+        // Operation-specific subset fields stay absent unless the subset op
+        // fills them; an ordinary rewrite must not claim a subset happened.
+        assert_eq!(v.fonts_subset, None);
+        assert_eq!(v.glyphs_kept, None);
         assert_eq!(
             v.checked,
             vec!["pages", "annotations", "fields", "ocgs", "embedded_files"]
@@ -395,6 +412,33 @@ mod tests {
         assert!(
             json.contains("\"repair_mode\":\"reconstructed index\""),
             "{json}"
+        );
+    }
+
+    /// The subset report is present in JSON only when the subset op filled it;
+    /// an ordinary verification omits both keys (read from the serialized
+    /// object, not from a source string).
+    #[test]
+    fn subset_fields_are_absent_unless_measured() {
+        let mut v = sample();
+        let plain: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&v).expect("serialise")).expect("parse");
+        assert!(plain.get("fonts_subset").is_none());
+        assert!(plain.get("glyphs_kept").is_none());
+
+        v.fonts_subset = Some(2);
+        v.glyphs_kept = Some(37);
+        let value: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&v).expect("serialise")).expect("parse");
+        assert_eq!(
+            value
+                .get("fonts_subset")
+                .and_then(serde_json::Value::as_u64),
+            Some(2)
+        );
+        assert_eq!(
+            value.get("glyphs_kept").and_then(serde_json::Value::as_u64),
+            Some(37)
         );
     }
 

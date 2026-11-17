@@ -72,7 +72,8 @@ export type ToolOp =
 	| "xfdf"
 	| "flatten_annotations"
 	| "fill_form_data"
-	| "subset_fonts";
+	| "subset_fonts"
+	| "linearize";
 
 /** The wire operation number for each operation. */
 const OP_CODE: Record<ToolOp, number> = {
@@ -117,6 +118,7 @@ const OP_CODE: Record<ToolOp, number> = {
 	flatten_annotations: 39,
 	fill_form_data: 40,
 	subset_fonts: 41,
+	linearize: 43,
 };
 
 /** One input file on the wire. */
@@ -152,6 +154,10 @@ export interface Verification {
 	readonly checked: readonly string[];
 	/** How a damaged input was recovered, when the operation is repair. */
 	readonly repair_mode?: string;
+	/** Embedded font programs replaced, when the operation is `subset_fonts`. */
+	readonly fonts_subset?: number;
+	/** Distinct glyph ids kept, when the operation is `subset_fonts`. */
+	readonly glyphs_kept?: number;
 }
 
 /** One produced file. */

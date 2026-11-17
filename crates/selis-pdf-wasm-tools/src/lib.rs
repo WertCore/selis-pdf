@@ -108,6 +108,7 @@ enum Op {
     FlattenAnnotations,
     FillFormData,
     SubsetFonts,
+    Linearize,
 }
 
 impl Op {
@@ -154,6 +155,7 @@ impl Op {
             39 => Some(Self::FlattenAnnotations),
             40 => Some(Self::FillFormData),
             41 => Some(Self::SubsetFonts),
+            43 => Some(Self::Linearize),
             _ => None,
         }
     }
@@ -588,6 +590,15 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
                 over_target: false,
             }]
         }
+        Op::Linearize => {
+            let (_report, verification) = selis_pdf_tools::linearize_file("in/0", "out.pdf")?;
+            vec![Produced {
+                output: "out.pdf".to_string(),
+                name: format!("{stem}-linearized.pdf"),
+                verification,
+                over_target: false,
+            }]
+        }
         Op::Attachments => return run_attachments(&stem, first_input_len),
         Op::AnnotateUpdate => {
             let update_options: selis_pdf_tools::UpdateAnnotationOptions = parse_options(&options)?;
@@ -902,6 +913,8 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
                     verdict: "ok".to_string(),
                     checked: vec![],
                     repair_mode: None,
+                    fonts_subset: None,
+                    glyphs_kept: None,
                 },
                 over_target: false,
             }]
@@ -999,6 +1012,8 @@ fn run_attachments(stem: &str, bytes_in: usize) -> Result<RunOutput, ToolError> 
         verdict: "ok".to_string(),
         checked: vec!["embedded_files"],
         repair_mode: None,
+        fonts_subset: None,
+        glyphs_kept: None,
     };
 
     let extra = if zip.is_some() { 1 } else { 0 };
@@ -1071,6 +1086,8 @@ fn run_metadata_report(stem: &str, bytes_in: usize) -> Result<RunOutput, ToolErr
             vec!["metadata"]
         },
         repair_mode: None,
+        fonts_subset: None,
+        glyphs_kept: None,
     };
     let name = format!("{stem}-metadata.json");
     let reports = vec![serde_json::json!({
@@ -1115,6 +1132,8 @@ fn run_fingerprint(stem: &str, bytes_in: usize) -> Result<RunOutput, ToolError> 
             vec!["identifiers"]
         },
         repair_mode: None,
+        fonts_subset: None,
+        glyphs_kept: None,
     };
     let name = format!("{stem}-fingerprint.json");
     let reports = vec![serde_json::json!({
@@ -1155,6 +1174,8 @@ fn run_privacy(stem: &str, bytes_in: usize) -> Result<RunOutput, ToolError> {
         verdict: if readable { "read" } else { "encrypted" }.to_string(),
         checked: vec!["privacy"],
         repair_mode: None,
+        fonts_subset: None,
+        glyphs_kept: None,
     };
     let name = format!("{stem}-privacy.json");
     let reports = vec![serde_json::json!({
@@ -1198,6 +1219,8 @@ fn run_form_fields(stem: &str, bytes_in: usize) -> Result<RunOutput, ToolError> 
         verdict: "read".to_string(),
         checked: Vec::new(),
         repair_mode: None,
+        fonts_subset: None,
+        glyphs_kept: None,
     };
     let name = format!("{stem}-fields.json");
     let reports = vec![serde_json::json!({
@@ -1239,6 +1262,8 @@ fn run_annotations(
         verdict: "read".to_string(),
         checked: Vec::new(),
         repair_mode: None,
+        fonts_subset: None,
+        glyphs_kept: None,
     };
     let name = format!("{stem}-annotations.json");
     let reports = vec![serde_json::json!({
@@ -1272,6 +1297,8 @@ fn run_xfdf_export(stem: &str, bytes_in: usize) -> Result<RunOutput, ToolError> 
         verdict: "read".to_string(),
         checked: Vec::new(),
         repair_mode: None,
+        fonts_subset: None,
+        glyphs_kept: None,
     };
     let name = format!("{stem}-annotations.xfdf");
     let reports = vec![serde_json::json!({
@@ -1452,6 +1479,8 @@ fn run_batch_op(
             .copied()
             .collect(),
         repair_mode: None,
+        fonts_subset: None,
+        glyphs_kept: None,
     };
 
     let batch = serde_json::json!({
@@ -1650,6 +1679,8 @@ fn aggregate_verifications(parts: &[Verification]) -> Result<Verification, ToolE
         },
         checked,
         repair_mode: first.repair_mode.clone(),
+        fonts_subset: first.fonts_subset,
+        glyphs_kept: first.glyphs_kept,
     })
 }
 
@@ -1996,7 +2027,8 @@ mod tests {
             "the XMP stream is removed"
         );
 
-        // Op 41 subsets fonts, so the unknown-op probe moves past it.
+        // Ops 41 (subset fonts) and 43 (linearize) are real; 42 is still the
+        // unknown-op probe.
         let response = run_request(&request(42, b"", &[("doc.pdf", &pdf)]));
         assert!(error_text(&response).contains("unknown tool operation"));
     }
@@ -2664,6 +2696,22 @@ mod tests {
             outputs[0].1.len(),
             in_len
         );
+    }
+
+    #[test]
+    fn linearize_operation_is_dispatched_at_op_43() {
+        let pdf = multipage_pdf(2);
+        let response = run_request(&request(43, b"", &[("doc.pdf", &pdf)]));
+        let (status, message, outputs) = parse_response(&response);
+        assert_eq!(status, 0, "linearize failed: {message}");
+        // Counts are the engine's measured verification, not the request.
+        assert_eq!(message["verdict"], "ok");
+        assert_eq!(message["pages_out"], 2);
+        assert_eq!(outputs[0].0, "doc-linearized.pdf");
+        assert_eq!(&outputs[0].1[0..5], b"%PDF-");
+        // Op 42 is still the unknown sentinel; 43 is now a real operation.
+        let probe = run_request(&request(42, b"", &[("doc.pdf", &pdf)]));
+        assert!(error_text(&probe).contains("unknown tool operation"));
     }
 
     #[test]
