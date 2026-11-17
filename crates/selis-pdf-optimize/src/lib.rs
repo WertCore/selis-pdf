@@ -29,8 +29,10 @@
 #![forbid(unsafe_code)]
 
 pub mod font_subset;
+pub mod linearize;
 
 pub use font_subset::{subset_fonts, SubsetError, SubsetReport};
+pub use linearize::{write_linearized, LinearizeError, LinearizeInput};
 
 use selis_bytes::Bytes;
 use selis_pdf_cos::Obj;
