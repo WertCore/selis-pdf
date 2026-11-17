@@ -254,6 +254,7 @@ fn merge_spans(spans: &mut Vec<Span>, style: Style, text: &str) {
         _ => spans.push(Span {
             style,
             text: text.to_string(),
+            ..Default::default()
         }),
     }
 }
@@ -302,6 +303,7 @@ fn cell_spans(cell: &Element) -> Vec<Span> {
                 spans.push(Span {
                     style: Style::Regular,
                     text: " ".to_string(),
+                    ..Default::default()
                 });
             }
             spans.extend(part);

@@ -76,6 +76,7 @@ fn inline_with(text: &str, base: Style) -> Vec<Span> {
             out.push(Span {
                 style,
                 text: core::mem::take(plain),
+                ..Default::default()
             });
         }
     }

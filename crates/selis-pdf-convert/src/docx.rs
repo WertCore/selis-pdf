@@ -170,7 +170,11 @@ fn paragraph_spans(paragraph: &Element) -> Vec<Span> {
         }
         match spans.last_mut() {
             Some(last) if last.style == style => last.text.push_str(&raw),
-            _ => spans.push(Span { style, text: raw }),
+            _ => spans.push(Span {
+                style,
+                text: raw,
+                ..Default::default()
+            }),
         }
     }
     spans
@@ -243,6 +247,7 @@ fn cell_spans(cell: &Element) -> Vec<Span> {
             spans.push(Span {
                 style: Style::Regular,
                 text: " ".to_string(),
+                ..Default::default()
             });
         }
         spans.extend(part);

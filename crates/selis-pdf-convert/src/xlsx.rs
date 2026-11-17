@@ -96,6 +96,7 @@ pub(crate) fn xlsx_to_pdf(
                 } else {
                     name.clone()
                 },
+                ..Default::default()
             }],
         });
         let bytes = part(&entries, path)
@@ -206,6 +207,7 @@ fn sheet_rows(sheet: &Element, shared: &[String]) -> Vec<Vec<Vec<Span>>> {
                 vec![Span {
                     style: Style::Regular,
                     text,
+                    ..Default::default()
                 }]
             };
             cells.push((col, spans));

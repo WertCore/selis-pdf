@@ -3,7 +3,7 @@
 use selis_error::Result;
 use selis_sandbox::{Budget, BudgetGuard, Resource};
 
-use crate::blocks::{encode_text, measure, split_words, Block, Span, Style};
+use crate::blocks::{encode_text, measure, split_words, Block, Span, Style, TextAlign};
 use crate::PageSize;
 
 /// The page margin in points.
@@ -69,9 +69,7 @@ pub(crate) enum Item {
         font: &'static str,
         size: f64,
         bytes: Vec<u8>,
-        /// The fill colour in RGB [0,1]; carried for the styled-output path
-        /// (SL-2.CONVERT) — the plain-text renderer does not consume it.
-        #[allow(dead_code)]
+        /// The fill colour in RGB [0,1], emitted as an `rg` operator.
         color: [f64; 3],
     },
     /// A filled rectangle; `top` is the distance from the page top.
@@ -88,6 +86,25 @@ pub(crate) enum Item {
         h: f64,
         color: [f64; 3],
     },
+    /// A clickable link region over a run of text. The emitter turns this into
+    /// a real `/Subtype /Link` annotation with a `/S /URI` action.
+    LinkBox {
+        x: f64,
+        /// Distance from the page top to the box's top edge.
+        top: f64,
+        w: f64,
+        h: f64,
+        uri: String,
+    },
+}
+
+/// The effective point size of a run: an inline `font-size` overrides the
+/// block's base size, everything else falls back to it.
+fn eff_size(run: &Span, base: f64) -> f64 {
+    match run.size {
+        Some(size) if size.is_finite() && size > 0.0 => size,
+        _ => base,
+    }
 }
 
 /// The pagination state.
@@ -126,38 +143,63 @@ impl Layout {
         self.page_w - MARGIN
     }
 
-    /// Append a line of text runs (already wrapped) at the cursor.
+    /// Append a line of already-wrapped runs at the cursor. `left_x` and
+    /// `right_x` bound the text column; `align` positions the line within it.
     fn push_text_line(
         &mut self,
-        runs: &[(Style, String)],
+        runs: &[Span],
         size_of: &dyn Fn(Style) -> f64,
-        first_x: f64,
+        left_x: f64,
+        right_x: f64,
         factor: f64,
+        align: TextAlign,
     ) {
-        let mut size_max = BODY_SIZE;
-        for (style, _) in runs.iter() {
-            size_max = size_max.max(size_of(*style));
-        }
+        let sized: Vec<(&Span, f64)> = runs
+            .iter()
+            .map(|run| (run, eff_size(run, size_of(run.style))))
+            .collect();
+        let size_max = sized
+            .iter()
+            .fold(BODY_SIZE, |max, (_, size)| max.max(*size));
         let height = size_max * factor;
         self.ensure_room(height);
+        let top = self.cursor;
+        let width: f64 = sized
+            .iter()
+            .map(|(run, size)| measure(run.style.font(), &run.text, *size))
+            .sum();
+        let shift = match align {
+            TextAlign::Left => 0.0,
+            TextAlign::Center => (right_x - left_x - width) * 0.5,
+            TextAlign::Right => right_x - left_x - width,
+        }
+        .max(0.0);
+        let mut x = left_x + shift;
         let mut items: Vec<Item> = Vec::new();
-        let mut x = first_x;
-        for (style, text) in runs.iter() {
-            if text.is_empty() {
+        for (run, size) in sized {
+            if run.text.is_empty() {
                 continue;
             }
-            let font = style.font();
-            let size = size_of(*style);
+            let font = run.style.font();
+            let w = measure(font, &run.text, size);
             items.push(Item::Text {
                 x,
                 font,
                 size,
-                bytes: encode_text(text),
-                color: BLACK,
+                bytes: encode_text(&run.text),
+                color: run.color.unwrap_or(BLACK),
             });
-            x += measure(font, text, size);
+            if let Some(uri) = &run.href {
+                items.push(Item::LinkBox {
+                    x,
+                    top,
+                    w,
+                    h: height,
+                    uri: uri.clone(),
+                });
+            }
+            x += w;
         }
-        let top = self.cursor;
         self.current.push(Line {
             top,
             height,
@@ -318,7 +360,7 @@ fn render_table(layout: &mut Layout, head: &[Vec<Span>], rows: &[Vec<Vec<Span>>]
     let lay_row = |layout: &mut Layout, cells: &[Vec<Span>], bold: bool| -> f64 {
         let size_of = |_s: Style| BODY_SIZE;
         let mapped = |s: Style| if bold { s.with_bold() } else { s };
-        let mut wrapped: Vec<Vec<Vec<(Style, String)>>> = Vec::with_capacity(cells.len());
+        let mut wrapped: Vec<Vec<Vec<Span>>> = Vec::with_capacity(cells.len());
         for (index, cell) in cells.iter().enumerate() {
             let width = widths.get(index).copied().unwrap_or(TABLE_MIN_COL);
             let left = offsets.get(index).copied().unwrap_or(table_left) + TABLE_CELL_PAD;
@@ -349,21 +391,60 @@ fn render_table(layout: &mut Layout, head: &[Vec<Span>], rows: &[Vec<Vec<Span>>]
             let mut items: Vec<Item> = Vec::new();
             for (index, cell_lines) in wrapped.iter().enumerate() {
                 if let Some(line_runs) = cell_lines.get(line_index) {
-                    let mut cell_x =
+                    let cell_left =
                         offsets.get(index).copied().unwrap_or(table_left) + TABLE_CELL_PAD;
-                    for (style, text) in line_runs.iter() {
-                        if text.is_empty() {
+                    let cell_width = widths.get(index).copied().unwrap_or(TABLE_MIN_COL);
+                    let available = cell_width - 2.0 * TABLE_CELL_PAD;
+                    let align = cells
+                        .get(index)
+                        .and_then(|cell| cell.first())
+                        .and_then(|span| span.align)
+                        .unwrap_or(TextAlign::Left);
+                    let line_width: f64 = line_runs
+                        .iter()
+                        .map(|run| {
+                            measure(
+                                run.style.font(),
+                                &run.text,
+                                eff_size(run, size_of(run.style)),
+                            )
+                        })
+                        .sum();
+                    let shift = match align {
+                        TextAlign::Left => 0.0,
+                        TextAlign::Center => (available - line_width) * 0.5,
+                        TextAlign::Right => available - line_width,
+                    }
+                    .max(0.0);
+                    let mut cell_x = cell_left + shift;
+                    for run in line_runs.iter() {
+                        if run.text.is_empty() {
                             continue;
                         }
-                        let font = style.font();
+                        let font = run.style.font();
+                        let size = eff_size(run, size_of(run.style));
+                        let w = measure(font, &run.text, size);
                         items.push(Item::Text {
                             x: cell_x,
                             font,
-                            size: BODY_SIZE,
-                            bytes: encode_text(text),
-                            color: BLACK,
+                            size,
+                            bytes: encode_text(&run.text),
+                            color: run.color.unwrap_or(BLACK),
                         });
-                        cell_x += measure(font, text, BODY_SIZE);
+                        if let Some(uri) = &run.href {
+                            items.push(Item::LinkBox {
+                                x: cell_x,
+                                top: top
+                                    + TABLE_CELL_PAD
+                                    + f64::from(u32::try_from(line_index).unwrap_or(0))
+                                        * BODY_SIZE
+                                        * LINE_FACTOR,
+                                w,
+                                h: BODY_SIZE * LINE_FACTOR,
+                                uri: uri.clone(),
+                            });
+                        }
+                        cell_x += w;
                     }
                 }
             }
@@ -444,8 +525,16 @@ fn render_block(
                 MARGIN + indent,
                 layout.max_x(),
             );
+            let align = block_align(spans);
             for line_runs in &runs {
-                layout.push_text_line(line_runs, &size_of, MARGIN + indent, 1.3);
+                layout.push_text_line(
+                    line_runs,
+                    &size_of,
+                    MARGIN + indent,
+                    layout.max_x(),
+                    1.3,
+                    align,
+                );
             }
             layout.cursor += size * 0.3;
         }
@@ -468,8 +557,16 @@ fn render_block(
                 MARGIN + indent,
                 layout.max_x(),
             );
+            let align = block_align(spans);
             for line_runs in &runs {
-                layout.push_text_line(line_runs, &size_of, MARGIN + indent, LINE_FACTOR);
+                layout.push_text_line(
+                    line_runs,
+                    &size_of,
+                    MARGIN + indent,
+                    layout.max_x(),
+                    LINE_FACTOR,
+                    align,
+                );
             }
             layout.cursor += PARA_GAP;
         }
@@ -517,21 +614,48 @@ fn render_block(
                         color: BLACK,
                     });
                 }
-                let mut x = text_x;
-                for (style, text) in line_runs.iter() {
-                    if text.is_empty() {
+                let align = block_align(spans);
+                let line_width: f64 = line_runs
+                    .iter()
+                    .map(|run| {
+                        measure(
+                            run.style.font(),
+                            &run.text,
+                            eff_size(run, size_of(run.style)),
+                        )
+                    })
+                    .sum();
+                let shift = match align {
+                    TextAlign::Left => 0.0,
+                    TextAlign::Center => (layout.max_x() - text_x - line_width) * 0.5,
+                    TextAlign::Right => layout.max_x() - text_x - line_width,
+                }
+                .max(0.0);
+                let mut x = text_x + shift;
+                for run in line_runs.iter() {
+                    if run.text.is_empty() {
                         continue;
                     }
-                    let font = style.font();
-                    let size = size_of(*style);
+                    let font = run.style.font();
+                    let size = eff_size(run, size_of(run.style));
+                    let w = measure(font, &run.text, size);
                     items.push(Item::Text {
                         x,
                         font,
                         size,
-                        bytes: encode_text(text),
-                        color: BLACK,
+                        bytes: encode_text(&run.text),
+                        color: run.color.unwrap_or(BLACK),
                     });
-                    x += measure(font, text, size);
+                    if let Some(uri) = &run.href {
+                        items.push(Item::LinkBox {
+                            x,
+                            top,
+                            w,
+                            h: height,
+                            uri: uri.clone(),
+                        });
+                    }
+                    x += w;
                 }
                 layout.current.push(Line {
                     top,
@@ -617,10 +741,21 @@ fn render_block(
     *first_block = false;
 }
 
-/// Wrap styled spans into lines of runs.
+/// The alignment of a block, carried on its first span (see
+/// [`Span::align`](crate::blocks::Span::align)).
+fn block_align(spans: &[Span]) -> TextAlign {
+    spans
+        .first()
+        .and_then(|span| span.align)
+        .unwrap_or(TextAlign::Left)
+}
+
+/// Wrap styled spans into lines of runs. Each run keeps its inline properties
+/// (`href`, `color`, `size`, `align`) so layout can position it and the emitter
+/// can colour it / hang a link annotation off it.
 ///
 /// `style_map` applies context styles (heading bold, blockquote italic);
-/// `size_of` returns each mapped style's point size.
+/// `size_of` returns each mapped style's base point size.
 fn wrap_spans(
     spans: &[Span],
     style_map: &dyn Fn(Style) -> Style,
@@ -628,33 +763,30 @@ fn wrap_spans(
     first_x: f64,
     cont_x: f64,
     max_x: f64,
-) -> Vec<Vec<(Style, String)>> {
-    let mut lines: Vec<Vec<(Style, String)>> = Vec::new();
-    let mut cur: Vec<(Style, String)> = Vec::new();
+) -> Vec<Vec<Span>> {
+    let mut lines: Vec<Vec<Span>> = Vec::new();
+    let mut cur: Vec<Span> = Vec::new();
     let mut cur_x = first_x;
     let mut prev_trailing = false;
 
-    let push_line = |lines: &mut Vec<Vec<(Style, String)>>, cur: &mut Vec<(Style, String)>| {
+    let push_line = |lines: &mut Vec<Vec<Span>>, cur: &mut Vec<Span>| {
+        if let Some(last) = cur.last_mut() {
+            while last.text.ends_with(' ') {
+                last.text.pop();
+            }
+        }
+        if cur.last().is_some_and(|run| run.text.is_empty()) {
+            cur.pop();
+        }
         if !cur.is_empty() {
-            // Drop trailing spaces on the line's last run.
-            if let Some(last) = cur.last_mut() {
-                while last.1.ends_with(' ') {
-                    last.1.pop();
-                }
-            }
-            if cur.last().is_some_and(|(_, t)| t.is_empty()) {
-                cur.pop();
-            }
-            if !cur.is_empty() {
-                lines.push(std::mem::take(cur));
-            }
+            lines.push(std::mem::take(cur));
         }
     };
 
     for span in spans {
         let mapped = style_map(span.style);
         let font = mapped.font();
-        let size = size_of(mapped);
+        let size = eff_size(span, size_of(mapped));
         for (word, trailing) in split_words(&span.text) {
             let space_w = crate::blocks::char_advance(font, ' ', size);
             let word_w = measure(font, &word, size);
@@ -670,7 +802,7 @@ fn wrap_spans(
                 for c in word.chars() {
                     let cw = crate::blocks::char_advance(font, c, size);
                     if !chunk.is_empty() && cur_x + chunk_w + cw > max_x {
-                        push_run(&mut cur, mapped, std::mem::take(&mut chunk));
+                        push_run(&mut cur, mapped, std::mem::take(&mut chunk), span);
                         push_line(&mut lines, &mut cur);
                         cur_x = cont_x;
                         chunk_w = 0.0;
@@ -678,16 +810,16 @@ fn wrap_spans(
                     chunk.push(c);
                     chunk_w += cw;
                 }
-                push_run(&mut cur, mapped, chunk);
+                push_run(&mut cur, mapped, chunk, span);
                 cur_x += chunk_w;
             } else {
                 if !cur.is_empty() && prev_trailing {
                     if let Some(last) = cur.last_mut() {
-                        last.1.push(' ');
+                        last.text.push(' ');
                     }
                     cur_x += space_w;
                 }
-                push_run(&mut cur, mapped, word);
+                push_run(&mut cur, mapped, word, span);
                 cur_x += word_w;
             }
             prev_trailing = trailing;
@@ -697,18 +829,31 @@ fn wrap_spans(
     lines
 }
 
-/// Append text to the last run when the style matches, else start a new run.
-fn push_run(cur: &mut Vec<(Style, String)>, style: Style, text: String) {
+/// Append text to the last run when its style *and* inline properties match,
+/// else start a new run so colour / size / link boundaries are preserved.
+fn push_run(cur: &mut Vec<Span>, style: Style, text: String, source: &Span) {
     if text.is_empty() {
         return;
     }
     if let Some(last) = cur.last_mut() {
-        if last.0 == style {
-            last.1.push_str(&text);
+        if last.style == style
+            && last.href == source.href
+            && last.color == source.color
+            && last.size == source.size
+            && last.align == source.align
+        {
+            last.text.push_str(&text);
             return;
         }
     }
-    cur.push((style, text));
+    cur.push(Span {
+        style,
+        text,
+        href: source.href.clone(),
+        color: source.color,
+        size: source.size,
+        align: source.align,
+    });
 }
 
 /// Truncate a code line to a pixel width.
@@ -741,6 +886,7 @@ mod tests {
         Block::Paragraph(vec![Span {
             style: Style::Regular,
             text: text.to_string(),
+            ..Default::default()
         }])
     }
 
@@ -814,6 +960,7 @@ mod tests {
                 spans: vec![Span {
                     style: Style::Regular,
                     text: "first".to_string(),
+                    ..Default::default()
                 }],
             },
             Block::ListItem {
@@ -823,6 +970,7 @@ mod tests {
                 spans: vec![Span {
                     style: Style::Regular,
                     text: "numbered".to_string(),
+                    ..Default::default()
                 }],
             },
         ];

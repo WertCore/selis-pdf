@@ -1,6 +1,6 @@
 //! The Markdown subset parser (see the crate docs for the supported subset).
 
-use crate::blocks::{Block, Span, Style};
+use crate::blocks::{Block, Span, Style, TextAlign};
 
 /// Parse Markdown (the documented subset) into layout blocks.
 ///
@@ -100,10 +100,11 @@ fn parse_lines(lines: &[&str], base_indent: usize) -> Vec<Block> {
         // GFM pipe table: a header row followed by a |---|---| delimiter row.
         if trimmed.starts_with('|') {
             if let Some(delimiter) = lines.get(i.saturating_add(1)) {
-                if let Some(cols) = delimiter_cell_count(delimiter.trim_start()) {
+                if let Some(aligns) = delimiter_aligns(delimiter.trim_start()) {
                     let header = split_pipe_cells(trimmed);
-                    if header.len() == cols {
-                        out.push(pipe_table(lines, &mut i, header, cols));
+                    if header.len() == aligns.len() {
+                        let cols = aligns.len();
+                        out.push(pipe_table(lines, &mut i, header, cols, aligns));
                         continue;
                     }
                 }
@@ -223,9 +224,11 @@ fn split_pipe_cells(line: &str) -> Vec<String> {
     cells
 }
 
-/// If `trimmed` is a pipe-table delimiter row (`| --- | :-: |`), return the
-/// number of cells it declares.
-fn delimiter_cell_count(trimmed: &str) -> Option<usize> {
+/// Per-column alignment declared by a GFM delimiter row
+/// (`| --- | :--- | ---: | :---: |`). Returns `None` when `trimmed` is not a
+/// delimiter row; otherwise one alignment per declared cell. A leading `:` is
+/// left, a trailing `:` is right, both is centre, neither is left.
+fn delimiter_aligns(trimmed: &str) -> Option<Vec<TextAlign>> {
     if !trimmed.contains('|') || !trimmed.contains('-') {
         return None;
     }
@@ -233,23 +236,40 @@ fn delimiter_cell_count(trimmed: &str) -> Option<usize> {
     if cells.is_empty() {
         return None;
     }
+    let mut aligns = Vec::with_capacity(cells.len());
     for cell in &cells {
-        let core = cell.trim().trim_start_matches(':').trim_end_matches(':');
-        if core.len() < 2 || !core.chars().all(|ch| ch == '-') {
+        let core = cell.trim();
+        let left = core.starts_with(':');
+        let right = core.ends_with(':');
+        let inner = core.trim_start_matches(':').trim_end_matches(':');
+        if inner.len() < 2 || !inner.chars().all(|ch| ch == '-') {
             return None;
         }
+        aligns.push(match (left, right) {
+            (true, true) => TextAlign::Center,
+            (false, true) => TextAlign::Right,
+            _ => TextAlign::Left,
+        });
     }
-    Some(cells.len())
+    Some(aligns)
+}
+
+/// True when `trimmed` is a GFM delimiter row (alignment markers included).
+fn delimiter_cell_count(trimmed: &str) -> Option<usize> {
+    delimiter_aligns(trimmed).map(|aligns| aligns.len())
 }
 
 /// A cell as span lists: pipe-table cells carry plain text, not inline markup.
-fn table_cell(text: &str) -> Vec<crate::blocks::Span> {
+/// The column's alignment (when declared) is carried on the span.
+fn table_cell(text: &str, align: Option<TextAlign>) -> Vec<Span> {
     if text.is_empty() {
         return Vec::new();
     }
-    vec![crate::blocks::Span {
-        style: crate::blocks::Style::Regular,
+    vec![Span {
+        style: Style::Regular,
         text: text.to_string(),
+        align,
+        ..Default::default()
     }]
 }
 
@@ -260,8 +280,10 @@ fn pipe_table(
     i: &mut usize,
     header: Vec<String>,
     cols: usize,
-) -> crate::blocks::Block {
-    let mut rows: Vec<Vec<Vec<crate::blocks::Span>>> = Vec::new();
+    aligns: Vec<TextAlign>,
+) -> Block {
+    let align_at = |index: usize| aligns.get(index).copied();
+    let mut rows: Vec<Vec<Vec<Span>>> = Vec::new();
     let mut j = i.saturating_add(2);
     while let Some(l) = lines.get(j) {
         let trimmed = l.trim_start();
@@ -275,12 +297,22 @@ fn pipe_table(
         let mut cells = split_pipe_cells(trimmed);
         cells.resize(cols, String::new());
         cells.truncate(cols);
-        rows.push(cells.iter().map(|cell| table_cell(cell)).collect());
+        rows.push(
+            cells
+                .iter()
+                .enumerate()
+                .map(|(index, cell)| table_cell(cell, align_at(index)))
+                .collect(),
+        );
         j = j.saturating_add(1);
     }
     *i = j;
-    let head = header.iter().map(|cell| table_cell(cell)).collect();
-    crate::blocks::Block::Table { head, rows }
+    let head = header
+        .iter()
+        .enumerate()
+        .map(|(index, cell)| table_cell(cell, align_at(index)))
+        .collect();
+    Block::Table { head, rows }
 }
 
 /// The list marker at the start of a trimmed line, if any:
@@ -333,6 +365,7 @@ fn parse_list(lines: &[&str]) -> (Vec<Block>, usize) {
                         spans.push(Span {
                             style: Style::Regular,
                             text: String::new(),
+                            ..Default::default()
                         });
                     }
                     for span in parse_inline(trimmed) {
@@ -363,6 +396,21 @@ fn parse_list(lines: &[&str]) -> (Vec<Block>, usize) {
     (items, i)
 }
 
+/// Apply the enclosing inline emphasis to a base style.
+fn inline_context(style: Style, bold: bool, italic: bool, code: bool) -> Style {
+    if code {
+        return Style::Code;
+    }
+    let mut s = style;
+    if bold {
+        s = s.with_bold();
+    }
+    if italic {
+        s = s.with_italic();
+    }
+    s
+}
+
 /// Parse inline markup into styled spans.
 pub(crate) fn parse_inline(text: &str) -> Vec<Span> {
     let chars: Vec<char> = text.chars().collect();
@@ -377,21 +425,11 @@ pub(crate) fn parse_inline(text: &str) -> Vec<Span> {
         if buf.is_empty() {
             return;
         }
-        let style = if code {
-            Style::Code
-        } else {
-            let mut s = Style::Regular;
-            if bold {
-                s = s.with_bold();
-            }
-            if italic {
-                s = s.with_italic();
-            }
-            s
-        };
+        let style = inline_context(Style::Regular, bold, italic, code);
         out.push(Span {
             style,
             text: std::mem::take(buf),
+            ..Default::default()
         });
     };
 
@@ -428,17 +466,18 @@ pub(crate) fn parse_inline(text: &str) -> Vec<Span> {
                     let inner: String = chars
                         .get(i.saturating_add(1)..text_end)
                         .map_or_else(String::new, |s| s.iter().collect());
-                    // Link text may carry its own inline markup.
-                    for span in parse_inline(&inner) {
-                        out.push(span);
+                    // Link text may carry its own inline markup; the enclosing
+                    // emphasis applies to all of it. The URL is no longer
+                    // printed in parentheses — it becomes a real link
+                    // annotation over this text (see `layout`/`emit`).
+                    let mut linked = parse_inline(&inner);
+                    for span in &mut linked {
+                        span.style = inline_context(span.style, bold, italic, code);
+                        if !url.is_empty() {
+                            span.href = Some(url.clone());
+                        }
                     }
-                    let url_str: String = url;
-                    if !url_str.is_empty() && url_str != inner {
-                        out.push(Span {
-                            style: Style::Italic,
-                            text: format!(" ({url_str})"),
-                        });
-                    }
+                    out.extend(linked);
                     i = end;
                 } else {
                     buf.push(c);
@@ -576,10 +615,27 @@ mod tests {
     }
 
     #[test]
-    fn links_render_text_and_url() {
+    fn links_carry_the_url_as_an_annotation_target() {
         let spans = parse_inline("see [the site](https://example.com) now");
         let texts: Vec<&str> = spans.iter().map(|s| s.text.as_str()).collect();
-        assert_eq!(texts.join(""), "see the site (https://example.com) now");
+        // The URL is no longer printed as text...
+        assert_eq!(texts.join(""), "see the site now");
+        // ...it is carried on the link's text spans for a real annotation.
+        let linked: Vec<&Span> = spans.iter().filter(|s| s.href.is_some()).collect();
+        assert_eq!(linked.len(), 1);
+        assert_eq!(linked[0].text, "the site");
+        assert_eq!(linked[0].href.as_deref(), Some("https://example.com"));
+    }
+
+    #[test]
+    fn gfm_delimiter_row_records_column_alignment() {
+        let blocks = parse("| Name | Amount | Mid |\n| :--- | ---: | :---: |\n| Ada | 12 | x |\n");
+        let Block::Table { head, .. } = &blocks[0] else {
+            panic!("expected a table");
+        };
+        assert_eq!(head[0][0].align, Some(TextAlign::Left));
+        assert_eq!(head[1][0].align, Some(TextAlign::Right));
+        assert_eq!(head[2][0].align, Some(TextAlign::Center));
     }
 
     #[test]
@@ -619,7 +675,7 @@ mod tests {
     }
 
     #[test]
-    fn pipe_tables_escape_pipes_and_ignore_alignment() {
+    fn pipe_tables_escape_pipes_and_keep_cell_text() {
         let blocks = parse("| A \\| B | C |\n| :--- | ---: |\n| a | b |\n");
         let Block::Table { head, rows } = &blocks[0] else {
             panic!("expected a table");

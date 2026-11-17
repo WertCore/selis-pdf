@@ -1,12 +1,68 @@
 //! The HTML subset parser (see the crate docs for the supported subset).
 
-use crate::blocks::{Block, Span, Style};
+use crate::blocks::{Block, Span, Style, TextAlign};
 
 /// An open-list context.
 #[derive(Debug)]
 struct ListCtx {
     ordered: bool,
     counter: usize,
+}
+
+/// The narrow set of inline properties this converter understands. Each field
+/// is optional so nested elements can override only what they declare; unknown
+/// declarations are dropped and never guessed at.
+#[derive(Debug, Default, Clone, Copy)]
+struct InlineProps {
+    color: Option<[f64; 3]>,
+    size: Option<f64>,
+    align: Option<TextAlign>,
+}
+
+impl InlineProps {
+    /// Read `color:`, `font-size:` and `text-align:` from a `style=` attribute,
+    /// plus the legacy `align=` attribute for block alignment.
+    fn from_attrs(style: Option<&str>, align: Option<&str>) -> Self {
+        let mut out = Self::default();
+        if let Some(style) = style {
+            for declaration in style.split(';') {
+                let mut parts = declaration.splitn(2, ':');
+                let property = parts.next().unwrap_or("").trim().to_ascii_lowercase();
+                let value = parts.next().unwrap_or("").trim();
+                match property.as_str() {
+                    "color" => {
+                        if let Some(color) = css_color(value) {
+                            out.color = Some(color);
+                        }
+                    }
+                    "font-size" => {
+                        if let Some(size) = css_font_size(value) {
+                            out.size = Some(size);
+                        }
+                    }
+                    "text-align" => {
+                        if let Some(align) = css_align(value) {
+                            out.align = Some(align);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if out.align.is_none() {
+            out.align = align.and_then(css_align);
+        }
+        out
+    }
+}
+
+/// A styled open element: its tag name (for matching the close tag), the
+/// inline properties it declared and, for `<a>`, its link target.
+#[derive(Debug)]
+struct StyleFrame {
+    tag: String,
+    props: InlineProps,
+    href: Option<String>,
 }
 
 /// An open table: the header cells (empty until a `<th>` row closes) and the
@@ -47,6 +103,9 @@ struct Parser<'a> {
     /// `page-break-after`/`break-after`), so the break can be emitted when the
     /// matching close tag arrives.
     break_after_stack: Vec<String>,
+    /// Inline-style / link frames for currently open styled elements. The
+    /// innermost declaration of each property wins (see `current_props`).
+    styles: Vec<StyleFrame>,
 }
 
 /// Parse an HTML subset into layout blocks.
@@ -72,6 +131,7 @@ pub(crate) fn parse(input: &str) -> Vec<Block> {
         item_ordinal: 0,
         table: None,
         break_after_stack: Vec::new(),
+        styles: Vec::new(),
     };
     p.run();
     p.finish();
@@ -183,6 +243,36 @@ impl<'a> Parser<'a> {
         s
     }
 
+    /// The effective inline properties: innermost declaration of each wins.
+    fn current_props(&self) -> InlineProps {
+        let mut out = InlineProps::default();
+        for frame in self.styles.iter().rev() {
+            if out.color.is_none() {
+                out.color = frame.props.color;
+            }
+            if out.size.is_none() {
+                out.size = frame.props.size;
+            }
+            if out.align.is_none() {
+                out.align = frame.props.align;
+            }
+        }
+        out
+    }
+
+    /// The link target of the innermost open `<a>`, if any.
+    fn current_href(&self) -> Option<&str> {
+        self.styles.iter().rev().find_map(|f| f.href.as_deref())
+    }
+
+    /// Pop the frame for `name` and everything nested above it. Malformed
+    /// nesting therefore restores the outer style rather than guessing.
+    fn pop_style_frame(&mut self, name: &str) {
+        if let Some(pos) = self.styles.iter().rposition(|f| f.tag == name) {
+            self.styles.truncate(pos);
+        }
+    }
+
     /// Collapse whitespace runs (HTML text semantics) and flush the text
     /// buffer as a span.
     fn flush_text(&mut self) {
@@ -199,8 +289,15 @@ impl<'a> Parser<'a> {
             return;
         }
         let style = self.cur_style();
+        let props = self.current_props();
+        let href = self.current_href().map(str::to_string);
         if let Some(last) = self.spans.last_mut() {
-            if last.style == style {
+            if last.style == style
+                && last.href == href
+                && last.color == props.color
+                && last.size == props.size
+                && last.align == props.align
+            {
                 last.text.push_str(&collapsed);
                 return;
             }
@@ -208,6 +305,10 @@ impl<'a> Parser<'a> {
         self.spans.push(Span {
             style,
             text: collapsed,
+            href,
+            color: props.color,
+            size: props.size,
+            align: props.align,
         });
     }
 
@@ -338,9 +439,10 @@ impl<'a> Parser<'a> {
             return;
         }
 
-        // Read attributes (href and style are kept) and find the tag's end.
+        // Read attributes (href, style and align are kept) and find the tag's end.
         let mut href: Option<String> = None;
         let mut style: Option<String> = None;
+        let mut align: Option<String> = None;
         let mut self_closing = false;
         let mut q = p;
         loop {
@@ -405,6 +507,7 @@ impl<'a> Parser<'a> {
                             match attr.as_str() {
                                 "href" => href = Some(value),
                                 "style" => style = Some(value),
+                                "align" => align = Some(value),
                                 _ => {}
                             }
                         } else {
@@ -422,6 +525,7 @@ impl<'a> Parser<'a> {
                             match attr.as_str() {
                                 "href" => href = Some(value),
                                 "style" => style = Some(value),
+                                "align" => align = Some(value),
                                 _ => {}
                             }
                         }
@@ -437,6 +541,7 @@ impl<'a> Parser<'a> {
         let (break_before, break_after) = css_page_breaks(style.as_deref());
         if closing {
             self.close_tag(&name);
+            self.pop_style_frame(&name);
             // A break the matching open tag asked for lands after its content.
             if self
                 .break_after_stack
@@ -451,6 +556,13 @@ impl<'a> Parser<'a> {
                 self.emit_page_break();
             }
             self.open_tag(&name, href.as_deref(), self_closing);
+            if !self_closing && is_styled_container(&name) {
+                self.styles.push(StyleFrame {
+                    tag: name.clone(),
+                    props: InlineProps::from_attrs(style.as_deref(), align.as_deref()),
+                    href: if name == "a" { href } else { None },
+                });
+            }
             if break_after {
                 if self_closing {
                     self.emit_page_break();
@@ -546,6 +658,11 @@ impl<'a> Parser<'a> {
             "code" => {
                 self.flush_text();
                 self.code_depth = self.code_depth.saturating_add(1);
+            }
+            "span" => {
+                // Inline styling boundary: flush so the styled run is its own
+                // span (unknown tag otherwise just unwraps its text).
+                self.flush_text();
             }
             "a" => {
                 self.flush_text();
@@ -652,6 +769,9 @@ impl<'a> Parser<'a> {
             "code" => {
                 self.flush_text();
                 self.code_depth = self.code_depth.saturating_sub(1);
+            }
+            "span" => {
+                self.flush_text();
             }
             "a" => {
                 self.flush_text();
@@ -895,6 +1015,158 @@ fn decode_entity(name: &str) -> Option<String> {
         _ => return None,
     };
     Some(c.to_string())
+}
+
+/// Whether an opening tag carries inline style state that must be restored on
+/// its close. Void elements and the two "extract wholesale" containers
+/// (`<pre>`, `<blockquote>`) are excluded: they never reach `close_tag`.
+fn is_styled_container(name: &str) -> bool {
+    matches!(
+        name,
+        "p" | "div"
+            | "section"
+            | "article"
+            | "main"
+            | "header"
+            | "footer"
+            | "nav"
+            | "aside"
+            | "figure"
+            | "figcaption"
+            | "form"
+            | "fieldset"
+            | "center"
+            | "details"
+            | "summary"
+            | "h1"
+            | "h2"
+            | "h3"
+            | "h4"
+            | "h5"
+            | "h6"
+            | "b"
+            | "strong"
+            | "i"
+            | "em"
+            | "code"
+            | "a"
+            | "span"
+            | "ul"
+            | "ol"
+            | "li"
+            | "table"
+            | "thead"
+            | "tbody"
+            | "tfoot"
+            | "caption"
+            | "tr"
+            | "td"
+            | "th"
+    )
+}
+
+/// The narrow `text-align` / `align` subset: only left, centre and right.
+/// Any other value (including `justify`) is ignored.
+fn css_align(value: &str) -> Option<TextAlign> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "left" => Some(TextAlign::Left),
+        "center" => Some(TextAlign::Center),
+        "right" => Some(TextAlign::Right),
+        _ => None,
+    }
+}
+
+/// A narrow `font-size` parser: absolute `pt`, `px` (at 96 dpi) and a bare
+/// number (treated as points), clamped to [1, 72]. Relative units (`em`, `%`,
+/// `rem`, keywords) are deliberately unsupported and return `None`.
+fn css_font_size(value: &str) -> Option<f64> {
+    let v = value.trim().to_ascii_lowercase();
+    let (number, scale) = if let Some(n) = v.strip_suffix("pt") {
+        (n.trim(), 1.0)
+    } else if let Some(n) = v.strip_suffix("px") {
+        (n.trim(), 0.75)
+    } else if v
+        .chars()
+        .last()
+        .is_some_and(|c| c.is_ascii_digit() || c == '.')
+    {
+        (v.as_str(), 1.0)
+    } else {
+        return None;
+    };
+    let size = number.parse::<f64>().ok()?;
+    if !size.is_finite() || size <= 0.0 {
+        return None;
+    }
+    Some((size * scale).clamp(1.0, 72.0))
+}
+
+/// A narrow `color` parser: `#rgb` / `#rrggbb`, `rgb(r,g,b)` (0–255) and a
+/// small fixed set of named colours. Anything else is ignored.
+fn css_color(value: &str) -> Option<[f64; 3]> {
+    let v = value.trim().to_ascii_lowercase();
+    if let Some(hex) = v.strip_prefix('#') {
+        return parse_hex_color(hex);
+    }
+    if let Some(inner) = v.strip_prefix("rgb(").and_then(|s| s.strip_suffix(')')) {
+        let mut parts = inner.split(',');
+        let r = parse_byte(parts.next()?)?;
+        let g = parse_byte(parts.next()?)?;
+        let b = parse_byte(parts.next()?)?;
+        return Some([r, g, b]);
+    }
+    named_color(&v)
+}
+
+fn parse_byte(s: &str) -> Option<f64> {
+    let value = s.trim().parse::<u8>().ok()?;
+    Some(f64::from(value) / 255.0)
+}
+
+fn parse_hex_color(hex: &str) -> Option<[f64; 3]> {
+    let expanded = if hex.len() == 3 {
+        let chars: Vec<char> = hex.chars().collect();
+        let a = chars.first()?;
+        let b = chars.get(1)?;
+        let c = chars.get(2)?;
+        format!("{a}{a}{b}{b}{c}{c}")
+    } else if hex.len() == 6 {
+        hex.to_string()
+    } else {
+        return None;
+    };
+    if !expanded.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let r = u8::from_str_radix(expanded.get(0..2)?, 16).ok()?;
+    let g = u8::from_str_radix(expanded.get(2..4)?, 16).ok()?;
+    let b = u8::from_str_radix(expanded.get(4..6)?, 16).ok()?;
+    Some([
+        f64::from(r) / 255.0,
+        f64::from(g) / 255.0,
+        f64::from(b) / 255.0,
+    ])
+}
+
+fn named_color(name: &str) -> Option<[f64; 3]> {
+    let (r, g, b) = match name {
+        "black" => (0, 0, 0),
+        "white" => (255, 255, 255),
+        "red" => (255, 0, 0),
+        "green" => (0, 128, 0),
+        "blue" => (0, 0, 255),
+        "navy" => (0, 0, 128),
+        "gray" | "grey" => (128, 128, 128),
+        "yellow" => (255, 255, 0),
+        "purple" => (128, 0, 128),
+        "orange" => (255, 165, 0),
+        _ => return None,
+    };
+    Some([
+        f64::from(r) / 255.0,
+        f64::from(g) / 255.0,
+        f64::from(b) / 255.0,
+    ])
 }
 
 /// Case-insensitive prefix match at `pos`.
@@ -1148,5 +1420,68 @@ mod tests {
         assert!(cell
             .iter()
             .any(|s| s.style == Style::Bold && s.text == "bold"));
+    }
+
+    #[test]
+    fn inline_style_declarations_reach_the_spans() {
+        let blocks = parse(
+            "<p style=\"color:red;text-align:center\">before \
+             <span style=\"color:#00ff00;font-size:20pt\">styled</span> after</p>",
+        );
+        let Block::Paragraph(spans) = &blocks[0] else {
+            panic!("expected a paragraph");
+        };
+        let styled = spans
+            .iter()
+            .find(|span| span.text == "styled")
+            .expect("the styled run");
+        // The inner colour and size override the outer colour; alignment is
+        // inherited from the paragraph.
+        assert_eq!(styled.color, Some([0.0, 1.0, 0.0]));
+        assert_eq!(styled.size, Some(20.0));
+        assert_eq!(styled.align, Some(TextAlign::Center));
+        let before = spans
+            .iter()
+            .find(|span| span.text.contains("before"))
+            .expect("the plain run");
+        assert_eq!(before.color, Some([1.0, 0.0, 0.0]));
+        assert_eq!(before.size, None);
+    }
+
+    #[test]
+    fn link_href_is_carried_on_the_link_text() {
+        let blocks = parse("<p>go <a href=\"https://selis.example/a\">there</a> now</p>");
+        let Block::Paragraph(spans) = &blocks[0] else {
+            panic!("expected a paragraph");
+        };
+        let linked = spans
+            .iter()
+            .find(|span| span.text == "there")
+            .expect("the link text");
+        assert_eq!(linked.href.as_deref(), Some("https://selis.example/a"));
+        assert!(spans
+            .iter()
+            .filter(|span| span.href.is_some())
+            .all(|span| span.text == "there"));
+    }
+
+    #[test]
+    fn align_attribute_sets_cell_alignment() {
+        let blocks = parse("<table><tr><td align=\"right\">value</td></tr></table>");
+        let Block::Table { rows, .. } = &blocks[0] else {
+            panic!("expected a table");
+        };
+        assert_eq!(rows[0][0][0].align, Some(TextAlign::Right));
+    }
+
+    #[test]
+    fn css_helpers_ignore_unsupported_values() {
+        assert_eq!(css_color("not-a-colour"), None);
+        assert_eq!(css_color("#ggg"), None);
+        assert_eq!(css_font_size("2em"), None);
+        assert_eq!(css_font_size("80%"), None);
+        assert_eq!(css_font_size("12pt"), Some(12.0));
+        assert_eq!(css_font_size("12px"), Some(9.0));
+        assert_eq!(css_align("justify"), None);
     }
 }
