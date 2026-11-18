@@ -1672,7 +1672,14 @@ function init(): void {
 	function renderFillFormsOptions(options: HTMLElement): void {
 		const note = make("p", "option-note");
 		note.textContent =
-			"Nothing leaves this device: the fields are read and the filled file is written on this machine. Values are stored in the document as written, and viewers rebuild the appearances on open; flattening is a separate step.";
+			"Nothing leaves this device: the fields are read and the filled file is written on this machine. By default values are stored in the document and viewers rebuild the appearances on open; tick the box to draw them into the PDF itself.";
+		options.append(note);
+		addField(
+			"synthesize_appearances",
+			"Synthesize appearances",
+			checkInput("synthesize_appearances"),
+			"Draws each filled value into a real appearance stream so it shows in every viewer and survives flattening. Off by default, where a viewer rebuilds the display on open.",
+		);
 		const list = make("div", "form-fields");
 		list.id = "form-fields";
 		const empty = make("p", "field-hint");
@@ -1683,7 +1690,7 @@ function init(): void {
 		warning.hidden = true;
 		warning.textContent =
 			"This document is signed. Filling it here invalidates the signature, re-sign the filled file if it must stay valid.";
-		options.append(note, list, warning);
+		options.append(list, warning);
 	}
 
 	function renderOptions(tool: ToolDef): void {
@@ -3281,7 +3288,10 @@ function fileTile(file: File, index: number, tool: ToolDef | null): HTMLLIElemen
 		if (tool.id === "fill_forms") {
 			return {
 				op: "fill_forms",
-				options: { fields: fillFormsPayload() },
+				options: {
+					fields: fillFormsPayload(),
+					synthesize_appearances: optionChecked("synthesize_appearances"),
+				},
 				files: wireFiles,
 			};
 		}

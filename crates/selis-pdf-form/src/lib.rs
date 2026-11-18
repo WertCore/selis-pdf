@@ -25,22 +25,27 @@
 //!   fields are exact either way, because their appearance states already
 //!   exist and this crate selects the state (`/AS`). A choice draws its
 //!   selected `/Opt` display labels; a multi-select choice stacks one line per
-//!   selection and carries every export value in `/V` and index in `/I`.
-//!   Quadding uses exact `selis_font::standard14` advance widths where the
-//!   field's font resolves to a standard-14 face (a field/widget `/DR` overrides
-//!   the form map), with an honest 0.5 em fallback for embedded or non-standard
-//!   faces. A field with no resolvable font, widget or box keeps
-//!   `/NeedAppearances` rather than claiming an appearance it did not write.
+//!   selection and carries every export value in `/V` and index in `/I`. An
+//!   editable choice — single- or multi-select — may carry a typed value that
+//!   matches no `/Opt` entry: it is drawn as itself, stored in `/V`, and given
+//!   no `/I` index. Quadding uses exact `selis_font::standard14` advance widths
+//!   where the field's font resolves to a standard-14 face (a field/widget `/DR`
+//!   overrides the form map, and font values may be indirect references or
+//!   direct dictionaries); high bytes use the face's WinAnsi AFM widths, with an
+//!   honest fallback for unmappable glyphs and for embedded/non-standard faces.
+//!   A field with no resolvable font, widget or box keeps `/NeedAppearances`
+//!   rather than claiming an appearance it did not write.
 //!   Flattening is a separate task;
 //! * it does not evaluate JavaScript, `/CO` calculations, or format actions
 //!   (SL-5.FORM.03) — a value is stored as given;
 //! * it refuses an encrypted document, an XFA form (the `/XFA` packet is the
 //!   authority in such a form, and this crate edits the AcroForm dictionaries),
 //!   a signature field, a read-only field and a push button. A multi-select
-//!   choice is filled when every selection is an `/Opt` export value or label;
-//!   only a value outside `/Opt`, or more than one value on a single-select or
-//!   non-choice field, is refused. Every refusal is a typed [`FormError`],
-//!   never a silently dropped edit;
+//!   choice is filled when every selection is an `/Opt` export value or label,
+//!   or (when the Edit flag is set) a typed value drawn as itself without an
+//!   `/I` index; only an unmatched value on a non-editable choice, or more than
+//!   one value on a single-select or non-choice field, is refused. Every
+//!   refusal is a typed [`FormError`], never a silently dropped edit;
 //! * it reports whether the document carries a signature
 //!   ([`FillInfo::has_signature`]) so every shell can disclose, before the
 //!   bytes are committed, that a full rewrite invalidates it.
@@ -311,24 +316,28 @@ pub struct FillFormsOptions {
     /// when present, otherwise the form's `/DR`; honours `/Q` (quadding) and
     /// the multiline flag; and sizes auto (`/DA` size `0`) text to the box.
     /// Centring / right-alignment uses exact `selis_font::standard14` advance
-    /// widths when the resolved font is a standard-14 face, and the honest
-    /// 0.5 em heuristic for embedded / non-standard faces.
+    /// widths when the resolved font is a standard-14 face — including the
+    /// face's WinAnsi widths for single bytes 0x80–0xFF — with an honest
+    /// fallback for unmappable glyphs and a 0.5 em heuristic for embedded /
+    /// non-standard faces. Font values in any `/DR /Font` map may be indirect
+    /// references or direct dictionaries; both are resolved.
     ///
     /// Choice handling: `/FT /Ch` with the Combo flag (a drop-down) or without
     /// it (a list box) is drawn when one value is selected. A non-edit choice
     /// draws the selected option's **display label** from `/Opt` while `/V`
-    /// keeps the export value and `/I` the index; an editable combo whose
-    /// value is not an option draws that typed value itself. A multi-select
-    /// choice (the `/Ff` MultiSelect bit) stacks one label per selection in
-    /// the widget box and writes every export value to `/V` and every index to
-    /// `/I` (`FieldEdit::values` holds the extra selections). Signature fields,
-    /// push buttons and read-only fields are refused by type and never get an
-    /// appearance here. An option outside `/Opt`, or multiple values on a
-    /// single-select / non-choice field, is refused too. A field with no
-    /// resolvable font in either `/DR`, no widget or no usable `/Rect` is not
-    /// given a fake appearance: `/NeedAppearances` stays set so a viewer is
-    /// asked to rebuild it instead. Button appearances already exist (the fill
-    /// selects `/AS`) and are untouched by this flag.
+    /// keeps the export value and `/I` the index; an editable choice whose
+    /// value is not an option draws that typed value itself and gives it no
+    /// `/I` index. A multi-select choice (the `/Ff` MultiSelect bit) stacks one
+    /// label per selection in the widget box and writes every export value to
+    /// `/V` and every matched index to `/I` (`FieldEdit::values` holds the extra
+    /// selections). Signature fields, push buttons and read-only fields are
+    /// refused by type and never get an appearance here. An unmatched value on
+    /// a non-editable choice, or multiple values on a single-select / non-choice
+    /// field, is refused too. A field with no resolvable font in either `/DR`,
+    /// no widget or no usable `/Rect` is not given a fake appearance:
+    /// `/NeedAppearances` stays set so a viewer is asked to rebuild it instead.
+    /// Button appearances already exist (the fill selects `/AS`) and are
+    /// untouched by this flag.
     pub synthesize_appearances: bool,
 }
 
@@ -815,10 +824,13 @@ enum Plan {
     /// A choice value and, when it matched an option, the option's index.
     Choice { value: String, index: Option<usize> },
     /// Several selections on a multi-select choice: export values in `/V`
-    /// order and their `/Opt` indices in `/I` order.
+    /// order and, for each, its `/Opt` index — `None` for an editable typed
+    /// value that matches no option. Such a value is stored in `/V` but has no
+    /// index, so it is deliberately left out of `/I` (an honest representation
+    /// rather than a fabricated index) and drawn as its own typed label.
     ChoiceMulti {
         values: Vec<String>,
-        indices: Vec<usize>,
+        indices: Vec<Option<usize>>,
     },
     /// A button state: `Off` or an existing on-state name.
     Button { on: String },
@@ -1263,8 +1275,9 @@ fn resolve_choice_selection(record: &FieldRecord, raw: &str) -> Option<(String, 
 /// # Malformed Input
 ///
 /// A multi-value edit on a non-multi-select field, or a selection that matches
-/// no `/Opt` entry on a multi-select field, is a typed [`FormError::Refused`];
-/// nothing is partially planned.
+/// no `/Opt` entry on a non-editable multi-select field, is a typed
+/// [`FormError::Refused`]; nothing is partially planned. On an editable
+/// multi-select field an unmatched typed value is kept with no `/I` index.
 fn plan_edit(record: &FieldRecord, edit: &FieldEdit) -> Result<Plan, FormError> {
     let name = record.view.name.as_str();
     let selections = edit.selections();
@@ -1345,16 +1358,21 @@ fn plan_edit(record: &FieldRecord, edit: &FieldEdit) -> Result<Plan, FormError> 
                 let mut values = Vec::with_capacity(selections.len());
                 let mut indices = Vec::with_capacity(selections.len());
                 for selection in selections {
-                    let (value, index) = resolve_choice_selection(record, selection).ok_or_else(
-                        || {
-                            FormError::Refused(format!(
-                                "the choice field {name:?} has no option {selection:?}; it offers {:?}",
-                                record.view.options
-                            ))
-                        },
-                    )?;
-                    values.push(value);
-                    indices.push(index);
+                    if let Some((value, index)) = resolve_choice_selection(record, selection) {
+                        values.push(value);
+                        indices.push(Some(index));
+                    } else if record.editable {
+                        // An editable multi-select carries typed values that are
+                        // not options. Keep the typed text in /V with no /I
+                        // index, and draw that text itself in the appearance.
+                        values.push(selection.to_string());
+                        indices.push(None);
+                    } else {
+                        return Err(FormError::Refused(format!(
+                            "the choice field {name:?} has no option {selection:?}; it offers {:?}",
+                            record.view.options
+                        )));
+                    }
                 }
                 return Ok(Plan::ChoiceMulti { values, indices });
             }
@@ -1443,13 +1461,17 @@ fn apply_plan(
                 b"V",
                 Obj::Array(values.iter().map(|value| text_value(value)).collect()),
             );
+            // Only matched selections have an /Opt index. An editable typed
+            // value has none and is deliberately left out of /I rather than
+            // being given a fabricated index.
             dict_set(
                 pairs,
                 b"I",
                 Obj::Array(
                     indices
                         .iter()
-                        .map(|index| Obj::Int(i64::try_from(*index).unwrap_or(i64::MAX)))
+                        .filter_map(|index| *index)
+                        .map(|index| Obj::Int(i64::try_from(index).unwrap_or(i64::MAX)))
                         .collect(),
                 ),
             );
@@ -1871,11 +1893,31 @@ fn ascii_glyph_name(byte: u8) -> Option<&'static str> {
     }
 }
 
+/// The WinAnsi glyph name assigned to a high byte (0x80–0xFF) by the Annex D
+/// table in [`selis_font::tables`]. This is the glyph [`escape_pdf_literal`]
+/// writes verbatim into the appearance string, so it is the name whose AFM
+/// advance measures what is actually drawn.
+///
+/// # Budget
+///
+/// One constant-table index and a string compare; no allocation.
+///
+/// # Malformed Input
+///
+/// Unassigned codes (`.notdef`) return `None`, so the caller keeps the honest
+/// 0.5 em fallback rather than claiming a width for a glyph that does not
+/// exist.
+fn winansi_glyph_name(byte: u8) -> Option<&'static str> {
+    let name = *selis_font::tables::WinAnsiEncoding.get(usize::from(byte))?;
+    (name != ".notdef").then_some(name)
+}
+
 /// The width of `line` in points at `size`, used to centre / right-quadd it.
-/// For a standard-14 face, every single-byte ASCII glyph is measured with the
-/// exact AFM advance from [`selis_font::standard14`] (the same table the
-/// renderer uses); a character outside one byte draws as `?`, whose width is
-/// measured too. Embedded / non-standard faces and non-ASCII bytes keep the
+/// For a standard-14 face, every single-byte glyph is measured with the exact
+/// AFM advance from [`selis_font::standard14`] (the same table the renderer
+/// uses): ASCII glyphs keep their existing names, and high bytes use the WinAnsi
+/// glyph name from [`winansi_glyph_name`]. A character outside one byte draws
+/// as `?`, whose width is measured too. Embedded / non-standard faces keep the
 /// honest 0.5 em heuristic rather than claiming an exact metric we lack.
 ///
 /// # Budget
@@ -1886,7 +1928,9 @@ fn ascii_glyph_name(byte: u8) -> Option<&'static str> {
 /// # Malformed Input
 ///
 /// A line with no resolvable glyph uses the AFM `question` width (matching
-/// [`escape_pdf_literal`]) so alignment still matches what is drawn.
+/// [`escape_pdf_literal`] for out-of-range characters) or the honest 0.5 em
+/// fallback (for an unassigned high byte) so alignment never claims a metric
+/// the face does not define.
 fn text_width(line: &str, size: f64, std_font: Option<&str>) -> f64 {
     let approx = || line.chars().count() as f64 * size * 0.5;
     let Some(name) = std_font.filter(|name| selis_font::standard14::is_standard(name)) else {
@@ -1905,8 +1949,12 @@ fn text_width(line: &str, size: f64, std_font: Option<&str>) -> f64 {
             std::str::from_utf8(one)
                 .ok()
                 .and_then(|glyph| selis_font::standard14::width(name, glyph))
-        } else {
+        } else if byte.is_ascii() {
             ascii_glyph_name(byte).and_then(|glyph| selis_font::standard14::width(name, glyph))
+        } else {
+            // A high byte is written verbatim to the literal string, so its
+            // WinAnsi glyph name gives the exact advance of what is drawn.
+            winansi_glyph_name(byte).and_then(|glyph| selis_font::standard14::width(name, glyph))
         };
         total += f64::from(advance.unwrap_or(500));
     }
@@ -1995,14 +2043,28 @@ fn text_appearance_content(
     out
 }
 
-/// The form's default `/DA` and its `/DR /Font` name->ref map, from the copied
-/// `/AcroForm` (its refs are already remapped).
+/// The form's default `/DA` and its `/DR /Font` name→object map, from the copied
+/// `/AcroForm` (its refs are already remapped). A font value is kept as-is: an
+/// indirect reference or a direct font dictionary are both valid resource
+/// values, and either can be used for the appearance's font selection and
+/// metrics.
+///
+/// # Budget
+///
+/// One scan of the copied form dictionary; allocations are bounded by the
+/// number of entries in its `/DR /Font` map.
+///
+/// # Malformed Input
+///
+/// A missing or non-dictionary `/AcroForm`, `/DA` or `/DR /Font` yields the
+/// built-in `/DA` and an empty font map, so the caller either falls back or
+/// keeps `/NeedAppearances` rather than guessing a font.
 fn form_defaults(
     objects: &[(u32, Obj)],
     remap: &HashMap<u32, u32>,
     root_num: u32,
     acroform_ref: Option<Ref>,
-) -> (Vec<u8>, Vec<(Bytes, Ref)>) {
+) -> (Vec<u8>, Vec<(Bytes, Obj)>) {
     let acro = match acroform_ref {
         Some(r) => remap
             .get(&r.num)
@@ -2026,8 +2088,8 @@ fn form_defaults(
     if let Some(Obj::Dict(dr)) = dict_get(acro, b"DR") {
         if let Some(Obj::Dict(font_dict)) = dict_get(dr, b"Font") {
             for (name, value) in font_dict {
-                if let Obj::Ref(r) = value {
-                    fonts.push((name.clone(), *r));
+                if matches!(value, Obj::Ref(_) | Obj::Dict(_)) {
+                    fonts.push((name.clone(), value.clone()));
                 }
             }
         }
@@ -2035,7 +2097,10 @@ fn form_defaults(
     (da, fonts)
 }
 
-/// The `/DR /Font` name→ref map from one dictionary, when present.
+/// The `/DR /Font` name→object map from one dictionary, when present. Both
+/// indirect references and direct font dictionaries are kept: ISO 32000-1
+/// allows either as a resource value, and a direct dictionary already has its
+/// internal refs remapped by the copy step.
 ///
 /// # Budget
 ///
@@ -2045,9 +2110,9 @@ fn form_defaults(
 /// # Malformed Input
 ///
 /// A `/DR` that is not a dictionary, a `/Font` that is not a dictionary, or a
-/// font value that is not an indirect reference contributes nothing, so the
-/// caller falls back to the next font map.
-fn dr_fonts_of(dict: &[(Bytes, Obj)]) -> Vec<(Bytes, Ref)> {
+/// font value that is neither an indirect reference nor a dictionary
+/// contributes nothing, so the caller falls back to the next font map.
+fn dr_fonts_of(dict: &[(Bytes, Obj)]) -> Vec<(Bytes, Obj)> {
     let Some(Obj::Dict(dr)) = dict_get(dict, b"DR") else {
         return Vec::new();
     };
@@ -2056,10 +2121,8 @@ fn dr_fonts_of(dict: &[(Bytes, Obj)]) -> Vec<(Bytes, Ref)> {
     };
     fonts
         .iter()
-        .filter_map(|(name, value)| match value {
-            Obj::Ref(reference) => Some((name.clone(), *reference)),
-            _ => None,
-        })
+        .filter(|(_, value)| matches!(value, Obj::Ref(_) | Obj::Dict(_)))
+        .cloned()
         .collect()
 }
 
@@ -2073,14 +2136,15 @@ fn dr_fonts_of(dict: &[(Bytes, Obj)]) -> Vec<(Bytes, Ref)> {
 ///
 /// # Malformed Input
 ///
-/// A `/DR` that is not a dictionary, or a font map whose values are not
-/// indirect references, is ignored so the caller can fall back to the form map.
+/// A `/DR` that is not a dictionary, or a font map whose values are neither
+/// indirect references nor direct dictionaries, is ignored so the caller can
+/// fall back to the form map.
 fn field_dr_fonts(
     objects: &[(u32, Obj)],
     field_num: u32,
     widget_nums: &[u32],
-    form_fonts: &[(Bytes, Ref)],
-) -> Vec<(Bytes, Ref)> {
+    form_fonts: &[(Bytes, Obj)],
+) -> Vec<(Bytes, Obj)> {
     if let Some(field) = object_dict(objects, field_num) {
         let own = dr_fonts_of(field);
         if !own.is_empty() {
@@ -2098,7 +2162,9 @@ fn field_dr_fonts(
     form_fonts.to_vec()
 }
 
-/// The `/BaseFont` name of a font object, used to select standard-14 metrics.
+/// The `/BaseFont` name of a font resource, used to select standard-14 metrics.
+/// The resource is either an indirect reference (resolved in the copied graph)
+/// or a direct font dictionary.
 ///
 /// # Budget
 ///
@@ -2107,12 +2173,19 @@ fn field_dr_fonts(
 ///
 /// # Malformed Input
 ///
-/// A font that is not a dictionary, or has no name `/BaseFont`, yields `None`
-/// and the caller keeps the honest width fallback.
-fn font_base_name(objects: &[(u32, Obj)], font_ref: Ref) -> Option<String> {
-    object_dict(objects, font_ref.num)
-        .and_then(|dict| dict_get(dict, b"BaseFont"))
-        .and_then(as_name)
+/// A font that is neither a reference to a dictionary nor a dictionary itself,
+/// or that has no name `/BaseFont`, yields `None` and the caller keeps the
+/// honest width fallback.
+fn font_base_name(objects: &[(u32, Obj)], font: &Obj) -> Option<String> {
+    let dict = match font {
+        Obj::Ref(reference) => object_dict(objects, reference.num),
+        Obj::Dict(pairs) => Some(pairs),
+        _ => None,
+    };
+    dict?
+        .iter()
+        .find(|(key, _)| key.as_slice() == b"BaseFont")
+        .and_then(|(_, value)| as_name(value))
         .map(|name| String::from_utf8_lossy(name.as_slice()).into_owned())
 }
 
@@ -2143,7 +2216,7 @@ fn synthesize_variable_appearances(
     record: &FieldRecord,
     labels: &[&str],
     default_da: &[u8],
-    dr_fonts: &[(Bytes, Ref)],
+    dr_fonts: &[(Bytes, Obj)],
 ) -> bool {
     let Some(field_ref) = record.field_ref else {
         return false;
@@ -2176,14 +2249,13 @@ fn synthesize_variable_appearances(
     // /DA name resolves to for this field's appearance.
     let widget_nums: Vec<u32> = jobs.iter().map(|job| job.0).collect();
     let fonts = field_dr_fonts(objects, field_num, &widget_nums, dr_fonts);
-    let Some(font_ref) = fonts
+    let Some((_, font_obj)) = fonts
         .iter()
         .find(|(name, _)| name.as_slice() == font.as_slice())
-        .map(|(_, r)| *r)
     else {
         return false;
     };
-    let std_font = font_base_name(objects, font_ref);
+    let std_font = font_base_name(objects, font_obj);
 
     let flags = object_dict(objects, field_num)
         .and_then(|d| dict_get(d, b"Ff"))
@@ -2247,7 +2319,10 @@ fn synthesize_variable_appearances(
                     Bytes::copy_from_slice(b"Resources"),
                     Obj::Dict(vec![(
                         Bytes::copy_from_slice(b"Font"),
-                        Obj::Dict(vec![(Bytes::copy_from_slice(&font), Obj::Ref(font_ref))]),
+                        // Keep the resource value in its original form: a
+                        // reference stays a reference, a direct dictionary is
+                        // copied inline (its internal refs are already remapped).
+                        Obj::Dict(vec![(Bytes::copy_from_slice(&font), font_obj.clone())]),
                     )]),
                 ),
                 (
@@ -2295,7 +2370,7 @@ fn synthesize_text_appearances(
     record: &FieldRecord,
     value: &str,
     default_da: &[u8],
-    dr_fonts: &[(Bytes, Ref)],
+    dr_fonts: &[(Bytes, Obj)],
 ) -> bool {
     synthesize_variable_appearances(
         objects,
@@ -2313,7 +2388,9 @@ fn synthesize_text_appearances(
 /// `/Opt`, while the fill stores the export value in `/V` and the option index
 /// in `/I`; an editable combo whose typed value matches no option draws that
 /// value itself. A multi-select choice draws every selected label as its own
-/// stacked line, with all export values in `/V` and all indices in `/I`.
+/// stacked line, with all export values in `/V` and matched indices in `/I`; an
+/// editable typed value that matched no option is drawn as itself and has no
+/// `/I` index.
 ///
 /// # Budget
 ///
@@ -2322,10 +2399,10 @@ fn synthesize_text_appearances(
 ///
 /// # Malformed Input
 ///
-/// An option index that is absent or outside `/Opt` falls back to the raw
-/// export value rather than drawing a guessed label. Missing fonts, widgets or
-/// boxes make this return false so the caller keeps `/NeedAppearances` instead
-/// of claiming an appearance it did not write.
+/// An option index that is absent, outside `/Opt`, or `None` (a typed value
+/// with no option) falls back to the raw value rather than drawing a guessed
+/// label. Missing fonts, widgets or boxes make this return false so the caller
+/// keeps `/NeedAppearances` instead of claiming an appearance it did not write.
 fn synthesize_choice_appearances(
     objects: &mut Vec<(u32, Obj)>,
     remap: &HashMap<u32, u32>,
@@ -2333,7 +2410,7 @@ fn synthesize_choice_appearances(
     record: &FieldRecord,
     plan: &Plan,
     default_da: &[u8],
-    dr_fonts: &[(Bytes, Ref)],
+    dr_fonts: &[(Bytes, Obj)],
 ) -> bool {
     match plan {
         Plan::Choice { value, index } => synthesize_variable_appearances(
@@ -2352,9 +2429,8 @@ fn synthesize_choice_appearances(
                 .iter()
                 .zip(values)
                 .map(|(index, value)| {
-                    record
-                        .option_labels
-                        .get(*index)
+                    index
+                        .and_then(|i| record.option_labels.get(i))
                         .map_or(value.as_str(), String::as_str)
                 })
                 .collect();
@@ -2581,6 +2657,87 @@ mod tests {
                 13,
                 b"<< /Type /Annot /Subtype /Widget /Parent 12 0 R /Rect [10 160 120 180] /P 3 0 R /DR << /Font << /Helv 9 0 R >> >> >>",
             ),
+        ];
+        build_pdf(objects)
+    }
+
+    /// A one-field form with an editable multi-select list box. `/Opt` has one
+    /// `[export, label]` pair so the matched label differs from the export, and
+    /// one plain option. The Edit flag (bit 18) allows a typed value alongside
+    /// the matched selections.
+    fn editable_multi_fixture() -> Vec<u8> {
+        let objects: &[(u32, &[u8])] = &[
+            (1, b"<< /Type /Catalog /Pages 2 0 R /AcroForm 5 0 R >>"),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+            (
+                3,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> /Contents 4 0 R /Annots [6 0 R] >>",
+            ),
+            (4, b"<< /Length 0 >>\nstream\n\nendstream"),
+            (
+                5,
+                b"<< /Fields [6 0 R] /DA (/Helv 0 Tf 0 g) /DR << /Font << /Helv 7 0 R >> >> >>",
+            ),
+            // 2097152 (MultiSelect) + 262144 (Edit).
+            (
+                6,
+                b"<< /FT /Ch /Ff 2359296 /T (Tags) /V (a) /Opt [[(a) (Alpha)] (b)] /Subtype /Widget /Rect [10 70 130 130] /P 3 0 R >>",
+            ),
+            (7, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"),
+        ];
+        build_pdf(objects)
+    }
+
+    /// Two right-quadded fields whose fonts are **direct dictionaries** rather
+    /// than references. `FormDict` uses the form-level `/DR`, while `FieldDict`
+    /// overrides it with a field-level `/DR`. Both draw `WAVE` at 12 pt in a
+    /// 110 pt box so the exact AFM widths give different x origins.
+    fn inline_dict_font_fixture() -> Vec<u8> {
+        let objects: &[(u32, &[u8])] = &[
+            (1, b"<< /Type /Catalog /Pages 2 0 R /AcroForm 5 0 R >>"),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+            (
+                3,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> /Contents 4 0 R /Annots [6 0 R 7 0 R] >>",
+            ),
+            (4, b"<< /Length 0 >>\nstream\n\nendstream"),
+            (
+                5,
+                b"<< /Fields [6 0 R 7 0 R] /DA (/Helv 12 Tf 0 g) /DR << /Font << /Helv << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >> >>",
+            ),
+            (
+                6,
+                b"<< /FT /Ch /T (FormDict) /V (w) /Opt [[(w) (WAVE)]] /Q 2 /DA (/Helv 12 Tf 0 g) /Subtype /Widget /Rect [10 70 120 90] /P 3 0 R >>",
+            ),
+            (
+                7,
+                b"<< /FT /Ch /T (FieldDict) /V (w) /Opt [[(w) (WAVE)]] /Q 2 /DA (/Helv 12 Tf 0 g) /DR << /Font << /Helv << /Type /Font /Subtype /Type1 /BaseFont /Courier >> >> >> /Subtype /Widget /Rect [10 100 120 120] /P 3 0 R >>",
+            ),
+        ];
+        build_pdf(objects)
+    }
+
+    /// A right-quadded choice whose display label carries a high WinAnsi byte:
+    /// `W\xe9` ("Wé"). The byte is written verbatim into the appearance string,
+    /// so the exact Helvetica width of WinAnsi `eacute` must drive the x origin.
+    fn winansi_metrics_fixture() -> Vec<u8> {
+        let objects: &[(u32, &[u8])] = &[
+            (1, b"<< /Type /Catalog /Pages 2 0 R /AcroForm 5 0 R >>"),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+            (
+                3,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> /Contents 4 0 R /Annots [6 0 R] >>",
+            ),
+            (4, b"<< /Length 0 >>\nstream\n\nendstream"),
+            (
+                5,
+                b"<< /Fields [6 0 R] /DA (/Helv 12 Tf 0 g) /DR << /Font << /Helv 7 0 R >> >> >>",
+            ),
+            (
+                6,
+                b"<< /FT /Ch /T (HiByte) /V (w) /Opt [[(w) (W\xe9)]] /Q 2 /DA (/Helv 12 Tf 0 g) /Subtype /Widget /Rect [10 70 120 90] /P 3 0 R >>",
+            ),
+            (7, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"),
         ];
         build_pdf(objects)
     }
@@ -3040,15 +3197,37 @@ mod tests {
             return None;
         };
         let (_, value) = fonts.iter().find(|(name, _)| name.as_slice() == b"Helv")?;
-        let Obj::Ref(reference) = value else {
-            return None;
-        };
-        let Obj::Dict(font) = resolve_ref(bytes, &doc, *reference, &budget, &mut g).ok()? else {
-            return None;
+        let font: Vec<(Bytes, Obj)> = match value {
+            Obj::Ref(reference) => {
+                match resolve_ref(bytes, &doc, *reference, &budget, &mut g).ok()? {
+                    Obj::Dict(d) => d,
+                    _ => return None,
+                }
+            }
+            Obj::Dict(d) => d.clone(),
+            _ => return None,
         };
         dict_get(&font, b"BaseFont")
             .and_then(as_name)
             .map(|name| String::from_utf8_lossy(name.as_slice()).into_owned())
+    }
+
+    /// True when the `/Helv` value in an appearance's `/Resources /Font` is a
+    /// direct dictionary (rather than a reference) read back from the bytes.
+    fn appearance_font_is_inline_dict(bytes: &[u8], field_name: &str) -> bool {
+        let (dict, _) = widget_appearances_of(bytes, field_name)
+            .into_iter()
+            .next()
+            .expect("appearance");
+        let Some(Obj::Dict(resources)) = dict_get(&dict, b"Resources") else {
+            return false;
+        };
+        let Some(Obj::Dict(fonts)) = dict_get(resources, b"Font") else {
+            return false;
+        };
+        fonts
+            .iter()
+            .any(|(name, value)| name.as_slice() == b"Helv" && matches!(value, Obj::Dict(_)))
     }
 
     #[test]
@@ -3442,5 +3621,178 @@ mod tests {
         }
         let acro = acroform_of(&bytes);
         assert_ne!(dict_get(&acro, b"NeedAppearances"), Some(&Obj::Bool(true)));
+    }
+
+    /// An editable multi-select accepts a typed value that is not an option:
+    /// the value is stored in the `/V` array with no `/I` index, and the
+    /// appearance draws the typed text as its own stacked label.
+    #[test]
+    fn editable_multi_select_draws_unmatched_typed_value() {
+        let fixture = editable_multi_fixture();
+        let budget = test_budget();
+        let mut g = budget.guard();
+        let opts = FillFormsOptions {
+            fields: vec![FieldEdit {
+                name: "Tags".to_string(),
+                value: "a".to_string(), // matched export -> "Alpha"
+                values: vec!["custom".to_string()], // typed, matches no option
+            }],
+            synthesize_appearances: true,
+        };
+        let (bytes, info) = fill_form(&fixture, &opts, &budget, &mut g).expect("fill");
+        assert_eq!(info.filled, 1);
+
+        // The re-opened bytes report both selections as a multi-value array.
+        let tags = report_of(&bytes)
+            .fields
+            .into_iter()
+            .find(|field| field.name == "Tags")
+            .expect("Tags field");
+        assert!(tags.multi_select);
+        assert!(tags.editable);
+        assert_eq!(tags.values, ["a", "custom"]);
+        assert_eq!(
+            tags.value, None,
+            "a multi-valued choice has no single value"
+        );
+
+        // /V holds both export values; /I holds only the matched index.
+        let field = field_dict_of(&bytes, "Tags");
+        assert_eq!(
+            dict_get(&field, b"V"),
+            Some(&Obj::Array(vec![text_value("a"), text_value("custom")]))
+        );
+        assert_eq!(
+            dict_get(&field, b"I"),
+            Some(&Obj::Array(vec![Obj::Int(0)])),
+            "the unmatched typed value has no /I index"
+        );
+
+        // One appearance draws the matched label and the typed value as two
+        // stacked lines.
+        let appearances = widget_appearances_of(&bytes, "Tags");
+        assert_eq!(appearances.len(), 1);
+        let content = String::from_utf8_lossy(&appearances[0].1);
+        assert!(content.contains("/Tx BMC"), "variable text: {content}");
+        assert!(content.contains("(Alpha) Tj"), "matched label: {content}");
+        assert!(content.contains("(custom) Tj"), "typed value: {content}");
+        let ys: Vec<f64> = content
+            .lines()
+            .filter(|line| line.trim_end().ends_with(" Td"))
+            .filter_map(|line| {
+                line.trim_end()
+                    .trim_end_matches(" Td")
+                    .split_whitespace()
+                    .nth(1)
+                    .and_then(|n| n.parse::<f64>().ok())
+            })
+            .collect();
+        assert_eq!(ys.len(), 2, "one Td per value: {content}");
+        assert!(ys[0] > ys[1], "labels stack downwards: {ys:?}");
+
+        let acro = acroform_of(&bytes);
+        assert_ne!(dict_get(&acro, b"NeedAppearances"), Some(&Obj::Bool(true)));
+    }
+
+    /// Direct font dictionaries in `/DR /Font` resolve at both the form and
+    /// field level: the resource is carried inline into the appearance, and the
+    /// `/BaseFont` drives the same exact AFM metrics a reference would.
+    #[test]
+    fn inline_dictionary_fonts_resolve_from_form_and_field_dr() {
+        let (bytes, _) = fill_synth(
+            &inline_dict_font_fixture(),
+            &[("FormDict", "w"), ("FieldDict", "w")],
+        );
+
+        // Form-level inline dictionary: Helvetica metrics, inline resource.
+        let form_data = widget_appearances_of(&bytes, "FormDict")
+            .into_iter()
+            .next()
+            .expect("one appearance")
+            .1;
+        let content = String::from_utf8_lossy(&form_data);
+        let (x, _) = first_td(&content);
+        assert!(
+            (x - 72.66).abs() < 0.01,
+            "Helvetica inline dictionary metrics: x={x}, {content}"
+        );
+        assert_eq!(
+            appearance_font_base(&bytes, "FormDict").as_deref(),
+            Some("Helvetica")
+        );
+        assert!(
+            appearance_font_is_inline_dict(&bytes, "FormDict"),
+            "the form's direct font dictionary is carried into the /AP resource"
+        );
+
+        // Field-level inline dictionary overrides the form: Courier metrics.
+        let field_data = widget_appearances_of(&bytes, "FieldDict")
+            .into_iter()
+            .next()
+            .expect("one appearance")
+            .1;
+        let content = String::from_utf8_lossy(&field_data);
+        let (x, _) = first_td(&content);
+        assert!(
+            (x - 79.2).abs() < 0.01,
+            "Courier inline dictionary metrics: x={x}, {content}"
+        );
+        assert_eq!(
+            appearance_font_base(&bytes, "FieldDict").as_deref(),
+            Some("Courier")
+        );
+        assert!(
+            appearance_font_is_inline_dict(&bytes, "FieldDict"),
+            "the field's direct font dictionary is carried into the /AP resource"
+        );
+    }
+
+    /// A high WinAnsi byte is written verbatim to the appearance string, so its
+    /// AFM advance (not the 0.5 em heuristic) must position a right-quadded
+    /// label. The expected x is computed from the font crate's own AFM widths.
+    #[test]
+    fn winansi_high_byte_metrics_drive_exact_quadding() {
+        let (bytes, _) = fill_synth(&winansi_metrics_fixture(), &[("HiByte", "w")]);
+        let (dict, data) = widget_appearances_of(&bytes, "HiByte")
+            .into_iter()
+            .next()
+            .expect("one appearance");
+        assert!(data.contains(&0xe9), "the high byte is drawn verbatim");
+
+        let content = String::from_utf8_lossy(&data);
+        let (x, _) = first_td(&content);
+        let upper_w = f64::from(selis_font::standard14::width("Helvetica", "W").expect("W width"));
+        let eacute =
+            f64::from(selis_font::standard14::width("Helvetica", "eacute").expect("eacute width"));
+        let text_width = (upper_w + eacute) / 1000.0 * 12.0;
+        let expected = 110.0 - 2.0 - text_width;
+        assert!(
+            (x - expected).abs() < 0.01,
+            "exact WinAnsi width, not the 0.5 em guess: x={x}, expected {expected}, {content}"
+        );
+        assert!(
+            (expected - 96.0).abs() > 1.0,
+            "the 0.5 em guess must differ from the exact metric"
+        );
+        assert_eq!(
+            appearance_font_base(&bytes, "HiByte").as_deref(),
+            Some("Helvetica")
+        );
+        assert_eq!(
+            dict_get(&dict, b"Subtype")
+                .and_then(as_name)
+                .as_ref()
+                .map(Bytes::as_slice),
+            Some(&b"Form"[..])
+        );
+    }
+
+    /// Unassigned WinAnsi codes return no glyph name, so the width fallback is
+    /// honest rather than a fabricated metric.
+    #[test]
+    fn winansi_unassigned_byte_has_no_glyph_name() {
+        assert_eq!(winansi_glyph_name(0xe9), Some("eacute"));
+        assert_eq!(winansi_glyph_name(0x80), Some("Euro"));
+        assert_eq!(winansi_glyph_name(0x81), None, ".notdef has no glyph");
     }
 }
