@@ -300,7 +300,7 @@ pub fn save_incremental(
 
     // Read-back verification (EDIT.03 DoD b/c/d): output parses, prefix intact,
     // materialised model matches the expected post-mutation state.
-    let prefix_preserved = out.len() >= src.len() && out[..src.len()] == *src;
+    let prefix_preserved = out.get(..src.len()) == Some(src);
     let reopened = materialise(&out, budget, g)?;
     if reopened != expected {
         return Err(err!(

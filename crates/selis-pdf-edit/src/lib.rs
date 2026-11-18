@@ -38,14 +38,17 @@
 //!   does not (a letter the original run never used) is refused rather than
 //!   drawn with a wrong or missing glyph.
 //!
-//! It never touches the filesystem or the network: it takes the bytes the
-//! caller hands it and returns the bytes the caller hands out.
+//! The edit itself never touches the filesystem or the network: it takes the
+//! bytes the caller hands it and returns the bytes the caller hands out. The
+//! one explicit exception is [`save`] (SL-5.EDIT.04): it takes those returned
+//! bytes and commits them to a path safely, verifying before replacing.
 
 #![forbid(unsafe_code)]
 
 mod font;
 pub mod incremental;
 pub mod journal;
+pub mod save;
 
 #[cfg(test)]
 mod incremental_tests;
@@ -54,6 +57,8 @@ mod journal_tests;
 #[cfg(test)]
 mod property_tests;
 mod reflow;
+#[cfg(test)]
+mod save_tests;
 
 use std::collections::BTreeMap;
 use std::fmt;

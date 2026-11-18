@@ -1,12 +1,22 @@
 //! Tests for the object-level incremental writer (EDIT.03).
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+
 use selis_bytes::Bytes;
 use selis_pdf_cos::Obj;
 use selis_sandbox::Budget;
 
 use crate::incremental::{apply, materialise, save_incremental, ObjectMutation};
 
-fn base_pdf() -> Vec<u8> {
+pub(crate) fn base_pdf() -> Vec<u8> {
     // 1=catalog, 2=pages, 3=page, 4=contents, 5=info.
     let objects: Vec<(u32, &str)> = vec![
         (1, "<< /Type /Catalog /Pages 2 0 R >>"),
