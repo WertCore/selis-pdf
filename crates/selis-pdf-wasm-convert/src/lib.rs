@@ -251,9 +251,12 @@ pub unsafe extern "C" fn selis_convert_run(
     let budget = Budget::unlimited();
     let mut guard = budget.guard_with(&FixedClock(0), CancelToken::new());
 
+    // The convert C ABI exposes no font choice; the chunk is built without the
+    // bundled TTFs, so this field stays `None` and output keeps standard-14.
     let opts = Options {
         page_size: ps,
         title,
+        ..Options::default()
     };
 
     let bytes = match format {

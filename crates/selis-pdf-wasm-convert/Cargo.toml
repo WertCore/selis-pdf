@@ -18,5 +18,9 @@ workspace = true
 selis-error = { workspace = true }
 selis-bytes = { workspace = true }
 selis-sandbox = { workspace = true }
-selis-pdf-convert = { workspace = true }
+# The convert C ABI has no font-choice parameter and the chunk is size-gated;
+# keep the bundled Liberation TTFs out of this build. Embedding requested via
+# the Rust `Options` here fails loudly (ConvertUnsupported) rather than growing
+# the linked module.
+selis-pdf-convert = { workspace = true, default-features = false }
 selis-pdf-cos = { workspace = true }

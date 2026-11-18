@@ -5,8 +5,10 @@
 //! renderer. It converts Markdown and an HTML subset into paginated PDF bytes
 //! using the standard-14 base fonts (measured with [`selis_font::standard14`]
 //! metrics, encoded in WinAnsiEncoding) and the full-document writer
-//! (SL-1A.WRITE.01). This narrows the inbound-fidelity gap to Aspose; it does
-//! not make Selis a fidelity renderer.
+//! (SL-1A.WRITE.01). Callers may opt into **TrueType font embedding** via
+//! [`Options::embed_font`]: a bundled Liberation family is subset to the glyphs
+//! actually used and written as a real `/FontFile2` program. This narrows the
+//! inbound-fidelity gap to Aspose; it does not make Selis a fidelity renderer.
 //!
 //! # Supported Markdown subset
 //!
@@ -181,11 +183,32 @@
 //! cell. Text that cannot be represented in WinAnsiEncoding is replaced with
 //! `?`; wrapping is greedy word-wrap measured from the exact AFM widths.
 //!
+//! # Optional TrueType embedding
+//!
+//! Setting `Options::embed_font` to [`FontChoice::Sans`] or
+//! [`FontChoice::Serif`] replaces the four text faces (body, heading, italic,
+//! bold-italic) with subset TrueType fonts from the matching bundled Liberation
+//! family. Each face gets a real `/FontFile2` program (subset through
+//! `selis_font::subset_ttf` to the WinAnsi bytes actually shown), a
+//! `/FontDescriptor`, 256 `/Widths` from the metric-compatible AFM and
+//! `/Encoding /WinAnsiEncoding`. The default stays standard-14: no font program
+//! is written unless embedding is requested.
+//!
+//! Because Liberation Sans is the engine's standard-14 substitute for
+//! Helvetica *and* is metrically compatible with it, embedding the Sans family
+//! is pixel-identical to the default output in read-back render tests. The
+//! Serif family changes the outlines (and is documented as such). The
+//! monospaced code face has no Liberation Sans/Serif equivalent and stays a
+//! standard-14 `/Type1` Courier font even when embedding is on.
+//!
 //! # Still out of scope (honest gaps)
 //!
-//! No font embedding or subsetting (only the standard-14 base fonts). Image
-//! embedding is limited to the JPEG/PNG/GIF/WebP/SVG data URIs and the single
-//! `url(...)` `background-image` described above; remote images, arbitrary CSS
+//! Font embedding (when requested) is TrueType-only — CFF/Type1/CID faces and
+//! the wasm convert chunk (its C ABI has no font choice and its linked size is
+//! gated) stay on the standard-14 base fonts; a wasm request fails with a typed
+//! `ConvertUnsupported`, never a silent fallback. Image embedding is limited to
+//! the JPEG/PNG/GIF/WebP/SVG data URIs and the single `url(...)`
+//! `background-image` described above; remote images, arbitrary CSS
 //! backgrounds, images embedded in DOCX / XLSX / PPTX / EPUB, and inline images
 //! inside a Markdown paragraph are still not embedded. Animated GIFs are
 //! flattened to their composited final frame (no timing, no disposal 2/3). The SVG
@@ -208,11 +231,14 @@
 use selis_error::Result;
 use selis_sandbox::{Budget, BudgetGuard};
 
+pub use font_embed::FontChoice;
+
 mod blocks;
 mod csv;
 mod docx;
 mod emit;
 mod epub;
+mod font_embed;
 mod html;
 mod image;
 mod latex;
@@ -252,6 +278,23 @@ pub struct Options {
     pub page_size: PageSize,
     /// The document title recorded in the `/Info` dictionary, if any.
     pub title: Option<String>,
+    /// Embed a bundled Liberation TrueType family instead of referencing the
+    /// standard-14 base fonts. `None` (the default) keeps the documented
+    /// standard-14 behaviour; `Some` writes real subset `/FontFile2` programs
+    /// for the body, heading, italic and bold-italic faces. The monospaced code
+    /// face stays standard-14. See [`FontChoice`].
+    ///
+    /// # Budget
+    ///
+    /// Subsetting charges the produced font bytes against the caller's
+    /// `BudgetGuard`; the emitted streams are charged by the writer.
+    ///
+    /// # Malformed Input
+    ///
+    /// A request in a build compiled without the bundled faces (the wasm
+    /// convert chunk) is refused with a typed `ConvertUnsupported` error —
+    /// never a silent standard-14 fallback.
+    pub embed_font: Option<FontChoice>,
 }
 
 /// Convert CSV (comma-separated, quoted-field aware) to PDF bytes.
@@ -279,9 +322,13 @@ pub fn csv_to_pdf(
 
 /// Convert Markdown (the documented subset) to PDF bytes.
 ///
+/// With `opts.embed_font` set, the four text faces carry subset `/FontFile2`
+/// TrueType programs instead of standard-14 base fonts; see the module docs.
+///
 /// # Budget
 ///
-/// Charges the generated object graph and output bytes against `budget`.
+/// Charges the generated object graph, subset font bytes and output bytes
+/// against `budget`.
 ///
 /// # Malformed Input
 ///
@@ -308,9 +355,13 @@ pub fn markdown_to_pdf(
 
 /// Convert an HTML subset (the documented subset) to PDF bytes.
 ///
+/// With `opts.embed_font` set, the four text faces carry subset `/FontFile2`
+/// TrueType programs instead of standard-14 base fonts; see the module docs.
+///
 /// # Budget
 ///
-/// Charges the generated object graph and output bytes against `budget`.
+/// Charges the generated object graph, subset font bytes and output bytes
+/// against `budget`.
 ///
 /// # Malformed Input
 ///
@@ -641,6 +692,7 @@ mod tests {
         let opts = Options {
             page_size: PageSize::Letter,
             title: Some("Round-trip".to_string()),
+            ..Options::default()
         };
         let bytes = markdown_to_pdf(md, &opts, &Budget::unlimited(), &mut guard()).expect("write");
         assert!(bytes.starts_with(b"%PDF-1.4"));
@@ -2315,5 +2367,279 @@ mod fidelity {
             "{sheet}<p style=\"background-size:6pt 3pt\">bg</p>"
         ));
         assert_eq!(first_image_rect(&stream(&override_bytes)), (6.0, 3.0));
+    }
+}
+
+/// Read-back evidence for inbound font embedding. Every assertion inspects the
+/// object graph or the rasterised page of a PDF that has been re-opened with
+/// the engine's own reader — never the converter's source string.
+#[cfg(all(test, feature = "embed-fonts"))]
+mod font_embedding {
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects
+    )]
+
+    use super::*;
+    use selis_bytes::Bytes;
+    use selis_pdf_cos::Obj;
+    use selis_sandbox::{CancelToken, FixedClock};
+
+    fn guard() -> BudgetGuard<'static> {
+        Budget::unlimited().guard_with(&FixedClock(0), CancelToken::new())
+    }
+
+    fn from_md(md: &str, choice: FontChoice) -> Vec<u8> {
+        let opts = Options {
+            embed_font: Some(choice),
+            ..Options::default()
+        };
+        markdown_to_pdf(md, &opts, &Budget::unlimited(), &mut guard()).expect("convert")
+    }
+
+    fn get<'a>(pairs: &'a [(Bytes, Obj)], key: &[u8]) -> Option<&'a Obj> {
+        pairs
+            .iter()
+            .find(|(k, _)| k.as_slice() == key)
+            .map(|(_, v)| v)
+    }
+
+    fn is_name(v: &Obj, name: &[u8]) -> bool {
+        matches!(v, Obj::Name(n) if n.as_slice() == name)
+    }
+
+    /// The `/TrueType` font dictionaries in the re-opened object graph.
+    fn true_type_fonts(bytes: &[u8]) -> Vec<(u32, Vec<(Bytes, Obj)>)> {
+        crate::testkit::resolved_objects(bytes)
+            .into_iter()
+            .filter_map(|(num, obj)| match obj {
+                Obj::Dict(pairs)
+                    if get(&pairs, b"Subtype").is_some_and(|v| is_name(v, b"TrueType")) =>
+                {
+                    Some((num, pairs))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn rasterize(bytes: &[u8]) -> Vec<u8> {
+        let budget = Budget::unlimited();
+        let session = selis_pdf_engine::Session::open(bytes.to_vec(), &budget, &FixedClock(0))
+            .expect("engine re-open");
+        let mut g = guard();
+        session
+            .render_page_rgba(0, 72.0, &budget, &mut g)
+            .expect("rasterize")
+            .rgba
+    }
+
+    #[test]
+    fn markdown_with_sans_embedding_writes_subset_fontfile2_programs() {
+        let bytes = from_md(
+            "# Title\n\nHello **bold** and *italic* world.\n",
+            FontChoice::Sans,
+        );
+        crate::testkit::opens_with_page_count(&bytes, 1);
+        let fonts = true_type_fonts(&bytes);
+        assert_eq!(fonts.len(), 4, "four embedded faces expected: {fonts:?}");
+        let objects = crate::testkit::resolved_objects(&bytes);
+        let mut base_fonts = Vec::new();
+        for (_, pairs) in &fonts {
+            assert!(is_name(get(pairs, b"Type").expect("Type"), b"Font"));
+            assert!(
+                is_name(
+                    get(pairs, b"Encoding").expect("Encoding"),
+                    b"WinAnsiEncoding"
+                ),
+                "embedded faces must keep WinAnsiEncoding"
+            );
+            let Obj::Name(name) = get(pairs, b"BaseFont").expect("BaseFont") else {
+                panic!("BaseFont is not a name");
+            };
+            base_fonts.push(String::from_utf8_lossy(name.as_slice()).into_owned());
+            let Obj::Array(widths) = get(pairs, b"Widths").expect("Widths") else {
+                panic!("Widths is not an array");
+            };
+            assert_eq!(widths.len(), 256, "one width per WinAnsi byte");
+            let Obj::Dict(desc) = get(pairs, b"FontDescriptor").expect("FontDescriptor") else {
+                panic!("FontDescriptor is not a dictionary");
+            };
+            assert!(is_name(
+                get(desc, b"Type").expect("descriptor Type"),
+                b"FontDescriptor"
+            ));
+            assert!(get(desc, b"FontBBox").is_some());
+            assert!(get(desc, b"ItalicAngle").is_some());
+            let Obj::Ref(r) = get(desc, b"FontFile2").expect("FontFile2") else {
+                panic!("FontFile2 is not a reference");
+            };
+            let (_, program) = objects
+                .iter()
+                .find(|(num, _)| *num == r.num)
+                .expect("font program object");
+            let Obj::Stream { dict, data } = program else {
+                panic!("FontFile2 is not a stream");
+            };
+            assert_eq!(
+                get(dict, b"Length1"),
+                Some(&Obj::Int(i64::try_from(data.len()).expect("len"))),
+                "Length1 must record the uncompressed program length"
+            );
+            // The read-back program really parses as TrueType and is a subset:
+            // a handful of glyphs, a fraction of the 139 KB Liberation source.
+            let glyphs = selis_font::glyph_count(data).expect("subset parses as TrueType");
+            assert!(
+                (1..24).contains(&glyphs),
+                "expected a small subset, got {glyphs} glyphs"
+            );
+            assert!(
+                data.len() < 40_000,
+                "subset {} bytes should be far smaller than the source",
+                data.len()
+            );
+        }
+        base_fonts.sort();
+        assert_eq!(
+            base_fonts,
+            vec![
+                "LiberationSans-Bold",
+                "LiberationSans-BoldItalic",
+                "LiberationSans-Italic",
+                "LiberationSans-Regular",
+            ]
+        );
+        // The monospaced code face has no bundled sans/serif equivalent.
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("/BaseFont /Courier"));
+        assert_eq!(
+            text.matches("/Subtype /Type1").count(),
+            1,
+            "only Courier stays base14"
+        );
+    }
+
+    #[test]
+    fn html_with_serif_embedding_writes_serif_fontfile2_programs() {
+        let opts = Options {
+            embed_font: Some(FontChoice::Serif),
+            ..Options::default()
+        };
+        let bytes = html_to_pdf(
+            "<h1>Report</h1><p>Serif body text with a <b>bold</b> word.</p>",
+            &opts,
+            &Budget::unlimited(),
+            &mut guard(),
+        )
+        .expect("convert");
+        crate::testkit::opens_with_page_count(&bytes, 1);
+        let fonts = true_type_fonts(&bytes);
+        assert_eq!(fonts.len(), 4);
+        for (_, pairs) in &fonts {
+            let Obj::Name(name) = get(pairs, b"BaseFont").expect("BaseFont") else {
+                panic!("BaseFont is not a name");
+            };
+            assert!(
+                name.as_slice().starts_with(b"LiberationSerif-"),
+                "unexpected serif face: {}",
+                String::from_utf8_lossy(name.as_slice())
+            );
+        }
+    }
+
+    #[test]
+    fn default_conversion_keeps_standard14_and_no_font_program() {
+        let bytes = from_md_default("Hello");
+        assert!(true_type_fonts(&bytes).is_empty());
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            !text.contains("/FontFile2"),
+            "default must not embed a program"
+        );
+        assert_eq!(
+            text.matches("/Subtype /Type1").count(),
+            5,
+            "all five base14 faces"
+        );
+    }
+
+    fn from_md_default(md: &str) -> Vec<u8> {
+        markdown_to_pdf(md, &Options::default(), &Budget::unlimited(), &mut guard())
+            .expect("convert")
+    }
+
+    #[test]
+    fn embedded_subset_text_round_trips_through_the_engine() {
+        let bytes = from_md("Hello world", FontChoice::Sans);
+        let budget = Budget::unlimited();
+        let session = selis_pdf_engine::Session::open(bytes.clone(), &budget, &FixedClock(0))
+            .expect("engine re-open");
+        let mut g = guard();
+        // Recover the shown WinAnsi codes from the re-opened content stream and
+        // decode each through the engine using the F1 resource the stream uses.
+        let stream = crate::testkit::content_stream(&bytes);
+        let content = String::from_utf8_lossy(&stream);
+        let shown = content
+            .lines()
+            .find_map(|line| line.strip_prefix('(').and_then(|s| s.strip_suffix(") Tj")))
+            .expect("shown text");
+        let font = Bytes::copy_from_slice(b"F1");
+        let decoded: String = shown
+            .bytes()
+            .map(|byte| {
+                let uni = session
+                    .text_unicode(0, &font, u16::from(byte), &budget, &mut g)
+                    .expect("embedded face decodes the code");
+                char::from_u32(uni).expect("valid unicode")
+            })
+            .collect();
+        assert_eq!(decoded, "Hello world");
+    }
+
+    #[test]
+    fn sans_embedded_output_is_pixel_identical_to_standard14_output() {
+        let md = "# Title\n\nHello regular, **bold**, *italic* words.\n\nA second line.\n";
+        let base = rasterize(&from_md_default(md));
+        let embedded = rasterize(&from_md(md, FontChoice::Sans));
+        assert_eq!(base.len(), embedded.len());
+        assert!(
+            base.iter().zip(embedded.iter()).all(|(a, b)| a == b),
+            "embedding Liberation Sans (the standard-14 substitute) must be pixel-identical"
+        );
+        // The page is not blank: both rasters carry real ink.
+        assert!(base.iter().any(|&v| v < 200), "standard-14 page is blank");
+    }
+
+    #[test]
+    fn serif_embedding_renders_ink_with_the_known_face_difference() {
+        let md = "Serif body text with several words.";
+        let base = rasterize(&from_md_default(md));
+        let serif = rasterize(&from_md(md, FontChoice::Serif));
+        assert_ne!(
+            base, serif,
+            "a serif face must visibly differ from the sans standard-14 substitute"
+        );
+        assert!(base.iter().any(|&v| v < 200), "standard-14 page is blank");
+        assert!(serif.iter().any(|&v| v < 200), "serif page is blank");
+    }
+
+    #[test]
+    fn embedding_charges_the_budget() {
+        let budget = Budget {
+            bytes: 64,
+            ..Budget::unlimited()
+        };
+        let mut g = budget.guard_with(&FixedClock(0), CancelToken::new());
+        let opts = Options {
+            embed_font: Some(FontChoice::Sans),
+            ..Options::default()
+        };
+        assert!(
+            markdown_to_pdf("Hello", &opts, &budget, &mut g).is_err(),
+            "a 64-byte budget cannot hold a subset TrueType program"
+        );
     }
 }
