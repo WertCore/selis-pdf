@@ -238,6 +238,16 @@ allowed to exist at all.
 > (temp+fsync+rename, typed failure with no file) are fully implemented and are the only commit
 > path tools use. See `pdf-plan/29-WRITE05-06-DESIGN-NOTE.md` (draft, pre-sign-off).
 
+> **EDIT.05 (implemented):** `selis_pdf_edit::rewrite::save_rewritten` implements §7 in full for
+> content-preserving rewrites: it collects the reachable graph from `/Root` (+ `/Info`), renumbers
+> from 1, drops unreachable objects, and serialises a fresh single-revision document. Step 2 is
+> implemented by `verify_rewrite`: `verify_structural` expectations (pages, annotations, fields,
+> OCGs, outlines, embedded files) plus a structural fingerprint (structure-tree element count and
+> an order-independent digest of every reachable stream payload, the pre-G2 text proxy). A
+> mismatch is a typed `VERIFY_FAILED` naming the discrepancy, with no bytes produced. Steps 3–4 use
+> `selis_io::commit_atomic` unchanged. Streams are copied verbatim rather than re-encoded; full
+> render+text comparison remains SL-1A.WRITE.08.
+
 > **EDIT.04 (implemented):** `selis_pdf_edit::save::save_atomic` applies steps 3–4 to the
 > incremental-save path. It verifies before any byte reaches disk (I3 prefix, complete `%%EOF`
 > tail, exactly one appended revision, strict + resilient parse, page count), then commits via

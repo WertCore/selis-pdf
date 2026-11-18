@@ -27,3 +27,9 @@ selis-pdf-doc = { workspace = true }
 selis-pdf-filter = { workspace = true }
 selis-log = { workspace = true }
 md-5 = { workspace = true }
+
+[dev-dependencies]
+# Read-back verification for the full-rewrite writer (EDIT.05): open the
+# rewritten bytes with the real engine in tests. A dev-dependency cycle with
+# selis-pdf-engine is intentional and permitted by Cargo.
+selis-pdf-engine = { workspace = true }

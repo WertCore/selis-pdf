@@ -48,6 +48,7 @@
 mod font;
 pub mod incremental;
 pub mod journal;
+pub mod rewrite;
 pub mod save;
 
 #[cfg(test)]
@@ -57,6 +58,8 @@ mod journal_tests;
 #[cfg(test)]
 mod property_tests;
 mod reflow;
+#[cfg(test)]
+mod rewrite_tests;
 #[cfg(test)]
 mod save_tests;
 

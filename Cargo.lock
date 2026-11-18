@@ -1829,6 +1829,7 @@ dependencies = [
  "selis-log",
  "selis-pdf-cos",
  "selis-pdf-doc",
+ "selis-pdf-engine",
  "selis-pdf-filter",
  "selis-sandbox",
 ]

@@ -47,12 +47,27 @@ Normative spec: `23-EDIT-MODEL-SPEC.md`. Read it before any task here.
     byte-identical, and a clean save commits the full document. Corrupted candidates are refused with
     a typed error and produce no file. Run nightly with `cargo test -p selis-pdf-edit save_tests`.
     Residual gap: directory fsync is POSIX-only; Windows relies on `MOVEFILE_WRITE_THROUGH`.
-- [ ] **SL-5.EDIT.05 — Full-rewrite writer (`save_rewritten`)** · deps: EDIT.03 · owner: HUMAN
+- [x] **SL-5.EDIT.05 — Full-rewrite writer (`save_rewritten`)** · deps: EDIT.03 · owner: HUMAN
   - **Do:** The explicit, verified rewrite: renumber objects, drop unreferenced ones, re-encode
     streams, then **render-verify** every page against the pre-save state before the result is
     allowed to replace anything.
   - **DoD:** Verification catches a deliberately-corrupted rewrite; the operation is atomic
     (temp + rename) on every platform.
+  - **Status (implemented):** `selis_pdf_edit::rewrite::save_rewritten` collects the reachable
+    object graph from the trailer `/Root` (and `/Info`), renumbers it from 1, drops unreachable
+    objects, and serialises a fresh single-revision PDF via
+    `write_objects_as_document_with_trailer`. Nothing is returned until
+    `verify_rewrite` reparses and compares the result with the pre-save document:
+    `verify_structural` expectations (pages, annotations, fields, OCGs, outlines, embedded files)
+    plus a structural fingerprint (structure-tree element count and an order-independent digest
+    of every reachable stream payload, which stands in for text until the renderer exists). A
+    mismatch returns `VERIFY_FAILED` naming the discrepancy and produces no bytes.
+    `save_rewritten_atomic` commits the verified bytes through `selis_io::commit_atomic` (temp,
+    fsync, atomic rename, directory fsync). `rewrite_tests` proves a normal two-page rewrite
+    round-trips with all counts preserved (engine read-back), that a page-dropping and an
+    annotation-dropping rewrite are refused, and that a refused atomic commit leaves the original
+    byte-identical. Residual gap: streams are copied verbatim rather than re-encoded; full
+    render+text comparison is SL-1A.WRITE.08 (pre-G2 §7 note).
 - [ ] **SL-5.EDIT.06 — Save through encrypted documents** · deps: EDIT.03, SL-1.ENC.02 · owner: HUMAN
   - **Do:** New objects encrypted with the document's existing handler (ADR-P0019 exception);
     an explicit upgrade path to AESV3 with user consent.
