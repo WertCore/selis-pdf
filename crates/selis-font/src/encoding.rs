@@ -231,6 +231,11 @@ mod tests {
         assert_eq!(e.code_to_glyph(0x85), Some("ellipsis"));
         assert_eq!(e.code_to_glyph(0x95), Some("bullet"));
         assert_eq!(e.code_to_glyph(0xE9), Some("eacute"));
+        // Annex D.4: 0x27 is quotesingle, while quoteright lives at 0x92.
+        // (StandardEncoding differs: there 0x27 is quoteright.)
+        assert_eq!(e.code_to_glyph(0x27), Some("quotesingle"));
+        assert_eq!(e.code_to_glyph(0x92), Some("quoteright"));
+        assert_eq!(e.code_to_glyph(0x19), None);
         // 0x81, 0x8D, 0x9D are unassigned in WinAnsi (normalised from pdf.js's
         // placeholder bullets, Annex D.4).
         assert_eq!(e.code_to_glyph(0x81), None);
@@ -240,6 +245,10 @@ mod tests {
     #[test]
     fn standard_encoding_spot_checks() {
         let e = Encoding::base(BaseEncoding::Standard);
+        // Caveat: 0x27 is quoteright in StandardEncoding (D.2) but quotesingle
+        // in WinAnsi (D.4) — the tables deliberately differ. This is the
+        // font's *built-in* encoding, not the WinAnsi one used by appearance
+        // strings.
         assert_eq!(e.code_to_glyph(39), Some("quoteright"));
         assert_eq!(e.code_to_glyph(96), Some("quoteleft"));
         assert_eq!(e.code_to_glyph(0xA1), Some("exclamdown"));

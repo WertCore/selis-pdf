@@ -31,8 +31,11 @@
 //!   no `/I` index. Quadding uses exact `selis_font::standard14` advance widths
 //!   where the field's font resolves to a standard-14 face (a field/widget `/DR`
 //!   overrides the form map, and font values may be indirect references or
-//!   direct dictionaries); high bytes use the face's WinAnsi AFM widths, with an
-//!   honest fallback for unmappable glyphs and for embedded/non-standard faces.
+//!   direct dictionaries). Every single byte is measured by its WinAnsi AFM
+//!   glyph name — including ASCII: digits use `zero`..`nine`, `'` uses
+//!   `quotesingle`, and `é` (0xE9) uses `eacute` — because that is the glyph
+//!   the appearance string draws. Codes with no AFM entry and
+//!   embedded/non-standard faces keep an honest fallback.
 //!   A field with no resolvable font, widget or box keeps `/NeedAppearances`
 //!   rather than claiming an appearance it did not write.
 //!   Flattening is a separate task;
@@ -1842,61 +1845,12 @@ fn escape_pdf_literal(line: &str) -> Vec<u8> {
     out
 }
 
-/// The PostScript glyph name of an ASCII byte under WinAnsiEncoding. Letters
-/// and digits keep their own name and are handled by the caller; punctuation
-/// has a named glyph in every standard-14 AFM table.
-///
-/// # Budget
-///
-/// A single `match`; no allocation.
-///
-/// # Malformed Input
-///
-/// Non-ASCII bytes return `None` and the width falls back to the honest 0.5 em
-/// heuristic (the same fallback used for embedded fonts).
-fn ascii_glyph_name(byte: u8) -> Option<&'static str> {
-    match byte {
-        b' ' => Some("space"),
-        b'!' => Some("exclam"),
-        b'"' => Some("quotedbl"),
-        b'#' => Some("numbersign"),
-        b'$' => Some("dollar"),
-        b'%' => Some("percent"),
-        b'&' => Some("ampersand"),
-        b'\'' => Some("quoteright"),
-        b'(' => Some("parenleft"),
-        b')' => Some("parenright"),
-        b'*' => Some("asterisk"),
-        b'+' => Some("plus"),
-        b',' => Some("comma"),
-        b'-' => Some("hyphen"),
-        b'.' => Some("period"),
-        b'/' => Some("slash"),
-        b':' => Some("colon"),
-        b';' => Some("semicolon"),
-        b'<' => Some("less"),
-        b'=' => Some("equal"),
-        b'>' => Some("greater"),
-        b'?' => Some("question"),
-        b'@' => Some("at"),
-        b'[' => Some("bracketleft"),
-        b'\\' => Some("backslash"),
-        b']' => Some("bracketright"),
-        b'^' => Some("asciicircum"),
-        b'_' => Some("underscore"),
-        b'`' => Some("grave"),
-        b'{' => Some("braceleft"),
-        b'|' => Some("bar"),
-        b'}' => Some("braceright"),
-        b'~' => Some("asciitilde"),
-        _ => None,
-    }
-}
-
-/// The WinAnsi glyph name assigned to a high byte (0x80–0xFF) by the Annex D
-/// table in [`selis_font::tables`]. This is the glyph [`escape_pdf_literal`]
-/// writes verbatim into the appearance string, so it is the name whose AFM
-/// advance measures what is actually drawn.
+/// The WinAnsi glyph name assigned to a single byte (0x00–0xFF) by the Annex D
+/// table in [`selis_font::tables`]. [`escape_pdf_literal`] writes the byte
+/// verbatim into the appearance string, so this is the name whose AFM advance
+/// measures what is actually drawn — for ASCII *and* high bytes. Digits are
+/// therefore `zero`..`nine` (not `"7"`), `'` is `quotesingle` (the WinAnsi
+/// assignment at 0x27), and 0xE9 is `eacute`.
 ///
 /// # Budget
 ///
@@ -1915,10 +1869,11 @@ fn winansi_glyph_name(byte: u8) -> Option<&'static str> {
 /// The width of `line` in points at `size`, used to centre / right-quadd it.
 /// For a standard-14 face, every single-byte glyph is measured with the exact
 /// AFM advance from [`selis_font::standard14`] (the same table the renderer
-/// uses): ASCII glyphs keep their existing names, and high bytes use the WinAnsi
-/// glyph name from [`winansi_glyph_name`]. A character outside one byte draws
-/// as `?`, whose width is measured too. Embedded / non-standard faces keep the
-/// honest 0.5 em heuristic rather than claiming an exact metric we lack.
+/// uses): the byte's WinAnsi glyph name from [`winansi_glyph_name`] is the key,
+/// because that is the glyph [`escape_pdf_literal`] draws. A character outside
+/// one byte draws as `?`, whose AFM width is measured too. Embedded /
+/// non-standard faces keep the honest 0.5 em heuristic rather than claiming an
+/// exact metric we lack.
 ///
 /// # Budget
 ///
@@ -1929,8 +1884,8 @@ fn winansi_glyph_name(byte: u8) -> Option<&'static str> {
 ///
 /// A line with no resolvable glyph uses the AFM `question` width (matching
 /// [`escape_pdf_literal`] for out-of-range characters) or the honest 0.5 em
-/// fallback (for an unassigned high byte) so alignment never claims a metric
-/// the face does not define.
+/// fallback (for an unassigned byte) so alignment never claims a metric the
+/// face does not define.
 fn text_width(line: &str, size: f64, std_font: Option<&str>) -> f64 {
     let approx = || line.chars().count() as f64 * size * 0.5;
     let Some(name) = std_font.filter(|name| selis_font::standard14::is_standard(name)) else {
@@ -1943,19 +1898,13 @@ fn text_width(line: &str, size: f64, std_font: Option<&str>) -> f64 {
             total += question; // escape_pdf_literal draws '?'
             continue;
         };
-        let advance = if byte.is_ascii_alphanumeric() {
-            // Alphanumeric glyph names are the character itself ("A", "7").
-            let one = core::slice::from_ref(&byte);
-            std::str::from_utf8(one)
-                .ok()
-                .and_then(|glyph| selis_font::standard14::width(name, glyph))
-        } else if byte.is_ascii() {
-            ascii_glyph_name(byte).and_then(|glyph| selis_font::standard14::width(name, glyph))
-        } else {
-            // A high byte is written verbatim to the literal string, so its
-            // WinAnsi glyph name gives the exact advance of what is drawn.
-            winansi_glyph_name(byte).and_then(|glyph| selis_font::standard14::width(name, glyph))
-        };
+        // One source of truth for every byte: the WinAnsi glyph name of what
+        // escape_pdf_literal draws. Previously ASCII letters/digits were keyed
+        // by the character itself, so digits fell back to 500/1000 em because
+        // the AFM names them "zero".."nine", and ASCII 0x27 was measured as
+        // quoteright instead of the WinAnsi quotesingle.
+        let advance =
+            winansi_glyph_name(byte).and_then(|glyph| selis_font::standard14::width(name, glyph));
         total += f64::from(advance.unwrap_or(500));
     }
     total / 1000.0 * size
@@ -2738,6 +2687,37 @@ mod tests {
                 b"<< /FT /Ch /T (HiByte) /V (w) /Opt [[(w) (W\xe9)]] /Q 2 /DA (/Helv 12 Tf 0 g) /Subtype /Widget /Rect [10 70 120 90] /P 3 0 R >>",
             ),
             (7, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"),
+        ];
+        build_pdf(objects)
+    }
+
+    /// Digit-rich and apostrophe-bearing labels for glyph-name metric checks.
+    /// Both draw in Helvetica at 12 pt inside a 110 pt box: `Digits` is centred
+    /// (`/Q 1`) with "777", `Apos` is right-quadded (`/Q 2`) with "IT'S". Their
+    /// x origins must come from the AFM widths of `seven` and `quotesingle`,
+    /// the glyph names the appearance string actually draws.
+    fn glyph_name_metrics_fixture() -> Vec<u8> {
+        let objects: &[(u32, &[u8])] = &[
+            (1, b"<< /Type /Catalog /Pages 2 0 R /AcroForm 5 0 R >>"),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+            (
+                3,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> /Contents 4 0 R /Annots [6 0 R 7 0 R] >>",
+            ),
+            (4, b"<< /Length 0 >>\nstream\n\nendstream"),
+            (
+                5,
+                b"<< /Fields [6 0 R 7 0 R] /DA (/Helv 12 Tf 0 g) /DR << /Font << /Helv 8 0 R >> >> >>",
+            ),
+            (
+                6,
+                b"<< /FT /Ch /T (Digits) /V (w) /Opt [[(w) (777)]] /Q 1 /DA (/Helv 12 Tf 0 g) /Subtype /Widget /Rect [10 70 120 90] /P 3 0 R >>",
+            ),
+            (
+                7,
+                b"<< /FT /Ch /T (Apos) /V (w) /Opt [[(w) (IT'S)]] /Q 2 /DA (/Helv 12 Tf 0 g) /Subtype /Widget /Rect [10 100 120 120] /P 3 0 R >>",
+            ),
+            (8, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"),
         ];
         build_pdf(objects)
     }
@@ -3794,5 +3774,79 @@ mod tests {
         assert_eq!(winansi_glyph_name(0xe9), Some("eacute"));
         assert_eq!(winansi_glyph_name(0x80), Some("Euro"));
         assert_eq!(winansi_glyph_name(0x81), None, ".notdef has no glyph");
+    }
+
+    /// Annex D.4 assignments: 0x27 is quotesingle, 0x92 is quoteright, 0xE9 is
+    /// eacute, and 0x19 is unassigned (not quoteright). The old ASCII lookup
+    /// used quoteright for 0x27 and keyed digits by the character itself —
+    /// neither name is a key in the AFM tables.
+    #[test]
+    fn winansi_apostrophe_and_high_byte_glyph_names() {
+        assert_eq!(winansi_glyph_name(0x27), Some("quotesingle"));
+        assert_eq!(winansi_glyph_name(0x92), Some("quoteright"));
+        assert_eq!(winansi_glyph_name(0xe9), Some("eacute"));
+        assert_eq!(
+            winansi_glyph_name(0x19),
+            None,
+            "0x19 is unassigned in WinAnsi"
+        );
+        assert_eq!(selis_font::standard14::width("Helvetica", "7"), None);
+        assert_eq!(selis_font::standard14::width("Helvetica", "'"), None);
+    }
+
+    /// A digit-rich label is measured by the AFM widths of `zero`..`nine`, not
+    /// the 500/1000 em fallback the old per-character lookup produced. "777"
+    /// is three Helvetica `seven` glyphs (556 each): at 12 pt in a 110 pt box a
+    /// centred label starts at (110 - 3*556/1000*12)/2 = 44.992. The expected
+    /// value is computed from the font crate's AFM table itself.
+    #[test]
+    fn afm_digit_widths_drive_exact_quadding() {
+        let (bytes, _) = fill_synth(&glyph_name_metrics_fixture(), &[("Digits", "w")]);
+        let apps = widget_appearances_of(&bytes, "Digits");
+        let content = String::from_utf8_lossy(&apps[0].1);
+        assert!(apps[0].1.contains(&b'7'), "the digits are drawn verbatim");
+        let (x, _) = first_td(&content);
+
+        let seven = f64::from(
+            selis_font::standard14::width("Helvetica", "seven").expect("seven AFM width"),
+        );
+        let text_w = 3.0 * seven / 1000.0 * 12.0;
+        let expected = (110.0 - text_w) / 2.0;
+        assert!(
+            (x - expected).abs() < 0.01,
+            "exact AFM digit widths, not the 500 fallback: x={x}, expected {expected}, {content}"
+        );
+        // The wrong key has no AFM entry, which is why the old code silently
+        // used 500 and put the label at 46.0 instead.
+        assert_eq!(selis_font::standard14::width("Helvetica", "7"), None);
+        assert!((expected - 46.0).abs() > 0.5, "the fallback must differ");
+    }
+
+    /// An apostrophe is drawn as byte 0x27, i.e. WinAnsi `quotesingle` (191 in
+    /// Helvetica), not `quoteright` (222). The right-quadded "IT'S" origin must
+    /// come from the former; the expected x is computed from the AFM table.
+    #[test]
+    fn afm_apostrophe_width_drives_exact_quadding() {
+        let (bytes, _) = fill_synth(&glyph_name_metrics_fixture(), &[("Apos", "w")]);
+        let apps = widget_appearances_of(&bytes, "Apos");
+        let content = String::from_utf8_lossy(&apps[0].1);
+        assert!(
+            apps[0].1.contains(&b'\''),
+            "the apostrophe byte is drawn verbatim"
+        );
+        let (x, _) = first_td(&content);
+
+        let aw = |g: &str| f64::from(selis_font::standard14::width("Helvetica", g).expect(g));
+        let text_w = (aw("I") + aw("T") + aw("quotesingle") + aw("S")) / 1000.0 * 12.0;
+        let expected = 110.0 - 2.0 - text_w;
+        assert!(
+            (x - expected).abs() < 0.01,
+            "quotesingle AFM width, not quoteright: x={x}, expected {expected}, {content}"
+        );
+        let wrong_w = (aw("I") + aw("T") + aw("quoteright") + aw("S")) / 1000.0 * 12.0;
+        assert!(
+            (expected - (110.0 - 2.0 - wrong_w)).abs() > 0.1,
+            "quoteright would have given a measurably different origin"
+        );
     }
 }

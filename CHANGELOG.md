@@ -185,6 +185,15 @@ sections; every entry states what changed and what it means for the user.
 
 ### Fixed
 
+- Synthesized form-field appearances now quadd digit-rich and apostrophe-bearing
+  labels from the correct standard-14 AFM widths. Digits had been looked up by
+  the character itself (`"7"`), which is not an AFM glyph name, so every digit
+  silently fell back to 500/1000 em; ASCII `'` was measured as `quoteright`
+  instead of the WinAnsi `quotesingle` the appearance actually draws. A centred
+  "777" in 12 pt Helvetica now starts at 44.992 pt rather than 46 pt, and a
+  right-quadded "IT'S" at 87.036 pt rather than 86.66 pt. Every single byte now
+  goes through the WinAnsi glyph-name table, the same source the drawn byte uses;
+  the module docs record this explicitly.
 - The pinned-container oracle legs (`xtask oracle sweep` / `text-sweep`) finally
   bind their output the way the smoke contract does: an absolute *directory*
   mount (`<parent>:/out`) with the tool writing `/out/<name>`, not a `-v` of a
