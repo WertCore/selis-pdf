@@ -38,10 +38,11 @@
 //!   `/S` in the hint-stream dictionary locates the shared table.
 //! * The **optional** Annex F hint tables are emitted only for structures the
 //!   document actually has: outline (§F.6, `/O` in the hint-stream dictionary),
-//!   thumbnail (§F.7, `/T`), named destination (§F.8, `/A`) and page label
-//!   (§F.9, `/E`). No structure means no key and no bytes — nothing is
-//!   fabricated. Their bit layouts are reconstructed from Annex F and are
-//!   validated by `tools/check_linearization.py` against the real structures
+//!   thumbnail (§F.7, `/T`), named destination (§F.8, `/A`), page label
+//!   (§F.9, `/E`) and interactive form (§F.10, `/F`). No structure means no key
+//!   and no bytes — nothing is fabricated. Their bit layouts are reconstructed
+//!   from Annex F and qpdf's writer and are validated by
+//!   `tools/check_linearization.py` against the real structures
 //!   (self-consistency, not an external qpdf verdict).
 //! * Two classic xref sections with a `/Prev` chain that
 //!   `parse_revisions` follows.
@@ -176,14 +177,17 @@ pub struct LinearizeInput<'a> {
 /// # Budget
 ///
 /// Charges every serialised byte (via [`Writer`]) and one object unit per
-/// object. Each layout pass is charged.
+/// object. Each layout pass is charged. Optional hint tables — including the
+/// form hint table — charge their inline rows and records through the same
+/// budget; a hostile `/AcroForm` field tree cannot make that work unbounded.
 ///
 /// # Malformed Input
 ///
 /// Refuses encrypted documents, an absent or inconsistent page tree, an
 /// object graph that occupies object 1, duplicate object numbers, offsets or
-/// hint-table values that do not fit the fixed-width representation, and a
-/// layout that fails to converge. Each refusal is a typed
+/// hint-table values that do not fit the fixed-width representation (including
+/// a form-field count or object number that exceeds 32 bits), and a layout
+/// that fails to converge. Each refusal is a typed
 /// `selis_error::Error` (see [`LinearizeError`]). No partial or mislabelled
 /// file is ever returned.
 pub fn write_linearized(
@@ -359,16 +363,16 @@ struct Layout {
 }
 
 // ---------------------------------------------------------------------------
-// Optional hint tables (ISO 32000-1 Annex F.6-F.9)
+// Optional hint tables (ISO 32000-1 Annex F.6-F.10)
 // ---------------------------------------------------------------------------
 //
-// These four tables are OPTIONAL for a conforming linearized file. We emit a
+// These five tables are OPTIONAL for a conforming linearized file. We emit a
 // table only for the structure it describes, and never fabricate a structure.
-// The exact bit layouts below are reconstructed from ISO 32000-1 Annex F; they
-// are validated by `tools/check_linearization.py`, which parses them back and
-// cross-checks every field against the real object graph, and by PDFium
-// read-back. No external `qpdf --check-linearization` verdict is available in
-// this build environment, so external conformance is not claimed.
+// The exact bit layouts below are reconstructed from ISO 32000-1 Annex F and
+// qpdf's writer; they are validated by `tools/check_linearization.py`, which
+// parses them back and cross-checks every field against the real object graph,
+// and by PDFium read-back. No external `qpdf --check-linearization` verdict is
+// available in this build environment, so external conformance is not claimed.
 
 /// The optional hint tables detected in the (renumbered) object graph.
 #[derive(Debug, Clone, Default)]
@@ -381,6 +385,18 @@ struct OptionalHints {
     named_dests: Option<Vec<NamedDestHint>>,
     /// Thumbnail hint table (§F.7) + `/T` hint-stream entry.
     thumbnails: Option<Vec<Option<Bytes>>>,
+    /// Interactive-form hint table (§F.10) + `/F` hint-stream entry.
+    forms: Option<Vec<FormFieldHint>>,
+}
+
+/// One interactive-form field for the §F.10 hint table.
+#[derive(Debug, Clone)]
+struct FormFieldHint {
+    /// Renumbered object number of the field (or terminal widget) dictionary.
+    obj: u32,
+    /// Zero-based index of the page whose `/Annots` contains the widget, or
+    /// `u32::MAX` when no page could be resolved locally.
+    page: u32,
 }
 
 /// One outline item for the §F.6 hint table.
@@ -668,6 +684,7 @@ fn collect_optional_hints(objects: &[(u32, Obj)], root: Ref, page_objs: &[u32]) 
         page_labels: collect_page_label_hints(&index, catalog, page_objs.len()),
         named_dests: collect_named_dest_hints(&index, catalog, &page_index),
         thumbnails: collect_thumbnail_hints(&index, catalog, page_objs),
+        forms: collect_form_hints(&index, catalog, &page_index, page_objs),
     }
 }
 
@@ -903,6 +920,117 @@ fn collect_thumbnail_hints(
     }
 }
 
+/// Map each widget annotation object number to the zero-based page index whose
+/// `/Annots` array contains it. A field's "/Page" hint is read from this map.
+fn widget_pages(
+    index: &BTreeMap<u32, &Obj>,
+    page_objs: &[u32],
+    page_index: &HashMap<u32, u32>,
+) -> HashMap<u32, u32> {
+    let mut out = HashMap::new();
+    for num in page_objs {
+        let page = match index.get(num) {
+            Some(o) => *o,
+            None => continue,
+        };
+        let idx = page_index.get(num).copied().unwrap_or(u32::MAX);
+        if let Some(Obj::Array(annots)) = get(page, b"Annots") {
+            for annot in annots {
+                if let Some(r) = as_ref(annot) {
+                    out.insert(r.num, idx);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Resolve the page index of a form field: a terminal field that is itself a
+/// widget carries the page directly; a parent field inherits the page of the
+/// first widget reachable through its `/Kids`. Unresolvable fields use
+/// `u32::MAX` (the spec's no-page marker), never a fabricated page number.
+fn form_field_page(
+    index: &BTreeMap<u32, &Obj>,
+    obj: &Obj,
+    widgets: &HashMap<u32, u32>,
+    seen: &mut HashSet<u32>,
+) -> u32 {
+    if let Some(r) = as_ref(obj) {
+        if let Some(page) = widgets.get(&r.num) {
+            return *page;
+        }
+    }
+    let num = match as_ref(obj) {
+        Some(r) => r.num,
+        None => return u32::MAX,
+    };
+    if !seen.insert(num) {
+        return u32::MAX;
+    }
+    let resolved = match resolve(index, obj) {
+        Some(o) => o,
+        None => return u32::MAX,
+    };
+    if let Some(Obj::Array(kids)) = get(resolved, b"Kids") {
+        for kid in kids {
+            let page = form_field_page(index, kid, widgets, seen);
+            if page != u32::MAX {
+                return page;
+            }
+        }
+    }
+    u32::MAX
+}
+
+/// Walk every field object in an `/AcroForm /Fields` tree (parents included,
+/// in document order) and record its object number and widget page. Returns
+/// `None` when the catalog has no `/AcroForm`, no `/Fields`, or no fields at
+/// all — documents without a form emit no `/F` key and no table bytes.
+fn collect_form_hints(
+    index: &BTreeMap<u32, &Obj>,
+    catalog: &Obj,
+    page_index: &HashMap<u32, u32>,
+    page_objs: &[u32],
+) -> Option<Vec<FormFieldHint>> {
+    let acro = get(catalog, b"AcroForm").and_then(|a| resolve(index, a))?;
+    let fields = get(acro, b"Fields").and_then(|f| resolve(index, f))?;
+    let roots = match fields {
+        Obj::Array(items) => items,
+        _ => return None,
+    };
+    let widgets = widget_pages(index, page_objs, page_index);
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    // Pre-order DFS in document order: push roots/kids in reverse so the
+    // LIFO stack pops them in their original order. `seen` also breaks cycles.
+    let mut pending: Vec<&Obj> = roots.iter().rev().collect();
+    while let Some(field) = pending.pop() {
+        let num = match as_ref(field) {
+            Some(r) => r.num,
+            None => continue,
+        };
+        if !seen.insert(num) {
+            continue;
+        }
+        let page = form_field_page(index, field, &widgets, &mut HashSet::new());
+        out.push(FormFieldHint { obj: num, page });
+        let resolved = match resolve(index, field) {
+            Some(o) => o,
+            None => continue,
+        };
+        if let Some(Obj::Array(kids)) = get(resolved, b"Kids") {
+            for kid in kids.iter().rev() {
+                pending.push(kid);
+            }
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Byte layout
 // ---------------------------------------------------------------------------
@@ -1010,6 +1138,7 @@ fn render(
         (b"T".as_slice(), hints.thumbnails),
         (b"A".as_slice(), hints.named_dests),
         (b"E".as_slice(), hints.page_labels),
+        (b"F".as_slice(), hints.forms),
     ] {
         if let Some(off) = offset {
             hint_dict.push((key(name), int(u64::from(off))));
@@ -1282,13 +1411,14 @@ impl BitWriter {
 }
 
 /// Byte offsets of the optional tables within the hint stream, for the
-/// hint-stream dictionary (`/O`, `/E`, `/A`, `/T`).
+/// hint-stream dictionary (`/O`, `/E`, `/A`, `/T`, `/F`).
 #[derive(Debug, Clone, Default)]
 struct HintOffsets {
     outline: Option<u32>,
     page_labels: Option<u32>,
     named_dests: Option<u32>,
     thumbnails: Option<u32>,
+    forms: Option<u32>,
 }
 
 /// Serialize a direct object to its raw PDF bytes (no `N 0 obj` wrapper), for
@@ -1345,11 +1475,11 @@ fn append_table(
 }
 
 /// Build the page-offset (§F.4) and shared-object (§F.5) hint tables, plus
-/// every optional table whose structure exists (§F.6-F.9).
+/// every optional table whose structure exists (§F.6-F.10).
 ///
 /// Returns `(bytes, shared_table_offset, optional_offsets)` where the shared
 /// offset is the `/S` value and the optional offsets feed `/O`, `/E`, `/A`,
-/// `/T` in the hint-stream dictionary.
+/// `/T`, `/F` in the hint-stream dictionary.
 fn build_hint_buffer(
     layout: &Layout,
     offsets: &BTreeMap<u32, u64>,
@@ -1501,12 +1631,13 @@ fn build_hint_buffer(
     // nobjects_minus_one: zero bits wide.
     w.flush();
 
-    // ---- Optional tables (§F.6-F.9) ----
-    // Each is emitted only when its source structure exists. All rows use a
-    // 32-bit byte offset from the start of the hint stream to an inline
-    // record; a zero offset means "no data for this entry". The exact field
-    // set per table is documented in tools/check_linearization.py, which
-    // parses and cross-checks them against the real object graph.
+    // ---- Optional tables (§F.6-F.10) ----
+    // Each is emitted only when its source structure exists. The four
+    // offset-based tables use a 32-bit byte offset from the start of the hint
+    // stream to an inline record; a zero offset means "no data for this
+    // entry". The form table (§F.10) is a flat count + rows layout. The exact
+    // field set per table is documented in tools/check_linearization.py,
+    // which parses and cross-checks them against the real object graph.
     let mut hints = HintOffsets::default();
 
     // §F.7 thumbnail hint table: one row per page, offset+16-bit length.
@@ -1615,6 +1746,25 @@ fn build_hint_buffer(
             16,
             &inline,
         )?);
+    }
+
+    // §F.10 form hint table: a 32-bit field count followed by one byte-aligned
+    // row per field holding (field object number, page index) as two 32-bit
+    // big-endian integers. This is qpdf's layout; the page index is zero-based
+    // and u32::MAX means "no widget page resolved". `/F` in the hint stream
+    // dictionary locates the table.
+    if let Some(fields) = &layout.optional.forms {
+        let count = u32::try_from(fields.len())
+            .map_err(|_| to_error(LinearizeError::HintTable("too many form fields")))?;
+        hints.forms = Some(w.out.len() as u32);
+        w.write(u64::from(count), 32)?;
+        w.flush();
+        for field in fields {
+            w.write(u64::from(field.obj), 32)?;
+            w.write(u64::from(field.page), 32)?;
+            w.flush();
+        }
+        w.flush();
     }
 
     g.charge(Resource::Bytes, w.out.len() as u64)?;
@@ -1979,6 +2129,119 @@ mod tests {
         ]
     }
 
+    /// A two-page document with an /AcroForm field tree of three field objects:
+    /// parent 9 (widget kid 10 on page 1) and widget 11 on page 2.
+    fn form_objects() -> Vec<(u32, Obj)> {
+        vec![
+            (
+                2,
+                Obj::Dict(vec![
+                    (bytes(b"Type"), Obj::Name(bytes(b"Catalog"))),
+                    (bytes(b"Pages"), Obj::Ref(Ref::new(3, 0))),
+                    (bytes(b"AcroForm"), Obj::Ref(Ref::new(8, 0))),
+                ]),
+            ),
+            (
+                3,
+                Obj::Dict(vec![
+                    (bytes(b"Type"), Obj::Name(bytes(b"Pages"))),
+                    (
+                        bytes(b"Kids"),
+                        Obj::Array(vec![Obj::Ref(Ref::new(4, 0)), Obj::Ref(Ref::new(5, 0))]),
+                    ),
+                    (bytes(b"Count"), Obj::Int(2)),
+                ]),
+            ),
+            (
+                4,
+                Obj::Dict(vec![
+                    (bytes(b"Type"), Obj::Name(bytes(b"Page"))),
+                    (bytes(b"Parent"), Obj::Ref(Ref::new(3, 0))),
+                    (bytes(b"Contents"), Obj::Ref(Ref::new(6, 0))),
+                    (
+                        bytes(b"Annots"),
+                        Obj::Array(vec![Obj::Ref(Ref::new(10, 0))]),
+                    ),
+                ]),
+            ),
+            (
+                5,
+                Obj::Dict(vec![
+                    (bytes(b"Type"), Obj::Name(bytes(b"Page"))),
+                    (bytes(b"Parent"), Obj::Ref(Ref::new(3, 0))),
+                    (bytes(b"Contents"), Obj::Ref(Ref::new(7, 0))),
+                    (
+                        bytes(b"Annots"),
+                        Obj::Array(vec![Obj::Ref(Ref::new(11, 0))]),
+                    ),
+                ]),
+            ),
+            (
+                6,
+                Obj::Stream {
+                    dict: vec![],
+                    data: bytes(b"BT (one) Tj ET"),
+                },
+            ),
+            (
+                7,
+                Obj::Stream {
+                    dict: vec![],
+                    data: bytes(b"BT (two) Tj ET"),
+                },
+            ),
+            (
+                8,
+                Obj::Dict(vec![(
+                    bytes(b"Fields"),
+                    Obj::Array(vec![Obj::Ref(Ref::new(9, 0)), Obj::Ref(Ref::new(11, 0))]),
+                )]),
+            ),
+            (
+                9,
+                Obj::Dict(vec![
+                    (bytes(b"T"), Obj::String(bytes(b"F0"))),
+                    (bytes(b"Kids"), Obj::Array(vec![Obj::Ref(Ref::new(10, 0))])),
+                ]),
+            ),
+            (
+                10,
+                Obj::Dict(vec![
+                    (bytes(b"T"), Obj::String(bytes(b"F1"))),
+                    (bytes(b"Subtype"), Obj::Name(bytes(b"Widget"))),
+                    (bytes(b"Parent"), Obj::Ref(Ref::new(9, 0))),
+                ]),
+            ),
+            (
+                11,
+                Obj::Dict(vec![
+                    (bytes(b"T"), Obj::String(bytes(b"F2"))),
+                    (bytes(b"Subtype"), Obj::Name(bytes(b"Widget"))),
+                ]),
+            ),
+        ]
+    }
+
+    /// Object number of the object whose serialized body contains `marker`.
+    fn obj_with_marker(pdf: &[u8], marker: &[u8]) -> u32 {
+        let text = String::from_utf8_lossy(pdf);
+        let needle = String::from_utf8_lossy(marker);
+        let mut from = 0;
+        while let Some(rel) = text[from..].find(needle.as_ref()) {
+            let at = from + rel;
+            if let Some(h) = text[..at].rfind(" obj") {
+                // Object headers are `N 0 obj` on their own line; take the
+                // first token of that line (N), not the generation number.
+                let line_start = text[..h].rfind('\n').map_or(0, |i| i + 1);
+                if let Some(num) = text[line_start..h].split_whitespace().next() {
+                    return num.parse().expect("object number");
+                }
+            }
+            from = at + needle.len();
+        }
+        panic!("marker not found in output");
+    }
+
     fn parse_hint_int(dict: &str, key: &str) -> u64 {
         let marker = format!("/{key} ");
         let start = dict.find(&marker).expect("hint key") + marker.len();
@@ -2038,12 +2301,79 @@ mod tests {
         let text = String::from_utf8_lossy(&pdf);
         let h = parse_lin_array(&text, "H");
         let (dict, _data) = hint_object(&pdf, h[0] as usize);
-        for key in ["/O ", "/E ", "/A ", "/T "] {
+        for key in ["/O ", "/E ", "/A ", "/T ", "/F "] {
             assert!(
                 !dict.contains(key),
                 "no {key} hint without a source structure"
             );
         }
+    }
+
+    /// Parse the flat §F.10 form table at `off` into (obj, page) rows.
+    fn form_rows(data: &[u8], off: usize) -> (u32, Vec<(u32, u32)>) {
+        let be = |a: usize| u32::from_be_bytes([data[a], data[a + 1], data[a + 2], data[a + 3]]);
+        let count = be(off);
+        let rows = (0..count as usize)
+            .map(|i| (be(off + 4 + i * 8), be(off + 8 + i * 8)))
+            .collect();
+        (count, rows)
+    }
+
+    #[test]
+    fn form_hint_table_matches_real_field_tree() {
+        let objects = form_objects();
+        let input = LinearizeInput {
+            objects: &objects,
+            root: Ref::new(2, 0),
+            trailer_extra: &[],
+            page_count: 2,
+        };
+        let budget = B::unlimited();
+        let mut g = budget.guard();
+        let pdf = write_linearized(&input, &budget, &mut g).expect("linearize");
+        let text = String::from_utf8_lossy(&pdf);
+        let h = parse_lin_array(&text, "H");
+        let (dict, data) = hint_object(&pdf, h[0] as usize);
+        let f = parse_hint_int(&dict, "F") as usize;
+        assert!(f < data.len(), "/F form-table offset within hint buffer");
+
+        let (count, rows) = form_rows(&data, f);
+        assert_eq!(count, 3, "three field objects in the /AcroForm tree");
+        assert_eq!(rows.len(), 3);
+        // The field object numbers in the table are the renumbered ones; look
+        // them up by their unique /T markers in the emitted bytes.
+        let parent = obj_with_marker(&pdf, b"/T (F0)");
+        let widget1 = obj_with_marker(&pdf, b"/T (F1)");
+        let widget2 = obj_with_marker(&pdf, b"/T (F2)");
+        let got: std::collections::BTreeMap<u32, u32> = rows.iter().copied().collect();
+        assert_eq!(got.get(&parent), Some(&0), "parent field page = 0");
+        assert_eq!(got.get(&widget1), Some(&0), "widget 1 page = 0");
+        assert_eq!(got.get(&widget2), Some(&1), "widget 2 page = 1");
+    }
+
+    #[test]
+    fn acroform_without_fields_emits_no_form_hint() {
+        let mut objects = two_page_objects();
+        // Add an /AcroForm that has no /Fields at all.
+        if let Some((_, Obj::Dict(pairs))) = objects.iter_mut().find(|(n, _)| *n == 2) {
+            pairs.push((bytes(b"AcroForm"), Obj::Ref(Ref::new(8, 0))));
+        }
+        if let Some((_, obj)) = objects.iter_mut().find(|(n, _)| *n == 8) {
+            *obj = Obj::Dict(vec![]);
+        }
+        let input = LinearizeInput {
+            objects: &objects,
+            root: Ref::new(2, 0),
+            trailer_extra: &[],
+            page_count: 2,
+        };
+        let budget = B::unlimited();
+        let mut g = budget.guard();
+        let pdf = write_linearized(&input, &budget, &mut g).expect("linearize");
+        let text = String::from_utf8_lossy(&pdf);
+        let h = parse_lin_array(&text, "H");
+        let (dict, _data) = hint_object(&pdf, h[0] as usize);
+        assert!(!dict.contains("/F "), "no /F hint without form fields");
     }
 
     fn parse_lin_int(text: &str, key: &str) -> u64 {

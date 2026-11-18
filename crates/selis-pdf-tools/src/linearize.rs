@@ -441,6 +441,75 @@ mod tests {
         assert!(contents[2].contains("PAGE-THREE"));
     }
 
+    /// Read-back: linearize a real form fixture, re-open with the engine, and
+    /// assert the §F.10 form table parses and names the real field objects.
+    /// The Python checker (`tools/check_linearization.py`) independently
+    /// cross-checks all eight rows against the emitted /AcroForm tree.
+    #[test]
+    fn form_hint_table_read_back_from_real_fixture() {
+        const FORM: &[u8] = include_bytes!("../../../corpus/fixtures/form_two_pages.pdf");
+        let dir = temp_dir("form-readback");
+        let input = dir.join("in.pdf");
+        let output = dir.join("out.pdf");
+        std::fs::write(&input, FORM).expect("write form fixture");
+
+        let (report, verification) =
+            linearize_file(input.to_str().unwrap(), output.to_str().unwrap()).expect("linearize");
+        assert_eq!(verification.verdict, "ok");
+        assert_eq!(report.declared_pages, 2);
+
+        let out = std::fs::read(&output).expect("read linearized output");
+        let text = String::from_utf8_lossy(&out);
+
+        // The hint stream must carry /F and the table must contain eight rows.
+        let h = parse_h(&text);
+        let hint_at = h[0] as usize;
+        let stream_at = hint_at
+            + out[hint_at..]
+                .windows(7)
+                .position(|w| w == b"stream\n")
+                .expect("hint stream marker");
+        let dict = String::from_utf8_lossy(&out[hint_at..stream_at]);
+        assert!(
+            dict.contains("/F "),
+            "form hint table present for /AcroForm"
+        );
+        let f = parse_int_after(&dict, "/F ");
+        let payload = &out[stream_at + 7..];
+        let count =
+            u32::from_be_bytes([payload[f], payload[f + 1], payload[f + 2], payload[f + 3]]);
+        assert_eq!(count, 8, "fixture has eight form field objects");
+
+        let be = |a: usize| {
+            u32::from_be_bytes([payload[a], payload[a + 1], payload[a + 2], payload[a + 3]])
+        };
+        for i in 0..count as usize {
+            let row = f + 4 + i * 8;
+            let obj = be(row);
+            let page = be(row + 4);
+            assert!(
+                text.contains(&format!("\n{obj} 0 obj")),
+                "form field {obj} names a real object in the output"
+            );
+            assert!(page < 2 || page == u32::MAX, "field page index in range");
+        }
+
+        // Engine re-open: all pages remain visible and the AcroForm survives.
+        let budget = Budget::unlimited();
+        let clock = crate::shell_clock();
+        let session = selis_pdf_engine::Session::open(out.clone(), &budget, &clock)
+            .expect("re-open linearized form output");
+        assert!(session.page_size(0).is_some(), "engine sees page 1");
+        assert!(session.page_size(1).is_some(), "engine sees page 2");
+        assert!(session.page_size(2).is_none(), "engine sees no third page");
+        let mut g = budget.guard();
+        let fields = selis_pdf_form::read_form_fields(&out, &budget, &mut g).expect("read fields");
+        assert!(
+            !fields.fields.is_empty(),
+            "AcroForm fields survive linearization"
+        );
+    }
+
     #[test]
     fn refuses_encrypted_input_and_writes_nothing() {
         let budget = Budget::unlimited();
