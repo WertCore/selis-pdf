@@ -23,7 +23,8 @@ use selis_sandbox::{Budget, FixedClock};
 
 use crate::rewrite::{
     build_rewritten, save_rewritten, save_rewritten_atomic, save_rewritten_atomic_with,
-    save_rewritten_with, verify_rewrite, RewriteCommitFault, RewriteFault, RewriteOptions,
+    save_rewritten_with, save_rewritten_with_verifier, verify_rewrite, verify_rewrite_render_text,
+    RenderTextVerification, RenderTextVerifier, RewriteCommitFault, RewriteFault, RewriteOptions,
 };
 
 fn b(v: &[u8]) -> Bytes {
@@ -379,4 +380,95 @@ fn atomic_commit_of_a_clean_rewrite_is_durable() {
     assert_eq!(std::fs::read(&dest).expect("read destination"), committed);
     assert!(no_temp_litter(&dir));
     std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A stand-in for the engine verifier: this crate must not depend on the
+/// engine, so the SL-1A.WRITE.08 seam is proved with a trivial implementation
+/// that records that it was called and can be made to reject.
+#[derive(Debug)]
+struct MockVerifier {
+    accept: bool,
+    calls: std::cell::Cell<usize>,
+}
+
+impl RenderTextVerifier for MockVerifier {
+    fn verify(
+        &self,
+        _before: &[u8],
+        _after: &[u8],
+        _budget: &Budget,
+        _g: &mut selis_sandbox::BudgetGuard<'_>,
+    ) -> selis_error::Result<RenderTextVerification> {
+        self.calls.set(self.calls.get().saturating_add(1));
+        if self.accept {
+            Ok(RenderTextVerification { pages: 2, dpi: 72 })
+        } else {
+            Err(selis_error::err!(
+                Code::VerifyFailed,
+                during = "rewrite-render-text",
+                detail = "page 1: rendered pixels differ"
+            ))
+        }
+    }
+}
+
+#[test]
+fn render_text_seam_runs_after_structure_and_can_refuse() {
+    let src = formed_pdf();
+    let budget = Budget::unlimited();
+
+    // An accepting verifier is invoked and its result lands on the report.
+    let accept = MockVerifier {
+        accept: true,
+        calls: std::cell::Cell::new(0),
+    };
+    let mut g = budget.guard();
+    let (out, report) = save_rewritten_with_verifier(
+        &src,
+        &RewriteOptions::default(),
+        &budget,
+        &mut g,
+        Some(&accept),
+    )
+    .expect("accepting verifier");
+    assert_eq!(accept.calls.get(), 1);
+    assert_eq!(
+        report.render_text,
+        Some(RenderTextVerification { pages: 2, dpi: 72 })
+    );
+    assert_eq!(
+        verify_rewrite(&src, &out, &budget, &mut budget.guard())
+            .expect("structure")
+            .pages,
+        2
+    );
+
+    // A rejecting verifier refuses the rewrite even though structure passes.
+    let reject = MockVerifier {
+        accept: false,
+        calls: std::cell::Cell::new(0),
+    };
+    let mut g = budget.guard();
+    let err = save_rewritten_with_verifier(
+        &src,
+        &RewriteOptions::default(),
+        &budget,
+        &mut g,
+        Some(&reject),
+    )
+    .expect_err("rejecting verifier refuses");
+    assert_eq!(err.code(), Code::VerifyFailed);
+    assert!(format!("{err}").contains("page 1: rendered pixels differ"));
+    assert_eq!(reject.calls.get(), 1);
+
+    // The combined gate runs both halves in order.
+    let accept = MockVerifier {
+        accept: true,
+        calls: std::cell::Cell::new(0),
+    };
+    let mut g = budget.guard();
+    let (structural, content) =
+        verify_rewrite_render_text(&src, &out, &budget, &mut g, &accept).expect("both gates");
+    assert_eq!(structural.pages, 2);
+    assert_eq!(content.pages, 2);
 }

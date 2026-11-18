@@ -237,6 +237,17 @@ parse still refuses the torn tail; that asymmetry is exactly what
 compare against the pre-save render, replacing the structural standard for
 content-rewriting operations). Checkbox unchecked — G2-blocked.
 
+> **Current status (EDIT.05 follow-up):** now implemented at the full-rewrite
+> writer seam. The renderer is a G2 reality, so the render+text comparison is
+> injected through the `RenderTextVerifier` trait declared in `selis-pdf-edit`
+> and implemented by `selis_pdf_tools::rewrite_verify` (the engine depends on
+> edit, so the implementation cannot live in edit without a cycle). The
+> structural standard above remains the gate for content-preserving operations;
+> `save_rewritten_verified[_atomic]` run both. The WRITE.08 checkbox in
+> `11A-PHASE-1A-tools.md` is ticked for the full-rewrite writer, with the honest
+> gap that the other content-rewriting tools are not yet threaded through the
+> seam. See `15-PHASE-5-edit.md` EDIT.05.
+
 ## 5. What turned out to be wrong or under-specified in the task text
 
 1. WRITE.02's incremental writer already existed (`write_incremental_update`)

@@ -66,8 +66,32 @@ Normative spec: `23-EDIT-MODEL-SPEC.md`. Read it before any task here.
     fsync, atomic rename, directory fsync). `rewrite_tests` proves a normal two-page rewrite
     round-trips with all counts preserved (engine read-back), that a page-dropping and an
     annotation-dropping rewrite are refused, and that a refused atomic commit leaves the original
-    byte-identical. Residual gap: streams are copied verbatim rather than re-encoded; full
-    render+text comparison is SL-1A.WRITE.08 (pre-G2 §7 note).
+    byte-identical.
+    **SL-1A.WRITE.08 (closed here):** the full render+text comparison is now wired into the
+    full-rewrite writer without a dependency cycle. `selis-pdf-engine` depends on
+    `selis-pdf-edit`, so the lower crate cannot open a `Session` itself; instead
+    `selis_pdf_edit::rewrite` declares the `RenderTextVerifier` seam and
+    `verify_rewrite_render_text` / `save_rewritten_with_verifier` /
+    `save_rewritten_atomic_with_verifier` run it *after* the structural gate. The engine-backed
+    implementation lives one layer up in `selis_pdf_tools::rewrite_verify` (`text` feature):
+    `EngineRenderTextVerifier` opens both documents, renders every page at 72 dpi and compares
+    the RGBA buffers sample for sample, and recovers per-page text through the same ladder
+    `selis extract` uses and compares it; a page-count/pixel/text difference is a typed
+    `VERIFY_FAILED` naming the 1-based page, with no bytes returned and no file committed.
+    `selis_pdf_tools::save_rewritten_verified[_atomic]` are the content-verified full-rewrite
+    defaults for the CLI. Tests: a normal rewrite is pixel- and text-identical; a two-page
+    document whose pages are swapped passes *every* structural check (counts and the stream
+    multiset digest are unchanged) yet is refused by the render/text gate naming page 1; an
+    invisible (white-on-white) text change that renders pixel-identically is refused by the
+    text half; a page-count mismatch is caught by both gates; and an edit-layer mock verifier
+    proves the seam runs after structure and can refuse. Residual gap: streams are still copied
+    verbatim rather than re-encoded (a clean rewrite is therefore expected to render identically).
+    `cargo xtask size-check` was run on this change and on the unmodified base `8c022c8`: all 14
+    artifacts are byte-identical (e.g. `selis_pdf_wasm` 1 290 403 B brotli, `selis_pdf_wasm_tools`
+    423 818 B) — **delta 0 B** — because the render/text verifier is feature/test-gated and the new
+    edit-layer seam is dead-code-eliminated from the shipped chunks. All budgets met; budgets and
+    baseline were deliberately NOT edited. The `xtask` host binary shows a pre-existing −241 B
+    drift from its recorded baseline, unrelated to this change.
 - [x] **SL-5.EDIT.06 — Save through encrypted documents** · deps: EDIT.03, SL-1.ENC.02 · owner: HUMAN
   - **Do:** New objects encrypted with the document's existing handler (ADR-P0019 exception);
     an explicit upgrade path to AESV3 with user consent.

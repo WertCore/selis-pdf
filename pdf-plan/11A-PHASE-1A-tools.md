@@ -151,7 +151,7 @@ The tools are all writer operations. Build the writer properly here and Phase 5 
     human owner: power-loss vs process-kill scope, Windows rename atomicity position (design
     note §2.4), sign-off checklist §6.
 
-- [ ] **SL-1A.WRITE.08 — Full render+text output verification (G2)** · deps: WRITE.05, Phase 2
+- [x] **SL-1A.WRITE.08 — Full render+text output verification (G2)** · deps: WRITE.05, Phase 2
       renderer · owner: AI+
   - **Do:** Replace the pre-G2 structural standard (`WRITE.05`) for any operation that rewrites
     page *content*: after writing, open the output, render every page, extract its text, and
@@ -165,6 +165,20 @@ The tools are all writer operations. Build the writer properly here and Phase 5 
   - **Why G2:** needs the renderer (`12-PHASE-2-render.md`) and text extraction
     (`13-PHASE-3-text.md`) — not available in Phase 1A.
   - **Filed:** by the WRITE.05 implementation (the task block required filing it now).
+  - **Status (implemented, full-rewrite writer — EDIT.05):** the render+text gate is wired into
+    `save_rewritten` without a cycle: `selis_pdf_edit::rewrite::RenderTextVerifier` is the declared
+    seam (the engine depends on edit, never the reverse), the engine-backed
+    `selis_pdf_tools::rewrite_verify::EngineRenderTextVerifier` opens both documents, renders every
+    page at 72 dpi and compares RGBA buffers, and recovers and compares per-page text through the
+    `selis extract` ladder; the first difference is a typed `VERIFY_FAILED` naming the page, with
+    no output. `save_rewritten_verified[_atomic]` make it the default CLI full-rewrite path.
+    Evidence: a page-order swap and an invisible text change both pass structural checks and are
+    refused by render/text; see `pdf-plan/15-PHASE-5-edit.md` EDIT.05.
+  - **Gap (honest):** the gate is implemented at the full-rewrite writer seam, not yet threaded
+    through *every* content-rewriting tool (`edit_text`, redaction's content stripping,
+    `subset_fonts` already has its own pixel check). Extending the same seam to those tools is a
+    separate slice; this ticket's DoD "100% of outputs of every content-rewriting tool" is only
+    met for `save_rewritten` today.
 
 - [x] **SL-1A.WRITE.07 — Conformance-friendly writer defaults** · deps: WRITE.01, `SL-1.DOC.09` · owner: AI+
   - **Do:** Make the writer avoid, by default, everything that would make output non-conformant

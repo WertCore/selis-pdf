@@ -18,15 +18,18 @@
 //! atomic rename, directory fsync — so a refused rewrite leaves the destination
 //! byte-identical.
 //!
-//! # Pre-G2 verification scope
+//! # Verification scope
 //!
-//! Render-and-compare is not available until the renderer exists. Per
-//! `23-EDIT-MODEL-SPEC.md §7` the comparison here is the accepted *structural*
-//! standard: reparse, reference closure, page-tree consistency, count
-//! expectations, structure nodes and a stream-payload digest. It must not be
-//! reused for an operation that deliberately rewrites page content (that is
-//! SL-1A.WRITE.08). Streams are copied byte-for-byte by this rewrite, so the
-//! digest is an equality check, not a render.
+//! The structural gate ([`verify_rewrite`]) is cheap and stays the default for
+//! content-preserving internal callers: reparse, reference closure, page-tree
+//! consistency, count expectations, structure nodes and a stream-payload
+//! digest. It must not be the *only* gate for an operation that deliberately
+//! rewrites page content. The full SL-1A.WRITE.08 render + text comparison is
+//! available through [`verify_rewrite_render_text`] and
+//! [`save_rewritten_with_verifier`] and is the default for the tools/CLI full
+//! rewrite (see `selis-pdf-tools::rewrite_verify`). Streams are still copied
+//! byte-for-byte by this rewrite, so for a clean rewrite the render and text
+//! are expected to be identical.
 //!
 //! # Budget
 //!
@@ -38,6 +41,20 @@
 //! An unparseable source, an encrypted source (EDIT.06 owns encryption), an
 //! object whose new number cannot be resolved, or any verification discrepancy
 //! is a typed error. No bytes and no file are produced on any refusal.
+//!
+//! # Render + text verification (SL-1A.WRITE.08)
+//!
+//! The engine that can render pages and extract text lives *above* this crate
+//! (`selis-pdf-engine` depends on `selis-pdf-edit`), so this lower layer cannot
+//! call it without a dependency cycle. The gap is closed with a seam, not a
+//! back-edge: [`RenderTextVerifier`] is declared here, the engine-backed
+//! implementation lives in `selis-pdf-tools`, and
+//! [`save_rewritten_with_verifier`] / [`verify_rewrite_render_text`] run it
+//! *after* the structural gate. The tools/CLI layer makes it the default for a
+//! full rewrite. Content-preserving internal callers (and operations that never
+//! touch content) keep the structural-only [`verify_rewrite`] path.
+
+#![forbid(unsafe_code)]
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -71,6 +88,11 @@ pub enum RewriteFault {
     /// Remove every `/Annots` entry from every page, simulating a rewrite that
     /// lost its annotations.
     DropAnnotations,
+    /// Reverse the page tree's `/Kids` array without changing `/Count` or any
+    /// content stream. Every structural count and the stream-payload digest are
+    /// unchanged, so this fault passes the structural gate and can only be
+    /// caught by a per-page render + text comparison (SL-1A.WRITE.08).
+    SwapPageOrder,
 }
 
 /// Options for [`save_rewritten_with`] / [`save_rewritten_atomic_with`].
@@ -130,6 +152,42 @@ impl RewriteVerification {
         self.embedded_files = observed.embedded_files;
         self
     }
+}
+
+/// The result of a content-level render + text comparison (SL-1A.WRITE.08).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RenderTextVerification {
+    /// Number of pages rendered and text-compared, sample for sample.
+    pub pages: u64,
+    /// DPI at which both sides were rendered.
+    pub dpi: u32,
+}
+
+/// A content-level verifier supplied by a higher layer that can render pages
+/// and extract text.
+///
+/// `selis-pdf-edit` is a lower layer than the renderer — `selis-pdf-engine`
+/// depends on this crate — so it cannot open a `Session` itself without a
+/// dependency cycle. This trait is the seam: the concrete, engine-backed
+/// implementation lives in `selis-pdf-tools` and is injected through
+/// [`verify_rewrite_render_text`] / [`save_rewritten_with_verifier`]. A verifier
+/// must render every page of both documents at the same DPI and compare RGBA
+/// buffers, and extract and compare per-page text; any mismatch must be a typed
+/// [`Code::VerifyFailed`] error naming the 1-based page number.
+pub trait RenderTextVerifier {
+    /// Compare `before` and `after` at the content level.
+    ///
+    /// # Errors
+    ///
+    /// [`Code::VerifyFailed`] naming the first page whose pixels or text differ
+    /// (or whose page count differs), or a propagated render / extraction error.
+    fn verify(
+        &self,
+        before: &[u8],
+        after: &[u8],
+        budget: &Budget,
+        g: &mut BudgetGuard<'_>,
+    ) -> Result<RenderTextVerification>;
 }
 
 /// A named discrepancy between the pre-save and rewritten document.
@@ -263,6 +321,9 @@ pub struct RewriteReport {
     pub objects_renumbered: usize,
     /// The counts that were compared before the rewrite was accepted.
     pub verification: RewriteVerification,
+    /// The render + text comparison, when a [`RenderTextVerifier`] was supplied.
+    /// `None` means the structural-only gate was used.
+    pub render_text: Option<RenderTextVerification>,
 }
 
 /// What an atomic rewrite commit produced.
@@ -274,6 +335,8 @@ pub struct RewriteCommitReport {
     pub directory_fsynced: bool,
     /// The counts that were compared before the commit was allowed.
     pub verification: RewriteVerification,
+    /// The render + text comparison, when a [`RenderTextVerifier`] was supplied.
+    pub render_text: Option<RenderTextVerification>,
 }
 
 /// Turn a structural fault list into a single, printable detail string.
@@ -535,6 +598,38 @@ pub fn verify_rewrite(
     Ok(RewriteVerification::from(&after_fp).with_observed(&after.observed))
 }
 
+/// Verify a rewrite with both gates: the structural gate (as
+/// [`verify_rewrite`]) and an injected content-level render + text comparison
+/// (SL-1A.WRITE.08). The render/text verifier is declared here but implemented
+/// in the engine-owning layer above this crate, keeping the dependency graph
+/// acyclic. A mismatch from either gate is a typed [`Code::VerifyFailed`] with
+/// no bytes produced downstream.
+///
+/// # Errors
+///
+/// Any refusal from [`verify_rewrite`], plus any error from
+/// [`RenderTextVerifier::verify`] (which names the page that differed).
+///
+/// # Budget
+///
+/// Everything [`verify_rewrite`] charges, plus both sessions' render and text
+/// extraction for every page.
+///
+/// # Malformed Input
+///
+/// A document the engine cannot open or render is a refusal, not a repair.
+pub fn verify_rewrite_render_text(
+    before_bytes: &[u8],
+    after_bytes: &[u8],
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+    verifier: &dyn RenderTextVerifier,
+) -> Result<(RewriteVerification, RenderTextVerification)> {
+    let structural = verify_rewrite(before_bytes, after_bytes, budget, g)?;
+    let render_text = verifier.verify(before_bytes, after_bytes, budget, g)?;
+    Ok((structural, render_text))
+}
+
 /// Force a stream's `/Length` to its actual payload length. The rewrite copies
 /// stream bytes verbatim; only this derived value is normalised.
 fn normalise_stream_length(obj: &mut Obj) {
@@ -601,6 +696,36 @@ fn apply_fault(objects: &mut [(u32, Obj)], root: Ref, fault: RewriteFault) {
                     });
                     if is_page {
                         pairs.retain(|(key, _)| key.as_slice() != b"Annots");
+                    }
+                }
+            }
+        }
+        RewriteFault::SwapPageOrder => {
+            let pages_ref = objects
+                .iter()
+                .find(|(num, _)| *num == root.num)
+                .and_then(|(_, obj)| match obj {
+                    Obj::Dict(pairs) => pairs.iter().find(|(key, _)| key.as_slice() == b"Pages"),
+                    _ => None,
+                })
+                .and_then(|(_, value)| match value {
+                    Obj::Ref(r) => Some(*r),
+                    _ => None,
+                });
+            let Some(pages_ref) = pages_ref else {
+                return;
+            };
+            for (num, obj) in objects.iter_mut() {
+                if *num != pages_ref.num {
+                    continue;
+                }
+                if let Obj::Dict(pairs) = obj {
+                    for (key, value) in pairs.iter_mut() {
+                        if key.as_slice() == b"Kids" {
+                            if let Obj::Array(kids) = value {
+                                kids.reverse();
+                            }
+                        }
                     }
                 }
             }
@@ -761,8 +886,44 @@ pub fn save_rewritten_with(
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
 ) -> Result<(Vec<u8>, RewriteReport)> {
+    save_rewritten_with_verifier(src, options, budget, g, None)
+}
+
+/// Build and verify a rewritten document, optionally with a content-level
+/// render + text comparison (SL-1A.WRITE.08).
+///
+/// The engine-owning layer injects a [`RenderTextVerifier`] to make render +
+/// text comparison the default for a full rewrite; callers that never touch
+/// content (and the edit-layer tests)
+/// can pass `None` for the structural-only gate. Either way the candidate is
+/// fully verified before any byte is returned.
+///
+/// # Errors
+///
+/// As [`save_rewritten_with`], plus any refusal from the injected verifier.
+///
+/// # Budget
+///
+/// As [`save_rewritten_with`], plus the verifier's render/extraction work.
+///
+/// # Malformed Input
+///
+/// See [`save_rewritten_with`]. A refused rewrite never touches the filesystem.
+pub fn save_rewritten_with_verifier(
+    src: &[u8],
+    options: &RewriteOptions,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+    verifier: Option<&dyn RenderTextVerifier>,
+) -> Result<(Vec<u8>, RewriteReport)> {
     let (out, info) = build_rewritten(src, options, budget, g)?;
-    let verification = verify_rewrite(src, &out, budget, g)?;
+    let (verification, render_text) = match verifier {
+        Some(v) => {
+            let (structural, content) = verify_rewrite_render_text(src, &out, budget, g, v)?;
+            (structural, Some(content))
+        }
+        None => (verify_rewrite(src, &out, budget, g)?, None),
+    };
     let bytes_out = u64::try_from(out.len()).unwrap_or(u64::MAX);
     Ok((
         out,
@@ -774,6 +935,7 @@ pub fn save_rewritten_with(
             objects_dropped: info.objects_dropped,
             objects_renumbered: info.objects_renumbered,
             verification,
+            render_text,
         },
     ))
 }
@@ -817,7 +979,34 @@ pub fn save_rewritten_atomic_with(
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
 ) -> Result<RewriteCommitReport> {
-    let (candidate, report) = save_rewritten_with(src, options, budget, g)?;
+    save_rewritten_atomic_with_verifier(path, src, options, budget, g, None)
+}
+
+/// Atomic full rewrite with an optional content-level render + text comparison
+/// (SL-1A.WRITE.08). The verifier runs before any byte reaches disk, so a
+/// render/text refusal leaves the destination byte-identical.
+///
+/// # Errors
+///
+/// As [`save_rewritten_atomic_with`], plus any refusal from the injected
+/// verifier. The destination is untouched on every error path.
+///
+/// # Budget
+///
+/// As [`save_rewritten_atomic_with`], plus the verifier's render/extraction work.
+///
+/// # Malformed Input
+///
+/// See [`save_rewritten_atomic_with`]. A refused rewrite produces no file.
+pub fn save_rewritten_atomic_with_verifier(
+    path: &Path,
+    src: &[u8],
+    options: &RewriteOptions,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+    verifier: Option<&dyn RenderTextVerifier>,
+) -> Result<RewriteCommitReport> {
+    let (candidate, report) = save_rewritten_with_verifier(src, options, budget, g, verifier)?;
     g.tick()?;
     let receipt = selis_io::commit_atomic(
         path,
@@ -830,6 +1019,7 @@ pub fn save_rewritten_atomic_with(
         bytes: receipt.bytes,
         directory_fsynced: receipt.directory_fsynced,
         verification: report.verification,
+        render_text: report.render_text,
     })
 }
 

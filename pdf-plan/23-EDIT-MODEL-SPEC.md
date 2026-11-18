@@ -245,8 +245,17 @@ allowed to exist at all.
 > OCGs, outlines, embedded files) plus a structural fingerprint (structure-tree element count and
 > an order-independent digest of every reachable stream payload, the pre-G2 text proxy). A
 > mismatch is a typed `VERIFY_FAILED` naming the discrepancy, with no bytes produced. Steps 3–4 use
-> `selis_io::commit_atomic` unchanged. Streams are copied verbatim rather than re-encoded; full
-> render+text comparison remains SL-1A.WRITE.08.
+> `selis_io::commit_atomic` unchanged. Streams are copied verbatim rather than re-encoded.
+>
+> **SL-1A.WRITE.08 (closed at the full-rewrite writer):** step 2's render+text comparison is now
+> executed, not just structurally proxied. `selis_pdf_edit::rewrite::RenderTextVerifier` is the
+> declared seam; the engine-backed implementation lives in `selis_pdf_tools::rewrite_verify`
+> (`EngineRenderTextVerifier`) because the engine depends on edit and cannot be imported back into
+> it. It opens both documents, renders every page at 72 dpi and compares RGBA buffers, and
+> recovers and compares per-page text via the `selis extract` ladder; any page-count, pixel or
+> text difference is a typed `VERIFY_FAILED` naming the page, before any byte is returned or
+> committed. `save_rewritten_verified[_atomic]` make this the default CLI full-rewrite path. A
+> page-order swap and an invisible text change both pass the structural gate and are refused here.
 
 > **EDIT.04 (implemented):** `selis_pdf_edit::save::save_atomic` applies steps 3–4 to the
 > incremental-save path. It verifies before any byte reaches disk (I3 prefix, complete `%%EOF`

@@ -52,6 +52,11 @@ pub mod privacy;
 #[cfg(feature = "native-fs")]
 mod progress;
 pub mod repair;
+/// SL-1A.WRITE.08 full render+text verification. Compiled with the `text`
+/// feature in production, and in every test build (the engine is an
+/// unconditional dev-dependency) so the gate's tests always run.
+#[cfg(any(feature = "text", test))]
+pub mod rewrite_verify;
 pub mod runtime;
 #[cfg(feature = "security")]
 pub mod security;
@@ -89,6 +94,11 @@ pub use metadata::{metadata_report, MetadataReport};
 pub use outline::{set_outline, OutlineEntry, OutlineOptions};
 pub use overlay::add_image_watermark;
 pub use privacy::{privacy_report, PrivacyFinding, PrivacyReport};
+#[cfg(any(feature = "text", test))]
+pub use rewrite_verify::{
+    save_rewritten_verified, save_rewritten_verified_atomic, verify_render_text,
+    EngineRenderTextVerifier,
+};
 pub use selis_pdf_optimize::LinearizeMode;
 pub use selis_pdf_optimize::{CompressionLevel, SubsetError, SubsetReport};
 #[cfg(feature = "sign")]
