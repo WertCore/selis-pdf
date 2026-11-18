@@ -1831,6 +1831,7 @@ dependencies = [
  "selis-pdf-doc",
  "selis-pdf-engine",
  "selis-pdf-filter",
+ "selis-pdf-sign",
  "selis-sandbox",
 ]
 

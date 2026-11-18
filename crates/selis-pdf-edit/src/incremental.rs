@@ -34,6 +34,15 @@
 //! with the correct per-object key, carry `/Encrypt` and the refreshed `/ID`
 //! in the appended trailer, and verify the result by reopening it with the
 //! password. See [`EncryptionPolicy`] for the (refused) AESV3-upgrade path.
+//!
+//! # Signatures and DocMDP (SL-5.EDIT.07)
+//!
+//! Because the source is a verbatim prefix, an existing signature's
+//! `/ByteRange` keeps naming the same bytes and stays valid by construction.
+//! [`crate::signature_guard`] makes that guarantee checked rather than
+//! assumed: it refuses redefinitions of signature objects, enforces the
+//! certification signature's DocMDP `/P` level *before* writing, and re-runs
+//! the real signature report on the saved bytes. A refusal produces no output.
 
 use std::collections::BTreeMap;
 
@@ -555,6 +564,12 @@ fn save_incremental_inner(
             detail = "empty source"
         ));
     }
+
+    // SL-5.EDIT.07: refuse signature-breaking and DocMDP-forbidden mutations
+    // BEFORE writing anything. On refusal no bytes are produced (the caller
+    // still owns `src`), and the error names the level and refused operation.
+    crate::signature_guard::check_mutation_allowed(model, mutations, budget, g)?;
+
     let expected = apply(model, mutations);
     let changed = changes(model, &expected, mutations);
     if changed.is_empty() {
@@ -681,6 +696,16 @@ fn save_incremental_inner(
         budget,
         g,
     )?;
+
+    // SL-5.EDIT.07: re-run the signature report on the saved bytes. Existing
+    // signatures must still verify over the unchanged, prefix-resident byte
+    // ranges. The encrypted path is skipped here: `signatures()` refuses
+    // ciphertext (there is no decryption policy in the report), and those
+    // bytes were already verified plaintext-equivalent above.
+    if key.is_none() {
+        let _preservation =
+            crate::signature_guard::verify_signatures_preserved(src, &out, budget, g)?;
+    }
 
     Ok((
         out,

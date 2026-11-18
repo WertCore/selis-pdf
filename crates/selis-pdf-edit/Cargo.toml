@@ -24,6 +24,11 @@ selis-geom = { workspace = true }
 selis-io = { workspace = true }
 selis-pdf-cos = { workspace = true }
 selis-pdf-doc = { workspace = true }
+# SL-5.EDIT.07: the real signature report is the read-back oracle for the
+# signature-preservation verification gate in `signature_guard`. The dependency
+# points one way (sign does not depend on edit), so there is no normal-build
+# cycle.
+selis-pdf-sign = { workspace = true }
 selis-pdf-filter = { workspace = true }
 selis-log = { workspace = true }
 md-5 = { workspace = true }

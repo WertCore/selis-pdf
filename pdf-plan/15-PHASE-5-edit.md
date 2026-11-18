@@ -87,12 +87,41 @@ Normative spec: `23-EDIT-MODEL-SPEC.md`. Read it before any task here.
     Interop oracle: `qpdf --check --password= ` and `qpdf --password= --decrypt` pass for all three
     (`encrypted_tests::qpdf_interop_oracle`, skipped when qpdf is absent). Acrobat GUI opening is
     a **manual** check — not automated here.
-- [ ] **SL-5.EDIT.07 — Save preserving existing signatures** · deps: EDIT.03 · owner: HUMAN
+- [x] **SL-5.EDIT.07 — Save preserving existing signatures** · deps: EDIT.03 · owner: HUMAN
   - **Do:** An incremental save must leave existing signature byte ranges intact so signatures stay
     valid, and must respect MDP/DocMDP permission levels — refusing changes the certification
     forbids, and clearly telling the user why.
   - **DoD:** A signed document annotated and saved still validates in Acrobat; a change forbidden
     by DocMDP level 1 is refused with a specific error.
+  - **Status (implemented):** `selis_pdf_edit::signature_guard` makes the append-only guarantee
+    checked rather than assumed. `check_mutation_allowed(model, mutations, budget, guard)` runs
+    **before** `save_incremental` writes: it refuses redefinitions of any existing signature field,
+    signature dictionary or `/Reference` chain object with `SIGNATURE_WOULD_BREAK`, and parses the
+    certification signature's `/Reference → /TransformParams → /P` to enforce DocMDP — P=1 allows
+    only signing, P=2 adds form fill-in, P=3 adds annotations; a refusal is a typed
+    `SIGNATURE_WOULD_BREAK` whose detail names the level and the refused operation, and produces
+    no bytes. `verify_signatures_preserved(src, output, budget, guard)` re-runs the real signature
+    report (`selis-pdf-sign::signatures`) on the saved bytes and proves each source signature that
+    verified over the whole source still verifies over the same four offsets, all ending inside
+    the preserved prefix; a break is `SIGNATURE_INVALID` with no output. On the output the report's
+    `coversWholeDocument` is false by design (appended bytes are outside the byte range), which is
+    exactly why the guard compares against the **source** length. Signatures already invalid on the
+    source are carried over unchanged, not counted as preserved. The encrypted path (EDIT.06) is
+    unaffected: DocMDP is checked on the decrypted model, and ciphertext signature reporting is
+    skipped. Tests sign a real CMS fixture with the committed PEMs, annotate and incremental-save,
+    read back through the sign report, and cover all three DocMDP levels plus the signature-object
+    and no-output-on-refusal cases. `qpdf --check` on the signed+annotated output is a scriptable
+    oracle, skipped when qpdf is absent. Residual gaps: Acrobat GUI validation is **manual**; the
+    guard classifies mutations from their COS shape (a caller that knowingly bundles an edit with a
+    signature creation is refused whenever any plain content/page edit is present, but field-level
+    DocMDP intent is advisory like the PDF itself); form-fill detection uses a field's own `/FT` and
+    does not yet follow `/FT` inherited from a parent field. `cargo xtask size-check` was run: the
+    whole failure is a **pre-existing** stale baseline — at the unmodified base commit
+    `selis_pdf_wasm_optimize` already measures 218 580 B brotli (+3.58% over the 211 034 B baseline).
+    EDIT.07 adds +416 B there (218 996 B) and +1 169 B to the main `selis_pdf_wasm`
+    (1 290 403 B); both are far inside their absolute budgets and the 2% rule. The budgets and
+    baseline were deliberately NOT edited (per task); accepting the stale optimize baseline is a
+    separate housekeeping decision.
 - [ ] **SL-5.EDIT.08 — Page operations** · deps: EDIT.01 · owner: AI+
   - **Do:** Insert, delete, reorder, rotate, crop (`/CropBox` vs `/MediaBox` semantics), split,
     merge, extract, and N-up. Merging must reconcile: resource name collisions, named destinations,

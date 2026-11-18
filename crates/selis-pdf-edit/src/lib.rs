@@ -50,6 +50,8 @@ pub mod incremental;
 pub mod journal;
 pub mod rewrite;
 pub mod save;
+/// SL-5.EDIT.07: signature preservation and DocMDP enforcement for saves.
+pub mod signature_guard;
 
 #[cfg(test)]
 mod encrypted_tests;
@@ -64,6 +66,8 @@ mod reflow;
 mod rewrite_tests;
 #[cfg(test)]
 mod save_tests;
+#[cfg(test)]
+mod signature_tests;
 
 use std::collections::BTreeMap;
 use std::fmt;
