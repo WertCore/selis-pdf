@@ -23,7 +23,7 @@ describe("registry shape", () => {
 	it("holds every card the grid renders", () => {
 		// The browser harness names the same count. A change here without the
 		// harness and the offline precache changing is a tool nobody exercises.
-		expect(TOOLS.length).toBe(48);
+		expect(TOOLS.length).toBe(49);
 		expect(TOOL_PAGE_SLUGS.length).toBe(TOOLS.length);
 	});
 
@@ -100,6 +100,24 @@ describe("the subset-fonts card", () => {
 		// request recorder is the mechanical check behind that claim.
 		expect(card?.blurb).toContain("never leaves it");
 		expect(TOOL_PAGE_SLUGS).toContain("subset-pdf-fonts");
+	});
+});
+
+describe("the linearize card", () => {
+	it("is registered as a single-PDF, local-only repair card on op 43", () => {
+		const card = TOOL_BY_ID.get("linearize");
+		expect(card).toBeDefined();
+		expect(card?.slug).toBe("linearize");
+		expect(TOOL_BY_SLUG.get("linearize")).toBe(card);
+		expect(card?.group).toBe("repair");
+		expect(card?.accepts).toBe("pdf");
+		expect(card?.multiple).toBe(false);
+		expect(card?.minimum).toBeUndefined();
+		// The card's own description says the file stays on the device; the
+		// request recorder is the mechanical check behind that claim.
+		expect(card?.blurb).toContain("never leaves it");
+		expect(card?.note).toContain("not a qpdf conformance verdict");
+		expect(TOOL_PAGE_SLUGS).toContain("linearize");
 	});
 });
 

@@ -42,6 +42,7 @@ export type ToolId =
 	| "bates"
 	| "compress"
 	| "subset_fonts"
+	| "linearize"
 	| "attachments"
 	| "attach"
 	| "detach"
@@ -68,7 +69,7 @@ export type ToolId =
 	| "workflow";
 
 /**
- * The sections the card grid is organised into. Forty-three cards in one flat
+ * The sections the card grid is organised into. Forty-nine cards in one flat
  * list is not a menu, it is a wall: the groups are named after what a reader
  * has come to *do*, in the order the operations build on each other — arrange
  * the pages, change what they are, mark them up, then decide who may open
@@ -434,6 +435,20 @@ export const TOOLS: readonly ToolDef[] = [
 		multiple: false,
 		accepts: "pdf",
 		related: ["compress"],
+	},
+	{
+		id: "linearize",
+		slug: "linearize",
+		group: "repair",
+		mark: "LZ",
+		title: "Linearize PDF",
+		blurb:
+			"Reorder a PDF so a web viewer can show its first page after fetching only the leading bytes. Runs on this device; the file never leaves it.",
+		note: "Rewrites the document into Selis's fast-web-view layout: the first page's objects come first and hint tables tell a reader where everything is. Page count and content are checked before the download. This is Selis's own layout, not a qpdf conformance verdict.",
+		verb: "Linearize PDF",
+		multiple: false,
+		accepts: "pdf",
+		related: ["subset_fonts", "compress"],
 	},
 	{
 		id: "attachments",
