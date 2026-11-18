@@ -11852,6 +11852,32 @@ mod tests {
         assert_eq!(width("Helvetica", "nonexistent"), None);
     }
 
+    /// AFM glyph names, not character keys: the tables name digits
+    /// `zero`..`nine` and the quotes `quotesingle`/`quoteright`. Looking up a
+    /// bare `"7"` or `"'"` correctly returns `None` — callers must translate a
+    /// byte to its WinAnsi glyph name first (see `tables::WinAnsiEncoding`).
+    #[test]
+    fn digit_and_quote_glyph_names() {
+        for (glyph, expected) in [
+            ("zero", 556),
+            ("one", 556),
+            ("two", 556),
+            ("three", 556),
+            ("four", 556),
+            ("five", 556),
+            ("six", 556),
+            ("seven", 556),
+            ("eight", 556),
+            ("nine", 556),
+        ] {
+            assert_eq!(width("Helvetica", glyph), Some(expected), "{glyph}");
+        }
+        assert_eq!(width("Helvetica", "quotesingle"), Some(191));
+        assert_eq!(width("Helvetica", "quoteright"), Some(222));
+        assert_eq!(width("Helvetica", "7"), None, "not an AFM glyph name");
+        assert_eq!(width("Helvetica", "'"), None, "not an AFM glyph name");
+    }
+
     #[test]
     fn courier_is_uniform() {
         assert_eq!(width("Courier", "space"), Some(600));
