@@ -3,6 +3,8 @@
 //! Every page carries a proper `/Resources` dictionary referencing five
 //! standard-14 Type 1 font objects with `/Encoding /WinAnsiEncoding`; the
 //! content stream shows WinAnsi byte strings produced by the layout encoder.
+//! Pages with images also carry an `/XObject` dict of `DCTDecode` JPEG streams,
+//! drawn at their measured rectangles with `cm` + `Do`.
 
 use selis_bytes::Bytes;
 use selis_error::Result;
@@ -11,6 +13,7 @@ use selis_pdf_cos::{Obj, Ref};
 use selis_sandbox::{Budget, BudgetGuard, Resource};
 
 use crate::blocks::Block;
+use crate::image::EmbeddedImage;
 use crate::layout::{self, Item};
 use crate::Options;
 
@@ -37,7 +40,8 @@ const FONTS: [&str; 5] = [
 /// # Output Guarantees
 ///
 /// A complete single-revision PDF 1.4 document: header, catalog, page tree,
-/// one content stream and shared font resources per page, classic xref and
+/// one content stream and shared font resources per page (plus an `/XObject`
+/// dict of JPEG image streams when images were embedded), classic xref and
 /// trailer. The output opens in this engine and conforming readers.
 pub(crate) fn build(
     blocks: &[Block],
@@ -71,17 +75,51 @@ pub(crate) fn build(
         let key = format!("F{}", idx.saturating_add(1));
         font_pairs.push((bytes(key.as_bytes()), Obj::Ref(Ref::new(num, 0))));
     }
+    let font_dict = Obj::Dict(font_pairs);
     let res_num = take_num(&mut b);
     b.add_object(
         res_num,
-        Obj::Dict(vec![(bytes(b"Font"), Obj::Dict(font_pairs))]),
+        Obj::Dict(vec![(bytes(b"Font"), font_dict.clone())]),
     );
     let res_ref = Ref::new(res_num, 0);
 
     let mut object_count = 6u64;
     for page in &pages {
+        // Allocate one DCTDecode XObject per image on this page and remember
+        // the content-stream placement (resource name + measured rectangle).
+        let mut xobjects: Vec<(Bytes, Obj)> = Vec::new();
+        let mut placements: Vec<(String, f64, f64, f64, f64)> = Vec::new();
+        for line in &page.lines {
+            for item in &line.items {
+                if let Item::Image {
+                    x,
+                    top,
+                    w,
+                    h,
+                    image,
+                } = item
+                {
+                    let name = format!("Im{}", placements.len().saturating_add(1));
+                    let num = take_num(&mut b);
+                    b.add_object(num, image_xobject(image));
+                    object_count = object_count.saturating_add(1);
+                    xobjects.push((bytes(name.as_bytes()), Obj::Ref(Ref::new(num, 0))));
+                    placements.push((name, *x, *top, *w, *h));
+                }
+            }
+        }
+
         let mut cb = ContentBuilder::new();
-        // Rectangles first (backgrounds under text).
+        // Images first, under text and backgrounds. The CTM maps the unit
+        // square of the image XObject onto the measured rectangle; PDF places
+        // images with their bottom-left at the current origin.
+        for (name, x, top, w, h) in &placements {
+            cb.save_state()
+                .concat(*w, 0.0, 0.0, *h, *x, page_h - top - h)
+                .draw_image(name)
+                .restore_state();
+        }
+        // Rectangles next (backgrounds under text).
         for line in &page.lines {
             for item in &line.items {
                 if let Item::Rect {
@@ -194,11 +232,28 @@ pub(crate) fn build(
         } else {
             vec![(b"Annots".to_vec(), Obj::Array(annots))]
         };
+        // Pages with images need their own `/Resources` carrying an `/XObject`
+        // dict alongside the shared fonts; image-free pages keep the shared
+        // resource object.
+        let page_resources = if xobjects.is_empty() {
+            res_ref
+        } else {
+            let num = take_num(&mut b);
+            b.add_object(
+                num,
+                Obj::Dict(vec![
+                    (bytes(b"Font"), font_dict.clone()),
+                    (bytes(b"XObject"), Obj::Dict(xobjects)),
+                ]),
+            );
+            object_count = object_count.saturating_add(1);
+            Ref::new(num, 0)
+        };
         b.add_page_with_extra(
             page_w,
             page_h,
             &[Ref::new(content_num, 0)],
-            Some(res_ref),
+            Some(page_resources),
             extra,
         );
         object_count = object_count.saturating_add(2);
@@ -206,6 +261,43 @@ pub(crate) fn build(
 
     g.charge(Resource::Objects, object_count)?;
     b.write(budget, g)
+}
+
+/// Build a `DCTDecode` image XObject from a validated JPEG.
+///
+/// The JPEG bytes are embedded verbatim: no decoder runs on the conversion
+/// path. `/Width`, `/Height` and `/ColorSpace` come from the SOF marker, so a
+/// reader can render the stream without guessing its geometry.
+///
+/// # Budget
+///
+/// The caller charges the written stream bytes through `DocumentBuilder::write`
+/// and one object-resolution unit per XObject via `object_count`.
+///
+/// # Malformed Input
+///
+/// None: `image` is validated by `image::parse_data_uri` before it reaches
+/// here; a malformed JPEG never produces an XObject.
+fn image_xobject(image: &EmbeddedImage) -> Obj {
+    Obj::Stream {
+        dict: vec![
+            (bytes(b"Type"), Obj::Name(bytes(b"XObject"))),
+            (bytes(b"Subtype"), Obj::Name(bytes(b"Image"))),
+            (bytes(b"Width"), Obj::Int(i64::from(image.width))),
+            (bytes(b"Height"), Obj::Int(i64::from(image.height))),
+            (
+                bytes(b"ColorSpace"),
+                Obj::Name(bytes(image.color_space.as_bytes())),
+            ),
+            (bytes(b"BitsPerComponent"), Obj::Int(8)),
+            (bytes(b"Filter"), Obj::Name(bytes(b"DCTDecode"))),
+            (
+                bytes(b"Length"),
+                Obj::Int(i64::try_from(image.jpeg.len()).unwrap_or(i64::MAX)),
+            ),
+        ],
+        data: Bytes::copy_from_slice(&image.jpeg),
+    }
 }
 
 /// A real number object with millipoint precision, used for annotation rects.

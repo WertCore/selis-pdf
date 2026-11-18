@@ -85,9 +85,43 @@ columns' body x values move right versus the plain table.
 HTML cell alignment `<td align="right">x</td>` likewise shifts the cell's
 text x versus the same cell without the attribute.
 
+## 4. Embedded JPEG images (HTML and Markdown)
+
+Before — `<img>` was dropped and `![alt](…)` was skipped; no image XObject,
+no pixels on the page:
+
+```html
+<img src="data:image/jpeg;base64,/9j/4AAQSkZJRg…" width="100" height="50">
+```
+
+```markdown
+![a red square](data:image/jpeg;base64,/9j/4AAQSkZJRg…)
+```
+
+After — the base64 JPEG is decoded without fetching anything, its SOF marker
+supplies the true geometry, and the bytes are embedded verbatim behind a
+`DCTDecode` image XObject. Observable in the re-opened PDF:
+
+- exactly one `/Subtype /Image` stream with `Width`/`Height` from the SOF,
+  `/Filter /DCTDecode`, `/BitsPerComponent 8`, a `/ColorSpace` derived from the
+  SOF component count, and stream bytes byte-identical to the source JPEG;
+- the page's `/Resources` carries an `/XObject << /Im1 … >>` entry;
+- the content stream draws it with a `cm` matrix whose rectangle is the
+  measured box — intrinsic pixels × 0.75 pt (96 dpi), or the explicit
+  `width`/`height` attributes when given, clamped to the 504 pt text column —
+  followed by `/Im1 Do`;
+- rasterising the re-opened document at 72 dpi shows the image's ink inside
+  that rectangle (a solid-red 32×32 JPEG paints red pixels there).
+
+The refusal path is part of the case: `https://…`, `file://…` and
+`data:image/png;base64,…` sources are refused by name (typed image error),
+produce **no** XObject and **no** `Do` operator, and are never fetched.
+
 ## What this corpus does *not* claim
 
 Font embedding/subsetting, full CSS layout (cascade, rulesheets, selectors,
-relative units, floats/positioning), image/chart/math/SVG-in-HTML rendering,
-and a true fidelity renderer remain out of scope. These cases only narrow the
-inbound-fidelity gap; they do not make Selis Aspose-equivalent.
+relative units, floats/positioning), chart/math/SVG-in-HTML rendering, and a
+true fidelity renderer remain out of scope. Case 4 covers only JPEG data-URI
+images: PNG/GIF/WebP data URIs, remote images, images in the Office/EPUB
+readers, and CSS background images are still not embedded. These cases only
+narrow the inbound-fidelity gap; they do not make Selis Aspose-equivalent.

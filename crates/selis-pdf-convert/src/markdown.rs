@@ -1,6 +1,7 @@
 //! The Markdown subset parser (see the crate docs for the supported subset).
 
-use crate::blocks::{Block, Span, Style, TextAlign};
+use crate::blocks::{Block, ImageBlock, Span, Style, TextAlign};
+use crate::image::parse_data_uri;
 
 /// Parse Markdown (the documented subset) into layout blocks.
 ///
@@ -166,10 +167,37 @@ fn parse_lines(lines: &[&str], base_indent: usize) -> Vec<Block> {
             i = i.saturating_add(1);
         }
         if !para.trim().is_empty() {
-            out.push(Block::Paragraph(parse_inline(&para)));
+            if let Some(image) = standalone_image(&para) {
+                out.push(image);
+            } else {
+                out.push(Block::Paragraph(parse_inline(&para)));
+            }
         }
     }
     out
+}
+
+/// Turn a paragraph that is exactly `![alt](data:image/jpeg;base64,…)` into an
+/// image block. A remote URL, other scheme or malformed JPEG is refused by name
+/// with a typed image error and skipped (it falls through to `parse_inline`,
+/// which drops the image markup, so no source text is painted). Images inline
+/// with other text are still skipped — only standalone image paragraphs embed.
+fn standalone_image(para: &str) -> Option<Block> {
+    let text = para.trim();
+    let chars: Vec<char> = text.chars().collect();
+    if chars.first() != Some(&'!') || chars.get(1) != Some(&'[') {
+        return None;
+    }
+    let (_, url, end) = parse_link(&chars, 1)?;
+    if end != chars.len() {
+        return None;
+    }
+    let image = parse_data_uri(&url).ok()?;
+    Some(Block::Image(ImageBlock {
+        image,
+        width: None,
+        height: None,
+    }))
 }
 
 /// Whether a trimmed line is a horizontal rule.
