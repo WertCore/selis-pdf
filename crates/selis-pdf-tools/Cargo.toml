@@ -60,6 +60,8 @@ selis-pdf-annot = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+# Read-back verification: re-open the subsetted CFF with skrifa itself.
+skrifa = { workspace = true }
 # Read-back verification for `subset_fonts`: the output is re-opened with the
 # engine's own extraction pipeline, not matched against source bytes.
 # The pixel render-check needs a resident standard-14 substitute: without this

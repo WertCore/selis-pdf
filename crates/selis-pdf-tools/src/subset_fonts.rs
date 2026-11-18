@@ -200,6 +200,181 @@ mod tests {
         builder.write(&budget, &mut g).expect("write fixture")
     }
 
+    /// A one-page PDF showing "ABC" with an embedded CFF Type1C program that
+    /// has real local and global subroutines.
+    fn cff_pdf(program: &[u8]) -> Vec<u8> {
+        let budget = Budget::unlimited();
+        let clock = selis_sandbox::shell_clock();
+        let mut g = budget.guard_with(&clock, selis_sandbox::CancelToken::new());
+        let mut builder = DocumentBuilder::new();
+        let file_num = builder.allocate();
+        builder.add_object(
+            file_num,
+            stream(
+                vec![
+                    (
+                        Bytes::copy_from_slice(b"Length"),
+                        Obj::Int(i64::try_from(program.len()).unwrap_or(i64::MAX)),
+                    ),
+                    (
+                        Bytes::copy_from_slice(b"Length1"),
+                        Obj::Int(i64::try_from(program.len()).unwrap_or(i64::MAX)),
+                    ),
+                    (Bytes::copy_from_slice(b"Subtype"), name(b"Type1C")),
+                ],
+                program,
+            ),
+        );
+        let font = builder.allocate();
+        builder.add_object(
+            font,
+            Obj::Dict(vec![
+                (Bytes::copy_from_slice(b"Type"), name(b"Font")),
+                (Bytes::copy_from_slice(b"Subtype"), name(b"Type1")),
+                (Bytes::copy_from_slice(b"BaseFont"), name(b"SelisCffSubr")),
+                (
+                    Bytes::copy_from_slice(b"Encoding"),
+                    name(b"WinAnsiEncoding"),
+                ),
+                (Bytes::copy_from_slice(b"FirstChar"), Obj::Int(32)),
+                (Bytes::copy_from_slice(b"LastChar"), Obj::Int(126)),
+                (
+                    Bytes::copy_from_slice(b"FontDescriptor"),
+                    Obj::Dict(vec![
+                        (Bytes::copy_from_slice(b"FontName"), name(b"SelisCffSubr")),
+                        (
+                            Bytes::copy_from_slice(b"FontFile3"),
+                            Obj::Ref(Ref::new(file_num, 0)),
+                        ),
+                    ]),
+                ),
+            ]),
+        );
+        let resources = builder.allocate();
+        builder.add_object(
+            resources,
+            Obj::Dict(vec![(
+                Bytes::copy_from_slice(b"Font"),
+                Obj::Dict(vec![(
+                    Bytes::copy_from_slice(b"F1"),
+                    Obj::Ref(Ref::new(font, 0)),
+                )]),
+            )]),
+        );
+        let content = b"BT /F1 48 Tf 72 700 Td (ABC) Tj ET\n";
+        let content_num = builder.allocate();
+        builder.add_object(
+            content_num,
+            stream(
+                vec![(
+                    Bytes::copy_from_slice(b"Length"),
+                    Obj::Int(i64::try_from(content.len()).unwrap_or(i64::MAX)),
+                )],
+                content,
+            ),
+        );
+        builder.add_page_with(
+            612.0,
+            792.0,
+            &[Ref::new(content_num, 0)],
+            Some(Ref::new(resources, 0)),
+        );
+        builder.write(&budget, &mut g).expect("write CFF fixture")
+    }
+
+    /// A one-page Identity-H PDF backed by a CID-keyed CFF program.
+    fn cff_cid_pdf(program: &[u8]) -> Vec<u8> {
+        let budget = Budget::unlimited();
+        let clock = selis_sandbox::shell_clock();
+        let mut g = budget.guard_with(&clock, selis_sandbox::CancelToken::new());
+        let mut builder = DocumentBuilder::new();
+        let file_num = builder.allocate();
+        builder.add_object(
+            file_num,
+            stream(
+                vec![
+                    (
+                        Bytes::copy_from_slice(b"Length"),
+                        Obj::Int(i64::try_from(program.len()).unwrap_or(i64::MAX)),
+                    ),
+                    (
+                        Bytes::copy_from_slice(b"Length1"),
+                        Obj::Int(i64::try_from(program.len()).unwrap_or(i64::MAX)),
+                    ),
+                    (Bytes::copy_from_slice(b"Subtype"), name(b"CIDFontType0C")),
+                ],
+                program,
+            ),
+        );
+        let descendant = builder.allocate();
+        builder.add_object(
+            descendant,
+            Obj::Dict(vec![
+                (Bytes::copy_from_slice(b"Type"), name(b"Font")),
+                (Bytes::copy_from_slice(b"Subtype"), name(b"CIDFontType0")),
+                (Bytes::copy_from_slice(b"BaseFont"), name(b"SelisCidSubr")),
+                (
+                    Bytes::copy_from_slice(b"FontDescriptor"),
+                    Obj::Dict(vec![
+                        (Bytes::copy_from_slice(b"FontName"), name(b"SelisCidSubr")),
+                        (
+                            Bytes::copy_from_slice(b"FontFile3"),
+                            Obj::Ref(Ref::new(file_num, 0)),
+                        ),
+                    ]),
+                ),
+                (Bytes::copy_from_slice(b"CIDToGIDMap"), name(b"Identity")),
+                (Bytes::copy_from_slice(b"DW"), Obj::Int(600)),
+            ]),
+        );
+        let font = builder.allocate();
+        builder.add_object(
+            font,
+            Obj::Dict(vec![
+                (Bytes::copy_from_slice(b"Type"), name(b"Font")),
+                (Bytes::copy_from_slice(b"Subtype"), name(b"Type0")),
+                (Bytes::copy_from_slice(b"BaseFont"), name(b"SelisCidSubr")),
+                (Bytes::copy_from_slice(b"Encoding"), name(b"Identity-H")),
+                (
+                    Bytes::copy_from_slice(b"DescendantFonts"),
+                    Obj::Array(vec![Obj::Ref(Ref::new(descendant, 0))]),
+                ),
+            ]),
+        );
+        let resources = builder.allocate();
+        builder.add_object(
+            resources,
+            Obj::Dict(vec![(
+                Bytes::copy_from_slice(b"Font"),
+                Obj::Dict(vec![(
+                    Bytes::copy_from_slice(b"F1"),
+                    Obj::Ref(Ref::new(font, 0)),
+                )]),
+            )]),
+        );
+        let content = b"BT /F1 48 Tf 72 700 Td <000100020004> Tj ET\n";
+        let content_num = builder.allocate();
+        builder.add_object(
+            content_num,
+            stream(
+                vec![(
+                    Bytes::copy_from_slice(b"Length"),
+                    Obj::Int(i64::try_from(content.len()).unwrap_or(i64::MAX)),
+                )],
+                content,
+            ),
+        );
+        builder.add_page_with(
+            612.0,
+            792.0,
+            &[Ref::new(content_num, 0)],
+            Some(Ref::new(resources, 0)),
+        );
+        builder
+            .write(&budget, &mut g)
+            .expect("write CID CFF fixture")
+    }
+
     /// A one-page Type0/Identity-H document embedding NotoSans Devanagari,
     /// showing two CIDs as a 2-byte hex string.
     fn identity_h_pdf() -> Vec<u8> {
@@ -592,5 +767,147 @@ mod tests {
             "an embedded TrueType program exists in output"
         );
         best
+    }
+
+    /// Pull the largest `OTTO`-wrapped CFF program out of a rewritten document.
+    fn embedded_otf_program(bytes: &[u8]) -> Vec<u8> {
+        let budget = Budget::unlimited();
+        let clock = selis_sandbox::shell_clock();
+        let mut g = budget.guard_with(&clock, selis_sandbox::CancelToken::new());
+        let start = selis_pdf_cos::xref::find_startxref(bytes, 4096).unwrap_or(0);
+        let doc = selis_pdf_cos::parse_revisions(bytes, start, &budget, &mut g).expect("parse");
+        let mut best = Vec::new();
+        for num in 1..64u32 {
+            let Ok(obj) =
+                selis_pdf_cos::copy::resolve_ref(bytes, &doc, Ref::new(num, 0), &budget, &mut g)
+            else {
+                continue;
+            };
+            if let Obj::Stream { dict, data } = obj {
+                let decoded = if dict.iter().any(|(key, value)| {
+                    key.as_slice() == b"Filter"
+                        && matches!(value, Obj::Name(n) if n.as_slice() == b"FlateDecode")
+                }) {
+                    selis_pdf_filter::flate_decode_bounded(&data, 256 * 1024 * 1024, &mut g)
+                        .unwrap_or_default()
+                } else {
+                    data.as_slice().to_vec()
+                };
+                if decoded.len() > best.len() && decoded.starts_with(b"OTTO") {
+                    best = decoded;
+                }
+            }
+        }
+        assert!(
+            !best.is_empty(),
+            "an embedded OTF/CFF program exists in output"
+        );
+        best
+    }
+
+    /// CFF (FontFile3 / Type1C) subsetting end-to-end: the output's embedded
+    /// font is re-opened with skrifa and the page is rendered pixel-identically
+    /// against the source. This is the same evidence the TrueType path ships.
+    #[test]
+    fn cff_subset_is_smaller_valid_and_pixel_identical() {
+        let dir = temp_dir("cff");
+        let input = dir.join("in.pdf");
+        let output = dir.join("out.pdf");
+        let source = cff_pdf(include_bytes!(
+            "../../../crates/selis-font/tests/fixtures/cff-subr.otf"
+        ));
+        std::fs::write(&input, &source).expect("write input");
+
+        let (report, verification) =
+            subset_fonts(input.to_str().unwrap(), output.to_str().unwrap()).expect("subset CFF");
+        assert_eq!(verification.verdict, "ok");
+        assert_eq!(report.fonts_subset, 1);
+        assert!(report.out_bytes < report.in_bytes);
+        let bytes = std::fs::read(&output).expect("read output");
+        assert!(bytes.len() < source.len());
+
+        // Re-open the OUTPUT font with skrifa through the engine's own font
+        // loader, not by matching source bytes.
+        let subset_program = embedded_otf_program(&bytes);
+        let font = skrifa::FontRef::new(&subset_program).expect("output CFF reopens in skrifa");
+        use skrifa::MetadataProvider;
+        assert!(
+            font.metrics(
+                skrifa::instance::Size::unscaled(),
+                skrifa::instance::LocationRef::default()
+            )
+            .glyph_count
+                > 1
+        );
+
+        let (ink_before, ink_after, differing) = render_check(&source, &bytes);
+        eprintln!(
+            "CFF EVIDENCE: input={} output={} kept={} subset_font={}->{} inked={}->{} diffpx={}",
+            source.len(),
+            bytes.len(),
+            report.glyphs_kept,
+            include_bytes!("../../../crates/selis-font/tests/fixtures/cff-subr.otf").len(),
+            subset_program.len(),
+            ink_before,
+            ink_after,
+            differing
+        );
+        assert_eq!(differing, 0, "CFF subset renders pixel-identically");
+        assert_eq!(ink_before, ink_after);
+        assert!(
+            subset_program.len()
+                < include_bytes!("../../../crates/selis-font/tests/fixtures/cff-subr.otf").len(),
+            "the embedded CFF stream is strictly smaller"
+        );
+    }
+
+    /// CID-keyed CFF (FDArray/FDSelect) subsetting, verified the same way.
+    #[test]
+    fn cid_cff_subset_is_smaller_valid_and_pixel_identical() {
+        let source_fixture =
+            include_bytes!("../../../crates/selis-font/tests/fixtures/cff-cid-subr.otf");
+        let dir = temp_dir("cff-cid");
+        let input = dir.join("in.pdf");
+        let output = dir.join("out.pdf");
+        let source = cff_cid_pdf(source_fixture);
+        std::fs::write(&input, &source).expect("write input");
+
+        let (report, verification) =
+            subset_fonts(input.to_str().unwrap(), output.to_str().unwrap())
+                .expect("subset CID CFF");
+        assert_eq!(verification.verdict, "ok");
+        assert_eq!(report.fonts_subset, 1);
+        let bytes = std::fs::read(&output).expect("read output");
+        assert!(bytes.len() < source.len());
+        let subset_program = embedded_otf_program(&bytes);
+        let font = skrifa::FontRef::new(&subset_program).expect("output CID CFF reopens");
+        use skrifa::MetadataProvider;
+        assert!(
+            font.metrics(
+                skrifa::instance::Size::unscaled(),
+                skrifa::instance::LocationRef::default()
+            )
+            .glyph_count
+                > 1
+        );
+        let (ink_before, ink_after, differing) = render_check(&source, &bytes);
+        eprintln!(
+            "CID CFF EVIDENCE: input={} output={} kept={} subset_font={}->{} inked={}->{} diffpx={}",
+            source.len(),
+            bytes.len(),
+            report.glyphs_kept,
+            source_fixture.len(),
+            subset_program.len(),
+            ink_before,
+            ink_after,
+            differing
+        );
+        assert_eq!(differing, 0, "CID CFF subset renders pixel-identically");
+        assert_eq!(ink_before, ink_after);
+        assert!(subset_program.len() < source_fixture.len());
+        assert!(
+            String::from_utf8_lossy(&bytes).contains("/CIDToGIDMap"),
+            "the CIDToGIDMap stream was rewritten"
+        );
     }
 }

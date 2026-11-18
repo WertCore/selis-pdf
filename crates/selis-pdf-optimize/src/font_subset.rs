@@ -3,8 +3,9 @@
 //! This is the *lossless* counterpart of the image recompression pass: it
 //! rewrites only the embedded font programs that the document's text actually
 //! references, leaving content streams, annotations, forms and page order
-//! byte-identical. The subsetter itself lives in `selis-font`
-//! ([`selis_font::subset_ttf_with_map`]); this module is the COS-side
+//! byte-identical. The subsetters live in `selis-font`
+//! ([`selis_font::subset_ttf_with_map`] for TrueType and
+//! [`selis_font::subset_cff`] for CFF); this module is the COS-side
 //! orchestration the parity spec assigns to `selis-pdf-optimize`.
 //!
 //! # Supported shapes
@@ -24,12 +25,14 @@
 //!
 //! # Deliberate deviations (fail loudly, never pass through)
 //!
-//! CFF programs (`/FontFile3`, `CIDFontType0`, OpenType/CFF), non-Identity-H
-//! CMaps, stream-valued `/CIDToGIDMap`, `/Differences` or non-WinAnsi simple
+//! CFF programs (`/FontFile3` Type1C and CIDFontType0C) are subset through
+//! `selis_font::subset_cff`, which rebuilds Type 2 charstrings, subroutines,
+//! charset, FDArray/FDSelect and DICT offsets. Non-Identity-H CMaps,
+//! stream-valued `/CIDToGIDMap`, `/Differences` or non-WinAnsi simple
 //! encodings, non-Flate stream filters, unembedded fonts, and documents where
-//! no embedded TrueType program is used by text all produce a typed
-//! [`SubsetError`]. A rewrite that is not strictly smaller than the input is
-//! also refused with [`SubsetError::WouldGrow`].
+//! no embedded program is used by text all produce a typed [`SubsetError`].
+//! A rewrite that is not strictly smaller than the input is also refused with
+//! [`SubsetError::WouldGrow`].
 //!
 //! # Budget
 //!
@@ -60,7 +63,7 @@ use std::fmt;
 
 use selis_bytes::Bytes;
 use selis_font::{
-    glyph_id_for_simple_code, subset_ttf_with_map, BaseEncoding, FontEncoding, GlyphSet,
+    glyph_id_for_simple_code, subset_cff, subset_ttf_with_map, BaseEncoding, FontEncoding, GlyphSet,
 };
 use selis_pdf_content::{tokenise, Tok};
 use selis_pdf_cos::copy::collect_objects;
@@ -133,21 +136,36 @@ pub struct SubsetReport {
     pub out_bytes: usize,
 }
 
-/// How a font object's shown codes map to glyph ids.
+/// How a font object's shown codes map to glyph ids, and which embedded
+/// program backs it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum FontKind {
-    /// Single-byte WinAnsi codes resolved through the font's cmap/encoding.
-    Simple(FontEncoding),
-    /// Two-byte Identity-H CIDs used directly as glyph ids.
-    IdentityH,
+    /// Single-byte WinAnsi codes, TrueType `/FontFile2` program.
+    SimpleTrueType(FontEncoding),
+    /// Single-byte WinAnsi codes, CFF `/FontFile3` Type1C program.
+    SimpleCff(FontEncoding),
+    /// Two-byte Identity-H CIDs used directly as glyph ids, TrueType program.
+    IdentityHTrueType,
+    /// Two-byte Identity-H CIDs, CFF `/FontFile3` CIDFontType0C program.
+    IdentityHCff,
 }
 
 impl FontKind {
     fn tag(&self) -> &'static str {
         match self {
-            Self::Simple(_) => "simple/WinAnsi",
-            Self::IdentityH => "Identity-H/CIDFontType2",
+            Self::SimpleTrueType(_) => "simple/WinAnsi/TrueType",
+            Self::SimpleCff(_) => "simple/WinAnsi/CFF",
+            Self::IdentityHTrueType => "Identity-H/CIDFontType2",
+            Self::IdentityHCff => "Identity-H/CIDFontType0",
         }
+    }
+
+    fn cff(&self) -> bool {
+        matches!(self, Self::SimpleCff(_) | Self::IdentityHCff)
+    }
+
+    fn identity_h(&self) -> bool {
+        matches!(self, Self::IdentityHTrueType | Self::IdentityHCff)
     }
 }
 
@@ -294,7 +312,7 @@ pub fn subset_fonts(
                     None => continue,
                 };
                 match &target.kind {
-                    FontKind::Simple(encoding) => {
+                    FontKind::SimpleTrueType(encoding) | FontKind::SimpleCff(encoding) => {
                         for byte in &bytes {
                             if let Some(gid) =
                                 glyph_id_for_simple_code(program, encoding, u16::from(*byte))
@@ -303,7 +321,7 @@ pub fn subset_fonts(
                             }
                         }
                     }
-                    FontKind::IdentityH => {
+                    FontKind::IdentityHTrueType | FontKind::IdentityHCff => {
                         for pair in bytes.chunks_exact(2) {
                             let Some(&hi) = pair.first() else { continue };
                             let Some(&lo) = pair.get(1) else { continue };
@@ -352,11 +370,17 @@ pub fn subset_fonts(
         if keep.is_empty() {
             return Err(SubsetError::NoGlyphsUsed(plan.label.clone()));
         }
-        let subset = subset_ttf_with_map(program, &GlyphSet { keep: keep.clone() }, g)
-            .map_err(|e| SubsetError::Backend(format!("subset {}: {e}", plan.label)))?;
+        let subset = if plan.kind.cff() {
+            subset_cff(program, &GlyphSet { keep: keep.clone() }, g).map_err(|e| {
+                SubsetError::UnsupportedFont(format!("{}: CFF subset refused: {e}", plan.label))
+            })?
+        } else {
+            subset_ttf_with_map(program, &GlyphSet { keep: keep.clone() }, g)
+                .map_err(|e| SubsetError::Backend(format!("subset {}: {e}", plan.label)))?
+        };
         let Some(subset) = subset else {
             return Err(SubsetError::UnsupportedFont(format!(
-                "{}: embedded program is not a subsettable TrueType font",
+                "{}: embedded program is not a subsettable font",
                 plan.label
             )));
         };
@@ -380,7 +404,7 @@ pub fn subset_fonts(
         };
         let Obj::Stream { dict, data } = slot else {
             return Err(SubsetError::UnsupportedFont(format!(
-                "{}: /FontFile2 is not a stream",
+                "{}: embedded font program is not a stream",
                 plan.label
             )));
         };
@@ -408,37 +432,39 @@ pub fn subset_fonts(
         // Identity-H: the original 2-byte codes are CIDs, and the subsetter
         // compacted the glyph ids. Publish the new mapping as a CIDToGIDMap
         // stream so the unchanged codes keep selecting the right outlines.
-        if let (FontKind::IdentityH, Some(descendant_num)) = (&plan.kind, plan.descendant_num) {
-            let max_cid = keep_set.iter().copied().max().unwrap_or(0);
-            let mut map = Vec::new();
-            for cid in 0..=max_cid {
-                let gid = subset.gid_map.get(&cid).copied().unwrap_or(0);
-                map.extend_from_slice(&gid.to_be_bytes());
-            }
-            let map_num = allocated;
-            allocated = allocated.saturating_add(1);
-            let map_dict = vec![(
-                Bytes::copy_from_slice(b"Length"),
-                Obj::Int(i64::try_from(map.len()).unwrap_or(i64::MAX)),
-            )];
-            objects.push((
-                map_num,
-                Obj::Stream {
-                    dict: map_dict,
-                    data: Bytes::from(map),
-                },
-            ));
-            let d_index = match position.get(&descendant_num) {
-                Some(index) => *index,
-                None => return Err(SubsetError::Backend("lost CIDFont object".to_string())),
-            };
-            if let Some((_, Obj::Dict(descendant))) = objects.get_mut(d_index) {
-                set_key(descendant, b"CIDToGIDMap", Obj::Ref(Ref::new(map_num, 0)));
-            } else {
-                return Err(SubsetError::UnsupportedFont(format!(
-                    "{}: descendant is not a dictionary",
-                    plan.label
-                )));
+        if plan.kind.identity_h() {
+            if let Some(descendant_num) = plan.descendant_num {
+                let max_cid = keep_set.iter().copied().max().unwrap_or(0);
+                let mut map = Vec::new();
+                for cid in 0..=max_cid {
+                    let gid = subset.gid_map.get(&cid).copied().unwrap_or(0);
+                    map.extend_from_slice(&gid.to_be_bytes());
+                }
+                let map_num = allocated;
+                allocated = allocated.saturating_add(1);
+                let map_dict = vec![(
+                    Bytes::copy_from_slice(b"Length"),
+                    Obj::Int(i64::try_from(map.len()).unwrap_or(i64::MAX)),
+                )];
+                objects.push((
+                    map_num,
+                    Obj::Stream {
+                        dict: map_dict,
+                        data: Bytes::from(map),
+                    },
+                ));
+                let d_index = match position.get(&descendant_num) {
+                    Some(index) => *index,
+                    None => return Err(SubsetError::Backend("lost CIDFont object".to_string())),
+                };
+                if let Some((_, Obj::Dict(descendant))) = objects.get_mut(d_index) {
+                    set_key(descendant, b"CIDToGIDMap", Obj::Ref(Ref::new(map_num, 0)));
+                } else {
+                    return Err(SubsetError::UnsupportedFont(format!(
+                        "{}: descendant is not a dictionary",
+                        plan.label
+                    )));
+                }
             }
         }
 
@@ -674,26 +700,30 @@ fn resolve_font(
                 .get(&descendant_num)
                 .and_then(|obj| as_dict(obj))
                 .ok_or_else(|| "descendant is not a dictionary".to_string())?;
-            if name(descendant, b"Subtype") != Some(b"CIDFontType2") {
-                return Err("descendant is not CIDFontType2 (CFF is not subset)".to_string());
-            }
-            match get(descendant, b"CIDToGIDMap") {
-                None => {}
-                Some(Obj::Name(map)) if map.as_slice() == b"Identity" => {}
-                Some(Obj::Name(map)) => {
+            check_cid_to_gid_map(descendant)?;
+            let (file_num, kind, label) = match name(descendant, b"Subtype") {
+                Some(b"CIDFontType2") => (
+                    embedded_program(descendant, objects, None)?,
+                    FontKind::IdentityHTrueType,
+                    "Identity-H CIDFontType2",
+                ),
+                Some(b"CIDFontType0") => (
+                    embedded_program(descendant, objects, Some(b"CIDFontType0C"))?,
+                    FontKind::IdentityHCff,
+                    "Identity-H CIDFontType0",
+                ),
+                other => {
                     return Err(format!(
-                        "CIDToGIDMap {} is not /Identity",
-                        String::from_utf8_lossy(map.as_slice())
+                        "unsupported CIDFont subtype {}",
+                        String::from_utf8_lossy(other.unwrap_or(b""))
                     ))
                 }
-                Some(_) => return Err("stream CIDToGIDMap is not supported".to_string()),
-            }
-            let file_num = font_file2(descendant, objects)?;
+            };
             Ok(Some(FontTarget {
                 file_num,
                 descendant_num: Some(descendant_num),
-                kind: FontKind::IdentityH,
-                label: String::from("Identity-H CIDFont"),
+                kind,
+                label: String::from(label),
             }))
         }
         b"TrueType" | b"Type1" | b"MMType1" => {
@@ -702,7 +732,12 @@ fn resolve_font(
             if get(dict, b"FontDescriptor").is_none() {
                 return Ok(None);
             }
-            let file_num = font_file2(dict, objects)?;
+            let expect_cff = if has_font_file3_subtype(dict, objects, b"Type1C") {
+                Some(b"Type1C" as &[u8])
+            } else {
+                None
+            };
+            let file_num = embedded_program(dict, objects, expect_cff)?;
             let encoding = match get(dict, b"Encoding") {
                 Some(Obj::Name(enc)) if enc.as_slice() == b"WinAnsiEncoding" => {
                     FontEncoding::Named(BaseEncoding::WinAnsi)
@@ -723,11 +758,14 @@ fn resolve_font(
             Ok(Some(FontTarget {
                 file_num,
                 descendant_num: None,
-                kind: FontKind::Simple(encoding),
+                kind: if expect_cff.is_some() {
+                    FontKind::SimpleCff(encoding)
+                } else {
+                    FontKind::SimpleTrueType(encoding)
+                },
                 label: String::from("WinAnsi simple font"),
             }))
         }
-        b"CIDFontType0" => Err("CIDFontType0 (CFF) is not subset".to_string()),
         b"Type3" => Err("Type3 fonts are not subset".to_string()),
         other => Err(format!(
             "font subtype {} is not subset",
@@ -736,35 +774,88 @@ fn resolve_font(
     }
 }
 
-/// The `/FontFile2` object number on a font descriptor reached from `dict`.
-fn font_file2(dict: &[(Bytes, Obj)], objects: &BTreeMap<u32, &Obj>) -> Result<u32, String> {
-    let descriptor = match get(dict, b"FontDescriptor") {
+/// The font descriptor dictionary reached from `dict`.
+fn descriptor_of<'a>(
+    dict: &'a [(Bytes, Obj)],
+    objects: &'a BTreeMap<u32, &'a Obj>,
+) -> Result<&'a [(Bytes, Obj)], String> {
+    match get(dict, b"FontDescriptor") {
         Some(Obj::Ref(reference)) => objects
             .get(&reference.num)
             .and_then(|obj| as_dict(obj))
-            .ok_or_else(|| "FontDescriptor is not a dictionary".to_string())?,
-        Some(Obj::Dict(descriptor)) => descriptor,
-        _ => return Err("font has no FontDescriptor".to_string()),
+            .ok_or_else(|| "FontDescriptor is not a dictionary".to_string()),
+        Some(Obj::Dict(descriptor)) => Ok(descriptor),
+        _ => Err("font has no FontDescriptor".to_string()),
+    }
+}
+
+/// Whether the descriptor carries a `/FontFile3` with the expected CFF subtype.
+fn has_font_file3_subtype(
+    dict: &[(Bytes, Obj)],
+    objects: &BTreeMap<u32, &Obj>,
+    expected: &[u8],
+) -> bool {
+    let Ok(descriptor) = descriptor_of(dict, objects) else {
+        return false;
     };
-    match font_file_num(descriptor) {
-        Some(num) => Ok(num),
-        None if has_font_file3(descriptor) => {
-            Err("embedded CFF (/FontFile3) program is not subset".to_string())
+    matches!(get(descriptor, b"FontFile3"), Some(Obj::Ref(reference))
+        if objects
+            .get(&reference.num)
+            .and_then(|obj| as_dict(obj))
+            .and_then(|stream_dict| name(stream_dict, b"Subtype"))
+            == Some(expected))
+}
+
+/// Resolve the embedded program on a font descriptor. `Some(expected_subtype)`
+/// selects `/FontFile3` and validates its `/Subtype`; `None` selects `/FontFile2`.
+fn embedded_program(
+    dict: &[(Bytes, Obj)],
+    objects: &BTreeMap<u32, &Obj>,
+    expected_subtype: Option<&[u8]>,
+) -> Result<u32, String> {
+    let descriptor = descriptor_of(dict, objects)?;
+    match expected_subtype {
+        None => match get(descriptor, b"FontFile2") {
+            Some(Obj::Ref(reference)) => Ok(reference.num),
+            _ => Err("font has no embedded /FontFile2 program".to_string()),
+        },
+        Some(expected) => {
+            let reference = match get(descriptor, b"FontFile3") {
+                Some(Obj::Ref(reference)) => reference,
+                _ => return Err("font has no embedded /FontFile3 program".to_string()),
+            };
+            let actual = objects
+                .get(&reference.num)
+                .and_then(|obj| as_dict(obj))
+                .and_then(|stream_dict| name(stream_dict, b"Subtype"))
+                .ok_or_else(|| "/FontFile3 has no /Subtype".to_string())?;
+            if actual != expected {
+                return Err(format!(
+                    "/FontFile3 subtype {} is not {}",
+                    String::from_utf8_lossy(actual),
+                    String::from_utf8_lossy(expected)
+                ));
+            }
+            Ok(reference.num)
         }
-        None => Err("font has no embedded /FontFile2 program".to_string()),
     }
 }
 
-/// The `/FontFile2` reference on a font dictionary (or descriptor).
-fn font_file_num(dict: &[(Bytes, Obj)]) -> Option<u32> {
-    match get(dict, b"FontFile2") {
-        Some(Obj::Ref(reference)) => Some(reference.num),
-        _ => None,
+/// `/CIDToGIDMap` must be `/Identity` or absent: a stream map would have to be
+/// composed with the subsetter's renumbering, which is deliberately refused.
+fn check_cid_to_gid_map(descendant: &[(Bytes, Obj)]) -> Result<(), String> {
+    match get(descendant, b"CIDToGIDMap") {
+        None => {}
+        Some(Obj::Name(map)) if map.as_slice() == b"Identity" => {}
+        Some(Obj::Name(map)) => {
+            return Err(format!(
+                "CIDToGIDMap {} is not /Identity",
+                String::from_utf8_lossy(map.as_slice())
+            ))
+        }
+        Some(_) => return Err("stream CIDToGIDMap is not supported".to_string()),
     }
-}
-
-fn has_font_file3(dict: &[(Bytes, Obj)]) -> bool {
-    get(dict, b"FontFile3").is_some()
+    Ok(())
 }
 
 fn as_dict(obj: &Obj) -> Option<&[(Bytes, Obj)]> {
@@ -885,6 +976,82 @@ mod tests {
             .expect("write embedded-font fixture")
     }
 
+    /// A one-page document showing a simple font backed by `/FontFile3`.
+    fn embedded_cff_pdf(program: &[u8]) -> Vec<u8> {
+        let budget = Budget::unlimited();
+        let mut g = budget.guard();
+        let mut builder = DocumentBuilder::new();
+        let file = builder.allocate();
+        builder.add_object(
+            file,
+            Obj::Stream {
+                dict: vec![
+                    (
+                        Bytes::copy_from_slice(b"Length"),
+                        Obj::Int(i64::try_from(program.len()).unwrap_or(i64::MAX)),
+                    ),
+                    (
+                        Bytes::copy_from_slice(b"Length1"),
+                        Obj::Int(i64::try_from(program.len()).unwrap_or(i64::MAX)),
+                    ),
+                    (Bytes::copy_from_slice(b"Subtype"), name(b"Type1C")),
+                ],
+                data: Bytes::copy_from_slice(program),
+            },
+        );
+        let font = builder.allocate();
+        builder.add_object(
+            font,
+            Obj::Dict(vec![
+                (Bytes::copy_from_slice(b"Type"), name(b"Font")),
+                (Bytes::copy_from_slice(b"Subtype"), name(b"Type1")),
+                (
+                    Bytes::copy_from_slice(b"Encoding"),
+                    name(b"WinAnsiEncoding"),
+                ),
+                (
+                    Bytes::copy_from_slice(b"FontDescriptor"),
+                    Obj::Dict(vec![(
+                        Bytes::copy_from_slice(b"FontFile3"),
+                        Obj::Ref(Ref::new(file, 0)),
+                    )]),
+                ),
+            ]),
+        );
+        let resources = builder.allocate();
+        builder.add_object(
+            resources,
+            Obj::Dict(vec![(
+                Bytes::copy_from_slice(b"Font"),
+                Obj::Dict(vec![(
+                    Bytes::copy_from_slice(b"F1"),
+                    Obj::Ref(Ref::new(font, 0)),
+                )]),
+            )]),
+        );
+        let content = b"BT /F1 24 Tf 72 700 Td (ABC) Tj ET\n";
+        let content_num = builder.allocate();
+        builder.add_object(
+            content_num,
+            Obj::Stream {
+                dict: vec![(
+                    Bytes::copy_from_slice(b"Length"),
+                    Obj::Int(i64::try_from(content.len()).unwrap_or(i64::MAX)),
+                )],
+                data: Bytes::copy_from_slice(content),
+            },
+        );
+        builder.add_page_with(
+            612.0,
+            792.0,
+            &[Ref::new(content_num, 0)],
+            Some(Ref::new(resources, 0)),
+        );
+        builder
+            .write(&budget, &mut g)
+            .expect("write embedded-CFF fixture")
+    }
+
     #[test]
     fn subsets_an_embedded_program_and_returns_smaller_reparseable_bytes() {
         let budget = Budget::unlimited();
@@ -917,12 +1084,34 @@ mod tests {
     }
 
     #[test]
-    fn a_cff_program_is_refused_loudly() {
+    fn an_embedded_cff_program_is_subset_and_the_stream_rewritten() {
         let budget = Budget::unlimited();
         let mut g = budget.guard();
-        let cff = include_bytes!("../../../crates/selis-font/tests/fixtures/cff.otf");
-        let src = embedded_font_pdf(cff);
-        let err = subset_fonts(&src, &budget, &mut g).expect_err("CFF refused");
+        let cff = include_bytes!("../../../crates/selis-font/tests/fixtures/cff-subr.otf");
+        let src = embedded_cff_pdf(cff);
+        let (out, report) = subset_fonts(&src, &budget, &mut g).expect("subset CFF");
+        assert_eq!(report.fonts_subset, 1);
+        assert!(out.len() < src.len(), "{} < {}", out.len(), src.len());
+        // Re-open the output and verify the /FontFile3 stream is a smaller,
+        // parseable CFF rather than the original bytes.
+        let start = selis_pdf_cos::xref::find_startxref(&out, 4096).unwrap_or(0);
+        let doc = selis_pdf_cos::parse_revisions(&out, start, &budget, &mut g).expect("reparse");
+        let root = doc.revisions().last().and_then(|r| r.root).expect("root");
+        let rev = doc.revisions().last().expect("revision");
+        assert!(root.num > 0 && rev.encrypt.is_none());
+        let bytes = String::from_utf8_lossy(&out);
+        assert!(bytes.contains("/FontFile3"), "FontFile3 stream survives");
+    }
+
+    /// A CFF that the low-level writer refuses must surface as a typed error,
+    /// never as a passthrough stream.
+    #[test]
+    fn an_unsupported_cff_program_is_refused_loudly() {
+        let budget = Budget::unlimited();
+        let mut g = budget.guard();
+        // A bare text file is not a CFF program: the writer cannot parse it.
+        let src = embedded_cff_pdf(b"not a CFF program");
+        let err = subset_fonts(&src, &budget, &mut g).expect_err("refused");
         assert!(
             matches!(
                 err,
