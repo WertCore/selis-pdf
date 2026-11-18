@@ -162,6 +162,68 @@ the part, and compressed members are not separately counted. Page objects and
 the outline tree stay uncompressed so their hint records match qpdf's own
 part classification.
 
+## Independent optional-hint decoder (F.6–F.10)
+
+`tools/check_linearization_hints_independent.py` closes the last validation gap
+for the OPTIONAL Annex F tables. It is a **second, from-scratch decoder** that
+shares no code with the writer (`linearize.rs`) or either existing checker
+(`check_linearization.py`, `check_linearization_conformance.py`) and imports
+only the Python standard library. It has its own MSB-first bit reader, hint-stream
+dictionary parser, raw-object/object-stream scanner and page-tree walker. For
+every table key it decodes the Annex F bit layout and cross-checks **every
+field** against the real structures, which it re-derives by independently
+scanning the file:
+
+* **F.6 outline** (`/O`): first object, its byte offset, object count and group
+  span vs. the walked `/Outlines` tree;
+* **F.7 thumbnail** (`/T`): row count, populated rows and inline bytes vs. each
+  page's real `/Thumb` stream;
+* **F.8 named destination** (`/A`): count, names and inline page numbers vs. the
+  `/Dests` / `/Names` tree;
+* **F.9 page label** (`/E`): populated rows and inline record bytes vs. the
+  effective `/PageLabels` range dictionaries;
+* **F.10 form** (`/F`): field count, object numbers and page indices vs. the
+  `/AcroForm` `/Fields` tree and page `/Annots` widgets.
+
+It also requires the set of emitted table keys to match exactly the set of
+source structures present (no fabricated / missing tables). `--negative-controls`
+makes several **same-length** single-bit field corruptions per table (counts,
+inline offsets, lengths, object numbers, page indices) and requires the decoder
+to reject each with a failure attributed to that table.
+
+### Verdicts
+
+Inputs are the three source fixtures linearized by the writer in **both** xref
+modes. The committed classic-xref vectors are in `corpus/fixtures/lin_conformance/`;
+the compressed vectors were regenerated from the same sources with
+`selis linearize --xref-streams`.
+
+| Fixture | Tables decoded | Classic: decode / negative controls | Compressed: decode / negative controls |
+|---|---|---|---|
+| outlines (`outlines_for_editor`) | F.6, F.8 | PASS 14/14 / PASS 5/5 | PASS 14/14 / PASS 5/5 |
+| hints (`lin_optional_hints`) | F.7, F.9 | PASS 11/11 / PASS 4/4 | PASS 11/11 / PASS 4/4 |
+| form (`form_two_pages`) | F.6, F.10 | PASS 15/15 / PASS 6/6 | PASS 15/15 / PASS 6/6 |
+
+All five optional tables are covered across the three fixtures, in both writer
+modes. Run with:
+
+```bash
+python tools/check_linearization_hints_independent.py --negative-controls \
+  corpus/fixtures/lin_conformance/lin_outline.pdf \
+  corpus/fixtures/lin_conformance/lin_hints.pdf \
+  corpus/fixtures/lin_conformance/lin_form.pdf
+
+python tools/check_linearization_hints_independent_test.py   # full assertions incl. independence
+```
+
+**Proven:** the emitted optional tables, decoded with a layout reconstructed
+independently from ISO 32000-1 Annex F, agree bit-for-bit and field-for-field
+with the structures in the same file; tampering with any decoded field is
+detected. **Not proven:** that any external viewer interprets these tables as
+we do (see [Limitations](#limitations-exactly-what-this-does-not-prove)). This
+is an independent *self-consistency* result, not an Acrobat verdict and not a
+qpdf verdict for F.7–F.10.
+
 ## Limitations — exactly what this does NOT prove
 
 Honesty matters more than a green tick:
@@ -171,10 +233,17 @@ Honesty matters more than a green tick:
    real qpdf verdict is reported separately in the section above: for both xref
    modes every fixture prints `<file>: no linearization errors` (exit 0).
 2. **Optional-table bit layouts are the writer's documented reconstruction of
-   Annex F.** For F.6–F.9 the checker proves that the inline records it decodes
-   with that layout match the real structures, and qpdf's own linearization
-   checker independently validates F.4, F.5 and F.6. qpdf ignores the F.7–F.10
-   tables, so their interpretation by Acrobat is still not externally verified.
+   Annex F, and external interpretation is unverified.** qpdf's own
+   linearization checker validates F.4, F.5 and F.6 but **ignores F.7–F.10**.
+   The new `check_linearization_hints_independent.py` gives every optional table
+   (F.6–F.10) an independent *self-consistency* decoding: it proves the emitted
+   bytes decode with the reconstructed layout and agree with the structures in
+   the same file, including under field-level negative controls. That is still
+   not an external verdict — no viewer other than the writer/checkers has been
+   shown to read F.7–F.10 this way. Acrobat Reader cannot be driven to a verdict
+   in this environment (its COM automation returns `E_NOINTERFACE`), so
+   **Acrobat's interpretation of the optional tables remains UNVERIFIED**. Do
+   not claim Acrobat conformance, or qpdf conformance for F.7–F.10.
 3. **Object streams / xref streams are now covered.** The checker parses
    `/Type /XRef` streams (`/W`, `/Index`, `/Prev`) and decodes `/ObjStm`
    members, so the compressed writer is checked too. qpdf additionally checks
