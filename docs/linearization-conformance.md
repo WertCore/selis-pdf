@@ -15,11 +15,15 @@ The checker:
   using its own object scanner, xref parser, object-graph walker and MSB-first
   bit reader;
 * needs only the Python standard library for the conformance verdict;
-* does not use qpdf, mutool, pdftk, pikepdf, or any network install (none of
-  these are installed in this environment and none are fetched).
+* uses only the Python standard library for its own verdict, and
+* is independently corroborated by the real `qpdf --check-linearization`
+  binary (v12.4.2) on every fixture — both the classic-xref and the opt-in
+  xref/object-stream (compressed) writer print `no linearization errors` with
+  exit 0.
 
-It is therefore an independent implementation, but **it is not
-`qpdf --check-linearization`**. See [Limitations](#limitations-exactly-what-this-does-not-prove).
+The Python verdict is still an independent implementation, not a wrapper around
+qpdf. Both verdicts are reported separately below. See
+[Limitations](#limitations-exactly-what-this-does-not-prove).
 
 ## What the checker validates
 
@@ -135,34 +139,57 @@ the writer binary); `--no-build` checks committed snapshot vectors in
 (The per-category counts printed by the driver are the authoritative detail;
 the totals above are the sums of those categories.)
 
+## Real qpdf verdicts (v12.4.2)
+
+Both writers were iterated against the installed `qpdf --check-linearization`
+binary. For each fixture below the command prints exactly
+`<file>: no linearization errors` and exits 0, in **both** xref modes:
+
+| Fixture | Classic xref | Compressed (xref + object streams) |
+|---|---|---|
+| form_two_pages (AcroForm) | no linearization errors (exit 0) | no linearization errors (exit 0) |
+| verification_features | no linearization errors (exit 0) | no linearization errors (exit 0) |
+| outlines_for_editor (5 pages, outlines) | no linearization errors (exit 0) | no linearization errors (exit 0) |
+| lin_optional_hints (labels + thumbnails) | no linearization errors (exit 0) | no linearization errors (exit 0) |
+| lin_xref_streams | no linearization errors (exit 0) | no linearization errors (exit 0) |
+| generated multi-page (3 pages, shared object) | — | no linearization errors (exit 0) |
+
+The compressed writer achieves this by (a) assigning object numbers so every
+type-1 entry precedes every type-2 entry in each xref section, and (b)
+computing the F.4/F.5/F.6 tables in qpdf's "storage unit" view: an uncompressed
+object is one unit, a whole `/ObjStm` is one unit charged to its position in
+the part, and compressed members are not separately counted. Page objects and
+the outline tree stay uncompressed so their hint records match qpdf's own
+part classification.
+
 ## Limitations — exactly what this does NOT prove
 
 Honesty matters more than a green tick:
 
-1. **This is not qpdf.** qpdf, mutool, pdftk and pikepdf are absent and were not
-   installed from the network. No `qpdf --check-linearization` verdict exists
-   for these files. A pass here must not be reported as one.
+1. **The Python checker is still not qpdf.** It shares no code with the writer,
+   but a PASS from it is not itself a `qpdf --check-linearization` verdict. The
+   real qpdf verdict is reported separately in the section above: for both xref
+   modes every fixture prints `<file>: no linearization errors` (exit 0).
 2. **Optional-table bit layouts are the writer's documented reconstruction of
    Annex F.** For F.6–F.9 the checker proves that the inline records it decodes
-   with that layout match the real structures, but it cannot prove that qpdf or
-   Acrobat interprets those bytes the same way — that is precisely the external
-   verdict we do not have. The core F.4/F.5 layouts and semantics are much more
-   tightly specified and are cross-checked against independently derived byte
-   offsets and object lengths.
-3. **No object streams / xref streams.** The writer emits classic xref and
-   plain objects only; the checker validates that world and does not exercise
-   qpdf's checks for PDF 1.5+ cross-reference streams or object streams.
+   with that layout match the real structures, and qpdf's own linearization
+   checker independently validates F.4, F.5 and F.6. qpdf ignores the F.7–F.10
+   tables, so their interpretation by Acrobat is still not externally verified.
+3. **Object streams / xref streams are now covered.** The checker parses
+   `/Type /XRef` streams (`/W`, `/Index`, `/Prev`) and decodes `/ObjStm`
+   members, so the compressed writer is checked too. qpdf additionally checks
+   that no type-2 xref entry precedes a type-1 entry in `/Index` order; the
+   compressed writer satisfies this by renumbering storage units before
+   compressed members.
 4. **No shared-object MD5 signatures.** F.5 `signature_present` bits are always
    0 in this writer; the checker validates that, but does not verify MD5 group
    signatures that a general checker would accept when present.
-5. **No optional AcroForm hint table (F.10).** The writer does not emit it; the
-   checker does not check for it. This remains a known capability gap.
-6. **Not a full conformance suite.** It does not validate content-stream
+5. **Not a full conformance suite.** It does not validate content-stream
    semantics, colour spaces, fonts, encryption (the writer refuses encrypted
    inputs), incremental updates, or whether a viewer actually *uses* the hint
    tables for progressive display. It checks the structural contract the
    writer claims, not every clause of ISO 32000-1.
-7. **Interop is not conformance.** pypdf/PDFium reading the file successfully
+6. **Interop is not conformance.** pypdf/PDFium reading the file successfully
    does not mean the Annex F tables are correct.
 
 ## Running
@@ -171,6 +198,10 @@ Honesty matters more than a green tick:
 python tools/check_linearization_conformance.py FILE.pdf [-v] [--json]
 python tools/check_linearization_conformance.py --negative-controls FILE.pdf
 python tools/check_linearization_conformance.py --interop --pages N FILE.pdf [--require-ink]
-python tools/check_linearization_conformance_test.py            # regenerate + full matrix
+python tools/check_linearization_conformance_test.py            # regenerate + full matrix (classic xref)
+python tools/check_linearization_conformance_test.py --xref-streams  # same matrix, compressed mode
 python tools/check_linearization_conformance_test.py --no-build # committed vectors
+
+# External qpdf verdict (classic and compressed), v12.4.2:
+qpdf --check-linearization OUTPUT.pdf    # expect: "no linearization errors", exit 0
 ```

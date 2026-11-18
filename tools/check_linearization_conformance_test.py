@@ -56,10 +56,11 @@ CASES = [
 ]
 
 
-def run_binary(binary: Path, src: Path, dst: Path) -> None:
-    proc = subprocess.run(
-        [str(binary), str(src), str(dst)], capture_output=True, text=True
-    )
+def run_binary(binary: Path, src: Path, dst: Path, xref_streams: bool = False) -> None:
+    cmd = [str(binary), str(src), str(dst)]
+    if xref_streams:
+        cmd.append("--xref-streams")
+    proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
         raise RuntimeError(f"linearize failed for {src.name}: {proc.stderr.strip()}")
 
@@ -73,6 +74,11 @@ def main(argv: list[str] | None = None) -> int:
         help="check committed snapshot vectors instead of regenerating",
     )
     ap.add_argument("--keep", type=Path, help="keep generated outputs in this directory")
+    ap.add_argument(
+        "--xref-streams",
+        action="store_true",
+        help="exercise the compressed (PDF 1.5 xref/object-stream) writer",
+    )
     args = ap.parse_args(argv)
 
     work = args.keep if args.keep else Path(tempfile.mkdtemp(prefix="lin-conformance-"))
@@ -98,7 +104,7 @@ def main(argv: list[str] | None = None) -> int:
                 MF.make_multipage(src)
             else:
                 src = FIX / source
-            run_binary(args.binary, src, out)
+            run_binary(args.binary, src, out, args.xref_streams)
 
         data = out.read_bytes()
         conformance = CC.conformance_check(data, f"{label}: {out.name}")

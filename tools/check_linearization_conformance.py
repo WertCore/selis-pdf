@@ -77,6 +77,7 @@ import argparse
 import json
 import re
 import sys
+import zlib
 from dataclasses import dataclass, field
 
 # ---------------------------------------------------------------------------
@@ -177,6 +178,9 @@ class Xref:
     size: int = 0
     root: int | None = None
     prev: int | None = None
+    kind: str = "table"  # "table" or "stream"
+    compressed: dict[int, tuple[int, int]] = field(default_factory=dict)
+    parsed: dict[str, object] = field(default_factory=dict)
 
 
 def parse_xref_at(data: bytes, offset: int) -> Xref | None:
@@ -223,6 +227,119 @@ def parse_xref_at(data: bytes, offset: int) -> Xref | None:
     return x
 
 
+def _read_raw_stream(data: bytes, offset: int) -> tuple[bytes, bytes] | None:
+    """Return (dictionary bytes, raw payload) for the stream object at offset."""
+    if not re.match(rb"\d+\s+\d+\s+obj\b", data[offset:]):
+        return None
+    sm = STREAM_KW.search(data, offset)
+    if not sm:
+        return None
+    dict_bytes = data[offset : sm.start()]
+    lm = re.search(rb"/Length\s+(\d+)", dict_bytes)
+    if not lm:
+        return None
+    start = sm.end()
+    length = int(lm.group(1))
+    payload = data[start : start + length]
+    return dict_bytes, payload
+
+
+def all_objstms(data: bytes) -> dict[int, tuple[int, bytes, list[tuple[int, tuple[int, int]]]]]:
+    """Decode every /ObjStm: number -> (offset, payload, (objnum, byte range))."""
+    out: dict[int, tuple[int, bytes, list[tuple[int, tuple[int, int]]]]] = {}
+    for m in OBJ_HDR.finditer(data):
+        off = m.start()
+        parsed = _read_raw_stream(data, off)
+        if parsed is None:
+            continue
+        dict_bytes, payload = parsed
+        if not re.search(rb"/Type\s*/ObjStm\b", dict_bytes):
+            continue
+        if b"/FlateDecode" in dict_bytes:
+            try:
+                payload = zlib.decompress(payload)
+            except Exception:  # noqa: BLE001 - degrade, never crash
+                continue
+        fm = re.search(rb"/First\s+(\d+)", dict_bytes)
+        nm = re.search(rb"/N\s+(\d+)", dict_bytes)
+        if not fm or not nm:
+            continue
+        first, n = int(fm.group(1)), int(nm.group(1))
+        header = payload[:first]
+        nums = [int(x) for x in re.findall(rb"\d+", header)]
+        if len(nums) < 2 * n:
+            continue
+        pairs: list[tuple[int, tuple[int, int]]] = []
+        for i in range(n):
+            num, rel = nums[2 * i], nums[2 * i + 1]
+            start = first + rel
+            end = first + nums[2 * i + 3] if i + 1 < n else len(payload)
+            pairs.append((num, (start, end)))
+        out[int(m.group(1))] = (off, payload, pairs)
+    return out
+
+
+def parse_xref_stream_at(data: bytes, offset: int) -> Xref | None:
+    """Parse a PDF 1.5 cross-reference stream (/Type /XRef) at `offset`."""
+    parsed = _read_raw_stream(data, offset)
+    if parsed is None:
+        return None
+    dict_bytes, payload = parsed
+    if not re.search(rb"/Type\s*/XRef\b", dict_bytes):
+        return None
+    if b"/FlateDecode" in dict_bytes:
+        try:
+            payload = zlib.decompress(payload)
+        except Exception:  # noqa: BLE001 - degrade, never crash
+            return None
+    wm = re.search(rb"/W\s*\[([^\]]*)\]", dict_bytes)
+    sm = re.search(rb"/Size\s+(\d+)", dict_bytes)
+    if not wm or not sm:
+        return None
+    widths = [int(x) for x in re.findall(rb"\d+", wm.group(1))]
+    if len(widths) != 3:
+        return None
+    size = int(sm.group(1))
+    im = re.search(rb"/Index\s*\[([^\]]*)\]", dict_bytes)
+    index = [int(x) for x in re.findall(rb"\d+", im.group(1))] if im else [0, size]
+    row = sum(widths)
+    if row <= 0:
+        return None
+    x = Xref(offset=offset, kind="stream", size=size)
+    x.parsed = {"W": widths, "Index": index}
+    pm = re.search(rb"/Prev\s+(\d+)", dict_bytes)
+    if pm:
+        x.prev = int(pm.group(1))
+    rm = re.search(rb"/Root\s+(\d+)\s+\d+\s+R", dict_bytes)
+    if rm:
+        x.root = int(rm.group(1))
+    stms = all_objstms(data)
+    pos = 0
+    for i in range(0, len(index) - len(index) % 2, 2):
+        start, count = index[i], index[i + 1]
+        for k in range(count):
+            if pos + row > len(payload):
+                break
+            fields = []
+            for width in widths:
+                value = 0
+                for byte in payload[pos : pos + width]:
+                    value = (value << 8) | byte
+                fields.append(value)
+                pos += width
+            num = start + k
+            ty, f2, f3 = fields
+            if ty == 1:
+                x.entries[num] = f2
+            elif ty == 2:
+                x.compressed[num] = (f2, f3)
+                container = stms.get(f2)
+                if container is not None and f3 < len(container[2]):
+                    if container[2][f3][0] == num:
+                        x.entries[num] = container[0]
+    return x
+
+
 def parse_xref_chain(data: bytes, startxref: int) -> tuple[list[Xref], bool]:
     """Follow /Prev from startxref. Returns (sections, cycle_detected)."""
     sections: list[Xref] = []
@@ -232,6 +349,8 @@ def parse_xref_chain(data: bytes, startxref: int) -> tuple[list[Xref], bool]:
     while cur and cur not in seen:
         seen.add(cur)
         x = parse_xref_at(data, cur)
+        if x is None:
+            x = parse_xref_stream_at(data, cur)
         if x is None:
             break
         sections.append(x)
@@ -299,10 +418,25 @@ class BitReader:
 # ---------------------------------------------------------------------------
 
 
+# Bodies of objects packed into /ObjStm, keyed by object number. Populated by
+# conformance_check(); lets the object-graph walkers see compressed objects the
+# same way qpdf's parser resolves type-2 xref entries.
+_compressed_bodies: dict[int, bytes] = {}
+
+
+def load_compressed_bodies(data: bytes) -> None:
+    global _compressed_bodies  # noqa: PLW0603 - checker-local scratch state
+    bodies: dict[int, bytes] = {}
+    for _container, (_off, payload, pairs) in all_objstms(data).items():
+        for member, (start, end) in pairs:
+            bodies[member] = payload[start:end]
+    _compressed_bodies = bodies
+
+
 def obj_body(data: bytes, offsets: dict[int, int], num: int) -> bytes:
     off = offsets.get(num)
     if off is None:
-        return b""
+        return _compressed_bodies.get(num, b"")
     end = data.find(b"endobj", off)
     return data[off : end if end >= 0 else off + 4096]
 
@@ -619,6 +753,7 @@ def conformance_check(data: bytes, path: str = "<bytes>") -> Result:
         r.add(lin["P"] == 1, "LIN", f"/P == 1 (got {lin['P']})")
 
     # --- independent object scan -----------------------------------------
+    load_compressed_bodies(data)
     offsets, gens = scan_objects(data)
     if not offsets:
         r.add(False, "OBJ", "at least one indirect object found")
@@ -674,10 +809,13 @@ def conformance_check(data: bytes, path: str = "<bytes>") -> Result:
                 f"xref {x.offset} /Size ({x.size}) is one plus highest object "
                 f"({global_max}); its own entries reach {covered}",
             )
+            # A type-2 entry resolves to its container's header, which carries
+            # the container's number rather than the compressed member's.
             bad = [
                 n
                 for n, off in x.entries.items()
-                if not data[off : off + 40].startswith(f"{n} 0 obj".encode())
+                if n not in x.compressed
+                and not data[off : off + 40].startswith(f"{n} 0 obj".encode())
             ]
             r.add(
                 not bad,
@@ -720,10 +858,20 @@ def conformance_check(data: bytes, path: str = "<bytes>") -> Result:
             while p < len(data) and data[p : p + 1] in (b" ", b"\r", b"\n", b"\t"):
                 p += 1
             main_xref = xrefs[-1].offset
-            hdr = re.match(rb"\s*xref\s+\d+\s+\d+\s*\r?\n", data[main_xref:])
-            entry0 = main_xref + (hdr.end() if hdr else 0)
+            if xrefs[-1].kind == "stream":
+                # qpdf's first_xref_item_offset for an xref stream is the
+                # object header of the stream itself (where entry 0 lives).
+                entry0 = main_xref
+            else:
+                hdr = re.match(rb"\s*xref\s+\d+\s+\d+\s*\r?\n", data[main_xref:])
+                entry0 = main_xref + (hdr.end() if hdr else 0)
+            # qpdf accepts /T pointing either at the whitespace before entry
+            # 0 (classic) or directly at the xref stream's object header, whose
+            # offset it reports as first_xref_item_offset.
+            at_whitespace = data[t : t + 1] in (b" ", b"\r", b"\n", b"\t")
+            ok = p == entry0 and (at_whitespace or xrefs[-1].kind == "stream")
             r.add(
-                data[t : t + 1] in (b" ", b"\r", b"\n", b"\t") and p == entry0,
+                ok,
                 "LIN",
                 f"/T points at whitespace before main xref entry 0 "
                 f"(byte at /T = {data[t : t + 1]!r}, skips to {p}, entry 0 at {entry0})",
