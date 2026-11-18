@@ -68,10 +68,25 @@ Normative spec: `23-EDIT-MODEL-SPEC.md`. Read it before any task here.
     annotation-dropping rewrite are refused, and that a refused atomic commit leaves the original
     byte-identical. Residual gap: streams are copied verbatim rather than re-encoded; full
     render+text comparison is SL-1A.WRITE.08 (pre-G2 §7 note).
-- [ ] **SL-5.EDIT.06 — Save through encrypted documents** · deps: EDIT.03, SL-1.ENC.02 · owner: HUMAN
+- [x] **SL-5.EDIT.06 — Save through encrypted documents** · deps: EDIT.03, SL-1.ENC.02 · owner: HUMAN
   - **Do:** New objects encrypted with the document's existing handler (ADR-P0019 exception);
     an explicit upgrade path to AESV3 with user consent.
   - **DoD:** Incremental save into RC4, AESV2, and AESV3 documents; each result opens in Acrobat.
+  - **Status (implemented):** `selis_pdf_edit::incremental::{open_encrypted, save_incremental_encrypted}`
+    authenticate with a password (reusing COS `parse_encrypt`/`authenticate`/`DecryptPolicy`), derive
+    the source file key, and call `encrypt_object` with the source `(objnum, gen=0, rev, aes)` for
+    every redefined object. The appended trailer carries `/Encrypt`, `/Root`, `/Info` and a refreshed
+    `/ID`; the `/Encrypt` dictionary itself stays plaintext. Read-back reopens the bytes with the
+    policy and compares the full decrypted model, proving no plaintext object was emitted.
+    `EncryptionPolicy::UpgradeToAesV3 { user_consent }` refuses without consent
+    (`PERMISSION_DENIED`) and, **with** consent, still refuses (`ENCRYPT_UNSUPPORTED`) because an
+    incremental save cannot re-key earlier revisions — callers must use `save_rewritten` with a
+    fresh AESV3 handler. No silent upgrade. Key-less `save_incremental` still refuses encrypted
+    input. Tests cover RC4 (R3), AESV2 (R4) and AESV3 (R6) fixtures built with
+    `EncryptInfo::new_legacy`/`new_r6`, plus the plaintext-marker and wrong-password cases.
+    Interop oracle: `qpdf --check --password= ` and `qpdf --password= --decrypt` pass for all three
+    (`encrypted_tests::qpdf_interop_oracle`, skipped when qpdf is absent). Acrobat GUI opening is
+    a **manual** check — not automated here.
 - [ ] **SL-5.EDIT.07 — Save preserving existing signatures** · deps: EDIT.03 · owner: HUMAN
   - **Do:** An incremental save must leave existing signature byte ranges intact so signatures stay
     valid, and must respect MDP/DocMDP permission levels — refusing changes the certification

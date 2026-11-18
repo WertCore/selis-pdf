@@ -258,6 +258,80 @@ impl EncryptInfo {
         (info, file_key)
     }
 
+    /// Build a legacy (revision 2/3/4) standard-handler `/Encrypt` dictionary:
+    /// RC4-40 (`r = 2, v = 1`), RC4-128 (`r = 3, v = 2`) or AESV2
+    /// (`r = 4, v = 4`). This is the write-side counterpart to
+    /// [`parse_encrypt`] for the handlers that predate AESV3; ADR-P0019
+    /// forbids using it for NEW protection, but callers that must reproduce an
+    /// existing legacy handler (notably the incremental-save fixtures in
+    /// `selis-pdf-edit`) need it.
+    ///
+    /// Unlike [`Self::new_r6`], revisions 2–4 hash the document's first ID
+    /// element into the file key (Algorithm 2). `id0` must be the exact byte
+    /// string the writer will put in `/ID[0]` — pass the same value to
+    /// [`crate::doc_writer::DocumentBuilder::set_id`] before writing.
+    /// `length` is in bits (40 for R2, 128 for R3/R4).
+    ///
+    /// # Budget
+    ///
+    /// None: fixed-cost hash work over caller-supplied values.
+    ///
+    /// # Malformed Input
+    ///
+    /// `None` for an unsupported `(r, v, length)` combination.
+    #[must_use]
+    pub fn new_legacy(
+        user_password: &[u8],
+        owner_password: &[u8],
+        p: u32,
+        r: u8,
+        v: u8,
+        length: usize,
+        id0: &[u8],
+    ) -> Option<(Self, Vec<u8>)> {
+        let (aes, cf) = match (r, v, length) {
+            (2, 1, 40) => (false, Vec::new()),
+            (3, 2, 128) => (false, Vec::new()),
+            (4, 4, 128) => (
+                true,
+                vec![(
+                    bytes(b"StdCF"),
+                    Obj::Dict(vec![
+                        (bytes(b"CFM"), Obj::Name(bytes(b"AESV2"))),
+                        (bytes(b"Length"), Obj::Int(16)),
+                        (bytes(b"AuthEvent"), Obj::Name(bytes(b"DocOpen"))),
+                    ]),
+                )],
+            ),
+            _ => return None,
+        };
+        let owner_key = selis_crypto::compute_owner_key(owner_password, r, length);
+        let user_padded = selis_crypto::pad_password(user_password);
+        let o = selis_crypto::compute_o(&owner_key, &user_padded, r).to_vec();
+        let key = selis_crypto::encryption_key(user_password, &o, p, id0, r, length, true);
+        let u = selis_crypto::compute_u(&key, r, id0);
+        let info = Self {
+            handler: Handler::Standard,
+            r,
+            v,
+            length,
+            o,
+            u,
+            p,
+            stmf: "StdCF".to_string(),
+            strf: "StdCF".to_string(),
+            aes,
+            encrypt_metadata: true,
+            ue: Vec::new(),
+            oe: Vec::new(),
+            perms: Vec::new(),
+            cf,
+            subfilter: None,
+            recipients: Vec::new(),
+        };
+        Some((info, key))
+    }
+
     /// Verify the stored `/Perms` blob against this info's permission flags,
     /// the file key, and the `/EncryptMetadata` flag (revision 6, read side).
     /// Returns `false` when `/Perms` is absent, truncated, or does not carry
@@ -889,6 +963,28 @@ mod tests {
     )]
 
     use super::*;
+
+    /// The legacy write-side builder must produce dictionaries that our own
+    /// reader authenticates for every cipher the incremental-save path reuses.
+    #[test]
+    fn legacy_builder_authenticates_for_rc4_and_aesv2() {
+        let id0 = [0x11u8; 16];
+        let p = 0xFFFF_F0C0u32;
+        for (r, v, length, aes) in [(2, 1, 40, false), (3, 2, 128, false), (4, 4, 128, true)] {
+            let (info, key) = EncryptInfo::new_legacy(b"", b"owner", p, r, v, length, &id0)
+                .unwrap_or_else(|| panic!("legacy builder for r{r} v{v}"));
+            assert_eq!(info.r, r);
+            assert_eq!(info.aes, aes);
+            assert_eq!(key.len(), if r == 2 { 5 } else { length >> 3 });
+            assert_eq!(
+                authenticate(&info, &id0, b"").as_deref(),
+                Some(key.as_slice()),
+                "r{r} v{v} authenticates with the empty user password"
+            );
+            assert!(authenticate(&info, &id0, b"wrong").is_none());
+        }
+        assert!(EncryptInfo::new_legacy(b"", b"o", p, 5, 5, 256, &id0).is_none());
+    }
 
     /// A fixed 64-byte credential blob for the tests below. A test that
     /// asserts what `/U`, `/UE` and `/Perms` contain has to pin the key and

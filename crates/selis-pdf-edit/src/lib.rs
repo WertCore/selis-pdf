@@ -52,6 +52,8 @@ pub mod rewrite;
 pub mod save;
 
 #[cfg(test)]
+mod encrypted_tests;
+#[cfg(test)]
 mod incremental_tests;
 #[cfg(test)]
 mod journal_tests;
