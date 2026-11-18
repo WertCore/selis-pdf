@@ -26,8 +26,9 @@ claims, including a full parse of the hint tables it emits:
     agree with the actual objects, as qpdf --check-linearization verifies;
   * every OPTIONAL hint table present in the hint-stream dictionary parses and
     agrees with the real structures: outline (F.6, /O), thumbnail (F.7, /T),
-    named destination (F.8, /A) and page label (F.9, /E). Tables are emitted
-    only when the corresponding structure exists in the document.
+    named destination (F.8, /A), page label (F.9, /E) and interactive form
+    (F.10, /F). Tables are emitted only when the corresponding structure
+    exists in the document.
 
 A pass here is a strong *self-consistency* result, not proof of qpdf
 conformance: no external linearisation checker is installed in this build
@@ -481,6 +482,65 @@ def thumbnail_pages(data: bytes, pages: list[int]) -> list[int | None]:
     return out
 
 
+def form_field_pages(data: bytes, root_num: int, pages: list[int]) -> dict[int, int]:
+    """Map every /AcroForm field object number to its widget page index.
+
+    Walks /Fields recursively through /Kids (parents included, in document
+    order). A terminal field that is itself a widget takes the page whose
+    /Annots contains it; a parent inherits the first widget page of its kids.
+    Unresolved fields map to 0xffffffff (the spec's no-page marker). An empty
+    dict means the document has no interactive form.
+    """
+    catalog = obj_dict(data, root_num)
+    m = re.search(rb"/AcroForm\s+(\d+)\s+\d+\s+R", catalog)
+    if not m:
+        return {}
+    acro = obj_dict(data, int(m.group(1)))
+    fm = re.search(rb"/Fields\s*\[(.*?)\]", acro, re.S)
+    if not fm:
+        return {}
+
+    widget_page: dict[int, int] = {}
+    for idx, pnum in enumerate(pages):
+        am = re.search(rb"/Annots\s*\[(.*?)\]", obj_dict(data, pnum), re.S)
+        if am:
+            for ref in re.finditer(rb"(\d+)\s+\d+\s+R", am.group(1)):
+                widget_page[int(ref.group(1))] = idx
+
+    result: dict[int, int] = {}
+    seen: set[int] = set()
+
+    def page_of(num: int, visiting: set[int]) -> int:
+        if num in widget_page:
+            return widget_page[num]
+        if num in visiting:
+            return 0xFFFFFFFF
+        visiting.add(num)
+        body = obj_dict(data, num)
+        km = re.search(rb"/Kids\s*\[(.*?)\]", body, re.S)
+        if km:
+            for ref in re.finditer(rb"(\d+)\s+\d+\s+R", km.group(1)):
+                page = page_of(int(ref.group(1)), visiting)
+                if page != 0xFFFFFFFF:
+                    return page
+        return 0xFFFFFFFF
+
+    def walk(blob: bytes) -> None:
+        for ref in re.finditer(rb"(\d+)\s+\d+\s+R", blob):
+            num = int(ref.group(1))
+            if num in seen:
+                continue
+            seen.add(num)
+            result[num] = page_of(num, set())
+            body = obj_dict(data, num)
+            km = re.search(rb"/Kids\s*\[(.*?)\]", body, re.S)
+            if km:
+                walk(km.group(1))
+
+    walk(fm.group(1))
+    return result
+
+
 def object_lengths(
     data: bytes, offsets: dict[int, int], end_of_objects: int
 ) -> dict[int, int]:
@@ -636,7 +696,7 @@ def check_optional_tables(
     """Parse and cross-check every optional Annex F table present in /H."""
     npages = len(pages)
     opt: dict[str, int] = {}
-    for key in (b"O", b"T", b"A", b"E"):
+    for key in (b"O", b"T", b"A", b"E", b"F"):
         m = re.search(rb"/" + key + rb"\s+(\d+)", dict_bytes)
         if m:
             opt[key.decode()] = int(m.group(1))
@@ -710,6 +770,51 @@ def check_optional_tables(
             got.append(payload[o : o + nlen])
         r.check(sorted(got) == sorted(real),
                 f"named-dest names match real /Dests ({len(got)}/{len(real)})")
+
+    # §F.10 form hint table: a 32-bit field count followed by one byte-aligned
+    # row per field with (field object number, page index) as 32-bit big-endian
+    # integers — qpdf's layout. The object numbers are the *renumbered* ones
+    # from the emitted file, so cross-check them against the real /AcroForm
+    # tree in the output bytes, not the source document.
+    real_form = form_field_pages(data, root_num, pages)
+    if "F" in opt:
+        r.check(
+            bool(real_form),
+            "/F form table present only when the document has /AcroForm fields",
+        )
+        if 0 <= opt["F"] < len(payload):
+            pos = opt["F"]
+            if pos + 4 > len(payload):
+                r.check(False, "form table count field within hint buffer")
+            else:
+                nfields = int.from_bytes(payload[pos : pos + 4], "big")
+                r.check(nfields == len(real_form),
+                        f"form table count ({nfields}) == /AcroForm fields ({len(real_form)})")
+                got_form: dict[int, int] = {}
+                readable = True
+                for i in range(nfields):
+                    row = pos + 4 + i * 8
+                    if row + 8 > len(payload):
+                        r.check(False, f"form field row {i} within hint buffer")
+                        readable = False
+                        break
+                    obj = int.from_bytes(payload[row : row + 4], "big")
+                    page = int.from_bytes(payload[row + 4 : row + 8], "big")
+                    got_form[obj] = page
+                if readable:
+                    r.check(set(got_form) == set(real_form),
+                            f"form field object numbers match real /AcroForm tree "
+                            f"({len(got_form)}/{len(real_form)})")
+                    mismatched = [
+                        obj for obj, page in got_form.items()
+                        if page != real_form.get(obj, -1)
+                    ]
+                    r.check(not mismatched,
+                            f"form field page numbers match real widget pages "
+                            f"({len(mismatched)} mismatches)")
+    else:
+        r.check(not real_form,
+                "/F form table emitted for a document with /AcroForm fields")
 
 
 def check_hint_tables(r: Result, data: bytes, lin: dict, xrefs: list[Xref]) -> None:
