@@ -127,8 +127,8 @@ headless Office suite, never a shelled-out TeX distribution (ADR-P0008; `01 §3`
 | DOCX → PDF | High-fidelity Word rendering | 🟡 Partial | `selis-pdf-convert::docx`: headings, bold/italic runs, list levels, real tables. **Not** carried: page setup, alignment, spacing, colour, fonts, images, text boxes, footnotes, fields, tracked changes. Structure, not laid-out Word, and the UI says so. `35` Phase 3. |
 | XLSX → PDF | Spreadsheet rendering | 🟡 Partial | `selis-pdf-convert::xlsx`: one page per sheet, used range as a table, shared/inline strings, formula cached values, booleans. **Not** carried: cell formats (dates print as serials), formula evaluation, merged cells, charts, column widths. `35` Phase 3. |
 | PPTX → PDF | Slide rendering | 🟡 Partial | `selis-pdf-convert::pptx`: one page per slide, title/subtitle placeholders, bold/italic runs, bulleted/numbered bodies, DrawingML tables. **Not** carried: slide size, theme, fonts, images, charts, SmartArt, speaker notes. `35` Phase 3. |
-| HTML → PDF | Full HTML/CSS layout | 🟡 Partial | Owned HTML subset with pagination, GFM/HTML tables, and `page-break-before/after` + `break-before/after` CSS. **New (conv-fidelity):** genuine `/Subtype /Link` URI annotations for `<a href>`; inline `style=` support for `color:` (`#rgb`, `#rrggbb`, `rgb()`, 10 named colours), `font-size:` (`pt`/`px`/bare number, clamped), `text-align:` (left/center/right) and the legacy `align=` on cells; nested-style inheritance. Read-back verified by re-opening the PDF and asserting annotation URIs/rects, `rg`/`Tf` operators and text x-positions. **Not** carried: `@media print`, external stylesheets, a full CSS cascade/rulesheets, relative units, font embedding/subsetting, images/charts/math, real CSS layout. `35` Phase 3 (page-break row implemented+tested; browser-check open). |
-| Markdown → PDF | Supported | ✅ Shipped | Documented subset through the convert chunk. **New (conv-fidelity):** link annotations (`/A << /S /URI … >>`) over link text instead of printing the URL in parentheses; GFM `:---:`/`---:` column alignment now drives cell placement. Read-back verified. Font embedding/subsetting and full-fidelity rendering remain out of scope. `35` Phase 1A.1. |
+| HTML → PDF | Full HTML/CSS layout | 🟡 Partial | Owned HTML subset with pagination, GFM/HTML tables, and `page-break-before/after` + `break-before/after` CSS. **New (conv-fidelity):** genuine `/Subtype /Link` URI annotations for `<a href>`; inline `style=` support for `color:` (`#rgb`, `#rrggbb`, `rgb()`, 10 named colours), `font-size:` (`pt`/`px`/bare number, clamped), `text-align:` (left/center/right) and the legacy `align=` on cells; nested-style inheritance. **New (conv-images):** `<img src="data:image/jpeg;base64,…">` embeds a real `/Filter /DCTDecode` JPEG XObject; `/Width`/`/Height`/`/ColorSpace` come from the SOF marker, `width`/`height` attributes set the placement box (clamped to the page width). Remote URLs, non-JPEG data URIs and malformed JPEGs are refused by name and skipped. Read-back verified by re-opening the PDF and asserting annotation URIs/rects, `rg`/`Tf` operators, text x-positions, the image XObject entries/`cm`/`Do` box, and rasterised ink. **Not** carried: `@media print`, external stylesheets, a full CSS cascade/rulesheets, relative units, font embedding/subsetting, PNG/GIF/WebP/remote/CSS-background images, charts/math, real CSS layout. `35` Phase 3 (page-break row implemented+tested; browser-check open). |
+| Markdown → PDF | Supported | ✅ Shipped | Documented subset through the convert chunk. **New (conv-fidelity):** link annotations (`/A << /S /URI … >>`) over link text instead of printing the URL in parentheses; GFM `:---:`/`---:` column alignment now drives cell placement. **New (conv-images):** a paragraph that is exactly `![alt](data:image/jpeg;base64,…)` embeds the same `DCTDecode` XObject as HTML; other URLs/formats are refused by name and skipped. Read-back verified (XObject, placement, raster ink). Font embedding/subsetting, non-JPEG/remote/inline images and full-fidelity rendering remain out of scope. `35` Phase 1A.1. |
 | CSV → PDF | Supported | ✅ Shipped | Owned table dump: quoted fields, even columns, repeated header row, page breaks. Not a spreadsheet renderer, and the UI says so. `35` Phase 1A.1. |
 | EPUB → PDF | Supported | 🟡 Partial | `selis-pdf-convert::epub`: spine XHTML through the HTML subset, paginated. No CSS, fonts, images, SVG, math, or ToC. `35` Phase 3. |
 | LaTeX / TeX → PDF | TeX typesetting | 🟡 Partial | `selis-pdf-convert::latex`: sections, lists, verbatim, styled runs; every other command dropped and the docs say so. No math, `tabular`, figures, or package macros. Never shells out to a TeX distribution. `35` Phase 3. |
@@ -161,6 +161,9 @@ headless Office suite, never a shelled-out TeX distribution (ADR-P0008; `01 §3`
 broad and shipped, each with a read-back verifier. Its *inbound* conversion (X → PDF) is a
 collection of honest structural subsets, not fidelity renderers — the deliberate inverse of
 Aspose, which prioritises inbound fidelity. The gap to Aspose here is fidelity, not surface.
+Inbound images are no longer a total gap: JPEG data URIs in HTML/Markdown now embed as real
+`DCTDecode` XObjects (read-back and raster-verified), narrowing one honest fidelity row while
+PNG/GIF/WebP/remote/CSS-background images and true layout remain out of scope.
 
 ---
 
@@ -474,7 +477,11 @@ Page operations are the single area where Selis is at or beyond full parity.
 
 - **Breadth and maturity of conversion fidelity.** Aspose renders DOCX/XLSX/PPTX/HTML/LaTeX
   with high fidelity (fonts, images, layout, charts, math). Selis converts *structure*, not
-  layout — honest subsets, not renderers. This is the largest real gap.
+  layout — honest subsets, not renderers. This is the largest real gap. The `conv-images` slice
+  narrows one part of it: HTML/Markdown now embed JPEG data-URI images as `DCTDecode` XObjects
+  (read-back + raster verified), but PNG/GIF/WebP data URIs, remote images, CSS background
+  images, images in the Office/EPUB readers and true CSS layout are still missing — Aspose's
+  image and layout fidelity remains well ahead.
 - **A shipping, documented SDK today** across five language ecosystems. Selis's SDK is
   Phase 9; the comparison is premature until then.
 - **Full annotation, link, and JavaScript *authoring*** — Aspose creates them

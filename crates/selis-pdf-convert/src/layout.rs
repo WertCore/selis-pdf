@@ -3,7 +3,8 @@
 use selis_error::Result;
 use selis_sandbox::{Budget, BudgetGuard, Resource};
 
-use crate::blocks::{encode_text, measure, split_words, Block, Span, Style, TextAlign};
+use crate::blocks::{encode_text, measure, split_words, Block, ImageBlock, Span, Style, TextAlign};
+use crate::image::EmbeddedImage;
 use crate::PageSize;
 
 /// The page margin in points.
@@ -95,6 +96,16 @@ pub(crate) enum Item {
         w: f64,
         h: f64,
         uri: String,
+    },
+    /// A JPEG drawn as an `XObject` at a measured rectangle. The emitter writes
+    /// the image stream and assigns the `/ImN` resource name.
+    Image {
+        x: f64,
+        /// Distance from the page top to the box's top edge.
+        top: f64,
+        w: f64,
+        h: f64,
+        image: EmbeddedImage,
     },
 }
 
@@ -224,7 +235,7 @@ impl Layout {
 ///
 /// # Budget
 ///
-/// Charges the laid-out text bytes against `budget`.
+/// Charges the laid-out text bytes and embedded image bytes against `budget`.
 ///
 /// # Malformed Input
 ///
@@ -246,8 +257,15 @@ pub(crate) fn lay_out(
     for page in &pages {
         for line in &page.lines {
             for item in &line.items {
-                if let Item::Text { bytes: b, .. } = item {
-                    bytes = bytes.saturating_add(u64::try_from(b.len()).unwrap_or(u64::MAX));
+                match item {
+                    Item::Text { bytes: b, .. } => {
+                        bytes = bytes.saturating_add(u64::try_from(b.len()).unwrap_or(u64::MAX));
+                    }
+                    Item::Image { image, .. } => {
+                        bytes = bytes
+                            .saturating_add(u64::try_from(image.jpeg.len()).unwrap_or(u64::MAX));
+                    }
+                    Item::Rect { .. } | Item::LinkBox { .. } => {}
                 }
             }
         }
@@ -494,6 +512,41 @@ fn render_table(layout: &mut Layout, head: &[Vec<Span>], rows: &[Vec<Vec<Span>>]
     layout.cursor += PARA_GAP;
 }
 
+/// Pixels-to-points for an image with no explicit size, matching the crate's
+/// 96-dpi convention used for `font-size: …px`.
+const IMAGE_PX_TO_PT: f64 = 0.75;
+
+/// Compute an image's placement `(width, height)` in points.
+///
+/// Intrinsic JPEG pixels are converted at 96 dpi. Explicit `width`/`height`
+/// override them; when only one is given the other follows the intrinsic
+/// aspect ratio. The box is clamped to the available column (and the page
+/// height), preserving aspect ratio. Non-finite inputs fall back to intrinsic.
+fn image_box(block: &ImageBlock, avail_w: f64, avail_h: f64) -> (f64, f64) {
+    let intrinsic_w = f64::from(block.image.width) * IMAGE_PX_TO_PT;
+    let intrinsic_h = f64::from(block.image.height) * IMAGE_PX_TO_PT;
+    let explicit_w = block.width.filter(|v| v.is_finite() && *v > 0.0);
+    let explicit_h = block.height.filter(|v| v.is_finite() && *v > 0.0);
+    let mut w = explicit_w.unwrap_or(intrinsic_w);
+    let mut h = explicit_h.unwrap_or(intrinsic_h);
+    if explicit_w.is_some() && explicit_h.is_none() && intrinsic_w > 0.0 {
+        h = w * intrinsic_h / intrinsic_w;
+    } else if explicit_w.is_none() && explicit_h.is_some() && intrinsic_h > 0.0 {
+        w = h * intrinsic_w / intrinsic_h;
+    }
+    if w > avail_w && w > 0.0 {
+        let scale = avail_w / w;
+        w *= scale;
+        h *= scale;
+    }
+    if h > avail_h && h > 0.0 {
+        let scale = avail_h / h;
+        w *= scale;
+        h *= scale;
+    }
+    (w.max(0.0), h.max(0.0))
+}
+
 /// Render one block at the given indent.
 fn render_block(
     layout: &mut Layout,
@@ -729,6 +782,29 @@ fn render_block(
                 }],
             });
             layout.cursor += 12.0;
+        }
+        Block::Image(img) => {
+            let avail_w = layout.max_x() - (MARGIN + indent);
+            let avail_h = layout.page_h - 2.0 * MARGIN;
+            let (w, h) = image_box(img, avail_w, avail_h);
+            if w > 0.0 && h > 0.0 {
+                // Break before the image if it would not fit on this page.
+                layout.ensure_room(h);
+                let top = layout.cursor;
+                layout.current.push(Line {
+                    top,
+                    height: h,
+                    baseline: top + h,
+                    items: vec![Item::Image {
+                        x: MARGIN + indent,
+                        top,
+                        w,
+                        h,
+                        image: img.image.clone(),
+                    }],
+                });
+                layout.cursor += h + PARA_GAP;
+            }
         }
         Block::PageBreak => {
             if !layout.current.is_empty() {

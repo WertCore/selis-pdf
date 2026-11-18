@@ -19,7 +19,9 @@
 //! **real URI link annotation** (`/Subtype /Link`, `/A << /S /URI … >>`) is
 //! laid over it; the URL is no longer printed in parentheses. The annotation
 //! has a zero-width border and no appearance stream — it is clickable, but
-//! the label is not automatically underlined or recoloured. Images, reference
+//! the label is not automatically underlined or recoloured. An **image whose
+//! whole paragraph is `![alt](data:image/jpeg;base64,…)`** is embedded as a
+//! real JPEG XObject (see below); inline images inside other text, reference
 //! links, and raw HTML inside Markdown are ignored or rendered as plain text.
 //!
 //! # Supported HTML subset
@@ -30,9 +32,31 @@
 //! in Markdown), `<table>` with `<tr>`/`<th>`/`<td>` (inline cell content only;
 //! `<th>` in the first row makes a header row; nested tables and lists inside
 //! cells are not supported), and block containers (`<div>`, `<section>`,
-//! `<article>`, `<main>`, `<table>` cells). `<script>` and `<style>` content is
-//! dropped; unknown tags unwrap to their text. Named (`&amp;`, `&eacute;`, …)
-//! and numeric (`&#8212;`, `&#x2014;`) entities are decoded.
+//! `<article>`, `<main>`, `<table>` cells). `<img src="…">` embeds an image
+//! when `src` is a **base64 JPEG data URI**; `width`/`height` attributes
+//! override its intrinsic size (see below). `<script>` and `<style>` content
+//! is dropped; unknown tags unwrap to their text. Named (`&amp;`, `&eacute;`,
+//! …) and numeric (`&#8212;`, `&#x2014;`) entities are decoded.
+//!
+//! # Supported images (JPEG data URIs only)
+//!
+//! HTML `<img src="data:image/jpeg;base64,…">` and a Markdown paragraph that
+//! is exactly `![alt](data:image/jpeg;base64,…)` are decoded and embedded as a
+//! real image XObject: the JPEG bytes are written verbatim behind
+//! `/Filter /DCTDecode`; true `/Width`, `/Height` and `/ColorSpace`
+//! (`/DeviceGray`, `/DeviceRGB` or `/DeviceCMYK`) come from the JPEG SOF
+//! marker. Intrinsic pixels map to points at 96 dpi (0.75 pt/px). HTML
+//! `width`/`height` attributes override the intrinsic size (bare number = pt,
+//! `px` at 96 dpi, `pt` = pt); when only one is given the other follows the
+//! intrinsic aspect ratio, and the placement rectangle is clamped to the
+//! page's text width. Read-back tests re-open the PDF and assert the XObject
+//! entries, the `cm`/`Do` placement and the rasterised ink.
+//!
+//! Everything else is **refused by name and skipped** (no text painted, no
+//! XObject emitted): remote `http(s)` URLs, `file:` paths, any other scheme,
+//! non-JPEG data URIs (PNG/GIF/WebP/SVG), malformed or truncated JPEGs, inline
+//! images mixed with other text, and CSS `background-image`. There is no
+//! network access anywhere on the conversion path.
 //!
 //! # Supported inline styling
 //!
@@ -67,12 +91,15 @@
 //!
 //! # Still out of scope (honest gaps)
 //!
-//! No font embedding or subsetting (only the standard-14 base fonts), no image
-//! embedding, no charts, math or SVG-in-HTML, no full CSS layout (floats,
-//! positioning, flexible boxes, real table layout, page margins from CSS), and
-//! no fidelity renderer. This subset produces honest, structurally useful
-//! PDFs with clickable links and a little inline styling — not an
-//! Aspose-equivalent conversion.
+//! No font embedding or subsetting (only the standard-14 base fonts). Image
+//! embedding is limited to the JPEG data URIs described above: PNG/GIF/WebP
+//! data URIs, remote images, CSS background images, images embedded in DOCX /
+//! XLSX / PPTX / EPUB, and inline images inside a Markdown paragraph are still
+//! not embedded. There is no real CSS layout (floats, positioning, flexible
+//! boxes, real table layout, page margins from CSS), no charts, math or
+//! SVG-in-HTML, and no fidelity renderer. This subset produces honest,
+//! structurally useful PDFs with clickable links, a little inline styling and
+//! embedded JPEGs — not an Aspose-equivalent conversion.
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 #![forbid(unsafe_code)]
@@ -86,6 +113,7 @@ mod docx;
 mod emit;
 mod epub;
 mod html;
+mod image;
 mod latex;
 mod layout;
 mod markdown;
@@ -156,8 +184,10 @@ pub fn csv_to_pdf(
 ///
 /// # Malformed Input
 ///
-/// Markdown never fails to parse — every input produces a document. Returns
-/// `BUDGET_*` on budget exhaustion.
+/// Markdown never fails to parse — every input produces a document. Images
+/// whose source is not a base64 JPEG data URI (remote URLs, other schemes,
+/// other media types, malformed JPEGs) are refused with a typed image error
+/// and skipped. Returns `BUDGET_*` on budget exhaustion.
 ///
 /// # Output Guarantees
 ///
@@ -183,7 +213,9 @@ pub fn markdown_to_pdf(
 /// # Malformed Input
 ///
 /// HTML never fails to parse — unclosed tags, stray `<`, and unknown entities
-/// degrade to text. Returns `BUDGET_*` on budget exhaustion.
+/// degrade to text. Images whose `src` is not a base64 JPEG data URI (remote
+/// URLs, other schemes, other media types, malformed JPEGs) are refused with a
+/// typed image error and skipped. Returns `BUDGET_*` on budget exhaustion.
 ///
 /// # Output Guarantees
 ///
@@ -935,5 +967,209 @@ mod fidelity {
         let plain_x = x_of(&tm_text_pairs(&stream(&plain)), "x");
         let right_x = x_of(&tm_text_pairs(&stream(&right)), "x");
         assert!(right_x > plain_x + 5.0, "plain={plain_x} right={right_x}");
+    }
+
+    // ---- Embedded JPEG images ---------------------------------------------
+
+    /// A real, decodable 32×32 solid-red baseline JPEG with an SOF0 marker.
+    fn red_jpeg() -> Vec<u8> {
+        let rgb = [0xFF_u8, 0x00, 0x00].repeat(32 * 32);
+        let mut g = guard();
+        selis_pdf_filter::dct_encode(&rgb, 32, 32, 90, &mut g).expect("jpeg fixture")
+    }
+
+    /// Minimal standard-base64 encoder for the fixture (no external crate).
+    fn b64(data: &[u8]) -> String {
+        const TABLE: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::new();
+        for chunk in data.chunks(3) {
+            let n = (u32::from(chunk[0]) << 16)
+                | (u32::from(chunk.get(1).copied().unwrap_or(0)) << 8)
+                | u32::from(chunk.get(2).copied().unwrap_or(0));
+            out.push(TABLE[((n >> 18) & 63) as usize] as char);
+            out.push(TABLE[((n >> 12) & 63) as usize] as char);
+            out.push(if chunk.len() > 1 {
+                TABLE[((n >> 6) & 63) as usize] as char
+            } else {
+                '='
+            });
+            out.push(if chunk.len() > 2 {
+                TABLE[(n & 63) as usize] as char
+            } else {
+                '='
+            });
+        }
+        out
+    }
+
+    /// A re-opened image stream: its dictionary entries and raw stream bytes.
+    type ImageObj = (Vec<(Vec<u8>, Obj)>, Vec<u8>);
+
+    /// The first `/Subtype /Image` stream in the re-opened object graph.
+    fn image_stream(bytes: &[u8]) -> Option<ImageObj> {
+        for (_, obj) in crate::testkit::resolved_objects(bytes) {
+            if let Obj::Stream { dict, data } = obj {
+                let is_image = dict.iter().any(|(k, v)| {
+                    k.as_slice() == b"Subtype"
+                        && matches!(v, Obj::Name(n) if n.as_slice() == b"Image")
+                });
+                if is_image {
+                    let pairs = dict
+                        .iter()
+                        .map(|(k, v)| (k.as_slice().to_vec(), v.clone()))
+                        .collect();
+                    return Some((pairs, data.as_slice().to_vec()));
+                }
+            }
+        }
+        None
+    }
+
+    fn dict_int(pairs: &[(Vec<u8>, Obj)], key: &[u8]) -> Option<i64> {
+        pairs
+            .iter()
+            .find(|(k, _)| k.as_slice() == key)
+            .and_then(|(_, v)| match v {
+                Obj::Int(n) => Some(*n),
+                _ => None,
+            })
+    }
+
+    fn dict_name(pairs: &[(Vec<u8>, Obj)], key: &[u8]) -> Option<Vec<u8>> {
+        pairs
+            .iter()
+            .find(|(k, _)| k.as_slice() == key)
+            .and_then(|(_, v)| match v {
+                Obj::Name(n) => Some(n.as_slice().to_vec()),
+                _ => None,
+            })
+    }
+
+    #[test]
+    fn html_jpeg_data_uri_becomes_a_dctdecode_image_xobject() {
+        let jpeg = red_jpeg();
+        let src = format!("data:image/jpeg;base64,{}", b64(&jpeg));
+        let bytes = from_html(&format!("<img src=\"{src}\">"));
+        crate::testkit::opens_with_page_count(&bytes, 1);
+
+        let (dict, data) = image_stream(&bytes).expect("image XObject in re-opened PDF");
+        assert_eq!(dict_name(&dict, b"Type").as_deref(), Some(&b"XObject"[..]));
+        assert_eq!(dict_name(&dict, b"Subtype").as_deref(), Some(&b"Image"[..]));
+        assert_eq!(dict_int(&dict, b"Width"), Some(32));
+        assert_eq!(dict_int(&dict, b"Height"), Some(32));
+        assert_eq!(dict_int(&dict, b"BitsPerComponent"), Some(8));
+        assert_eq!(
+            dict_name(&dict, b"Filter").as_deref(),
+            Some(&b"DCTDecode"[..])
+        );
+        assert_eq!(
+            dict_name(&dict, b"ColorSpace").as_deref(),
+            Some(&b"DeviceRGB"[..])
+        );
+        assert_eq!(data, jpeg, "JPEG bytes must be embedded verbatim");
+
+        // The resource dict exposes /Im1 and the content stream draws it in the
+        // measured box: 32 px × 0.75 = 24 pt at the 54 pt margin, y from bottom.
+        let xobj = crate::testkit::resolved_objects(&bytes)
+            .into_iter()
+            .any(|(_, obj)| {
+                if let Obj::Dict(pairs) = obj {
+                    pairs.iter().any(|(k, v)| {
+                        k.as_slice() == b"XObject"
+                            && matches!(v, Obj::Dict(x) if x.iter().any(|(nk, _)| nk.as_slice() == b"Im1"))
+                    })
+                } else {
+                    false
+                }
+            });
+        assert!(xobj, "page resources must carry /XObject /Im1");
+        let content = stream(&bytes);
+        assert!(content.contains("/Im1 Do"), "no image draw: {content}");
+        assert!(
+            content.contains("24 0 0 24 54 714 cm"),
+            "unexpected placement rect: {content}"
+        );
+    }
+
+    #[test]
+    fn html_image_width_height_override_and_clamp_to_page_width() {
+        let jpeg = red_jpeg();
+        let src = format!("data:image/jpeg;base64,{}", b64(&jpeg));
+        // Both attributes honoured verbatim (no clamp needed).
+        let exact = from_html(&format!("<img src=\"{src}\" width=\"100\" height=\"50\">"));
+        assert!(
+            stream(&exact).contains("100 0 0 50 54 688 cm"),
+            "explicit box: {}",
+            stream(&exact)
+        );
+        // A width larger than the 504 pt text column is clamped, preserving
+        // the intrinsic 1:1 aspect ratio (the single width derives height).
+        let clamped = from_html(&format!("<img src=\"{src}\" width=\"1000\">"));
+        assert!(
+            stream(&clamped).contains("504 0 0 504 54 234 cm"),
+            "clamped box: {}",
+            stream(&clamped)
+        );
+    }
+
+    #[test]
+    fn markdown_image_data_uri_embeds_the_same_xobject() {
+        let jpeg = red_jpeg();
+        let src = format!("data:image/jpeg;base64,{}", b64(&jpeg));
+        let bytes = from_md(&format!("![a red square]({src})"));
+        let (dict, data) = image_stream(&bytes).expect("image from Markdown");
+        assert_eq!(dict_int(&dict, b"Width"), Some(32));
+        assert_eq!(dict_int(&dict, b"Height"), Some(32));
+        assert_eq!(data, jpeg);
+    }
+
+    #[test]
+    fn remote_and_non_jpeg_images_are_skipped_not_fetched() {
+        let bytes = from_html(
+            "<img src=\"https://example.com/a.jpg\">\
+             <img src=\"file:///etc/passwd\">\
+             <img src=\"data:image/png;base64,iVBORw0KGgo=\">",
+        );
+        assert!(
+            image_stream(&bytes).is_none(),
+            "no image XObject for refused sources"
+        );
+        assert!(!stream(&bytes).contains(" Do\n"), "no stray image draw");
+        // Markdown remote images are skipped the same way.
+        let md = from_md("![no](https://example.com/x.png)");
+        assert!(image_stream(&md).is_none());
+    }
+
+    #[test]
+    fn embedded_jpeg_renders_ink_at_its_measured_box() {
+        let jpeg = red_jpeg();
+        let src = format!("data:image/jpeg;base64,{}", b64(&jpeg));
+        let bytes = from_html(&format!("<img src=\"{src}\" width=\"100\" height=\"100\">"));
+        let budget = Budget::unlimited();
+        let session = selis_pdf_engine::Session::open(bytes, &budget, &FixedClock(0))
+            .expect("engine re-open");
+        let mut g = guard();
+        let page = session
+            .render_page_rgba(0, 72.0, &budget, &mut g)
+            .expect("rasterize");
+        assert_eq!((page.width, page.height), (612, 792));
+        // The box is x∈[54,154], y∈[54,154] in top-left pixel space. Scan the
+        // interior for a red pixel rather than assume the rasteriser's origin.
+        let mut red = false;
+        for y in 60usize..150 {
+            for x in 60usize..150 {
+                let idx = (y * page.width as usize + x) * 4;
+                let (r, g, b) = (page.rgba[idx], page.rgba[idx + 1], page.rgba[idx + 2]);
+                if r > 150 && g < 100 && b < 100 {
+                    red = true;
+                    break;
+                }
+            }
+            if red {
+                break;
+            }
+        }
+        assert!(red, "page did not render red ink inside the image box");
     }
 }

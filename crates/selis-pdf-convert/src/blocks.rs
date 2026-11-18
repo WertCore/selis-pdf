@@ -4,6 +4,8 @@
 
 use std::collections::BTreeMap;
 
+use crate::image::EmbeddedImage;
+
 /// The inline font style of a text span.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum Style {
@@ -89,6 +91,19 @@ pub(crate) struct Span {
     pub align: Option<TextAlign>,
 }
 
+/// An embedded JPEG placed as its own block (HTML `<img>` or a standalone
+/// Markdown `![alt](data:image/jpeg;base64,…)` paragraph).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ImageBlock {
+    /// The validated JPEG and its intrinsic geometry.
+    pub image: EmbeddedImage,
+    /// Explicit placement width in points (HTML `width`), if given. A bare
+    /// number is points; `px` is converted at 96 dpi, matching `font-size`.
+    pub width: Option<f64>,
+    /// Explicit placement height in points (HTML `height`), if given.
+    pub height: Option<f64>,
+}
+
 /// A layout-level document block.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Block {
@@ -112,6 +127,8 @@ pub(crate) enum Block {
     Quote(Vec<Block>),
     /// A horizontal rule.
     Rule,
+    /// An embedded JPEG image (data URI only), placed at its measured box.
+    Image(ImageBlock),
     /// Force the block that follows onto a new page. Only the OOXML slide
     /// and sheet readers emit this: a deck's slide and a workbook's sheet are
     /// page boundaries a flow layout would otherwise blur.

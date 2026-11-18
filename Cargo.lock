@@ -1782,6 +1782,8 @@ dependencies = [
  "selis-error",
  "selis-font",
  "selis-pdf-cos",
+ "selis-pdf-engine",
+ "selis-pdf-filter",
  "selis-sandbox",
 ]
 

@@ -21,3 +21,9 @@ selis-sandbox = { workspace = true }
 # into the convert chunk, which then cannot instantiate in a browser.
 selis-pdf-cos = { workspace = true, default-features = false }
 selis-font = { workspace = true }
+
+[dev-dependencies]
+# Read-back/render verification: generate a real JPEG fixture, re-open the
+# converted bytes in the engine and rasterize the page to check image ink.
+selis-pdf-filter = { workspace = true }
+selis-pdf-engine = { workspace = true }

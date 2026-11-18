@@ -1,6 +1,7 @@
 //! The HTML subset parser (see the crate docs for the supported subset).
 
-use crate::blocks::{Block, Span, Style, TextAlign};
+use crate::blocks::{Block, ImageBlock, Span, Style, TextAlign};
+use crate::image::parse_data_uri;
 
 /// An open-list context.
 #[derive(Debug)]
@@ -316,6 +317,26 @@ impl<'a> Parser<'a> {
         self.spans.iter().all(|s| s.text.trim().is_empty())
     }
 
+    /// Embed an `<img>` whose `src` is a base64 JPEG data URI. Anything else
+    /// (remote URL, file path, PNG/GIF/WebP data URI, malformed JPEG) is
+    /// refused with a typed image error and skipped: no text is painted and no
+    /// XObject is emitted. Explicit
+    /// `width`/`height` attributes override the intrinsic geometry in layout.
+    fn push_image(&mut self, src: Option<&str>, width: Option<&str>, height: Option<&str>) {
+        self.flush_text();
+        let Some(src) = src else { return };
+        let Ok(image) = parse_data_uri(src) else {
+            return;
+        };
+        let width = width.and_then(image_dimension);
+        let height = height.and_then(image_dimension);
+        self.blocks.push(Block::Image(ImageBlock {
+            image,
+            width,
+            height,
+        }));
+    }
+
     /// Flush the current spans as a paragraph (or heading, when one is open).
     /// When a list item is open, the spans belong to it instead. Inside a
     /// table cell the spans stay in the cell.
@@ -439,10 +460,14 @@ impl<'a> Parser<'a> {
             return;
         }
 
-        // Read attributes (href, style and align are kept) and find the tag's end.
+        // Read attributes (href/style/align for styling; src/width/height for
+        // images) and find the tag's end.
         let mut href: Option<String> = None;
         let mut style: Option<String> = None;
         let mut align: Option<String> = None;
+        let mut src: Option<String> = None;
+        let mut width: Option<String> = None;
+        let mut height: Option<String> = None;
         let mut self_closing = false;
         let mut q = p;
         loop {
@@ -504,12 +529,16 @@ impl<'a> Parser<'a> {
                             if quoted {
                                 q = q.saturating_add(1);
                             }
-                            match attr.as_str() {
-                                "href" => href = Some(value),
-                                "style" => style = Some(value),
-                                "align" => align = Some(value),
-                                _ => {}
-                            }
+                            keep_attribute(
+                                &attr,
+                                value,
+                                &mut href,
+                                &mut style,
+                                &mut align,
+                                &mut src,
+                                &mut width,
+                                &mut height,
+                            );
                         } else {
                             let vstart = q;
                             while let Some(&vc) = self.chars.get(q) {
@@ -522,12 +551,16 @@ impl<'a> Parser<'a> {
                                 .chars
                                 .get(vstart..q)
                                 .map_or_else(String::new, |s| s.iter().collect());
-                            match attr.as_str() {
-                                "href" => href = Some(value),
-                                "style" => style = Some(value),
-                                "align" => align = Some(value),
-                                _ => {}
-                            }
+                            keep_attribute(
+                                &attr,
+                                value,
+                                &mut href,
+                                &mut style,
+                                &mut align,
+                                &mut src,
+                                &mut width,
+                                &mut height,
+                            );
                         }
                     }
                 }
@@ -554,6 +587,10 @@ impl<'a> Parser<'a> {
         } else {
             if break_before {
                 self.emit_page_break();
+            }
+            if name == "img" {
+                self.push_image(src.as_deref(), width.as_deref(), height.as_deref());
+                return;
             }
             self.open_tag(&name, href.as_deref(), self_closing);
             if !self_closing && is_styled_container(&name) {
@@ -1074,6 +1111,57 @@ fn css_align(value: &str) -> Option<TextAlign> {
         "right" => Some(TextAlign::Right),
         _ => None,
     }
+}
+
+/// Store a recognised attribute into the tag scanner's scratch slots. Shared
+/// by the quoted and unquoted value paths so the match is compiled once.
+fn keep_attribute(
+    attr: &str,
+    value: String,
+    href: &mut Option<String>,
+    style: &mut Option<String>,
+    align: &mut Option<String>,
+    src: &mut Option<String>,
+    width: &mut Option<String>,
+    height: &mut Option<String>,
+) {
+    match attr {
+        "href" => *href = Some(value),
+        "style" => *style = Some(value),
+        "align" => *align = Some(value),
+        "src" => *src = Some(value),
+        "width" => *width = Some(value),
+        "height" => *height = Some(value),
+        _ => {}
+    }
+}
+
+/// Parse an HTML image `width`/`height` attribute into points.
+///
+/// The units mirror [`css_font_size`] — a bare number is points, `pt` is
+/// points, `px` is converted at 96 dpi (×0.75). Unlike font sizes there is no
+/// upper clamp here: the layout clamps the placement rectangle to the page's
+/// text width instead. Non-positive, non-finite and unknown values are refused.
+fn image_dimension(value: &str) -> Option<f64> {
+    let v = value.trim().to_ascii_lowercase();
+    let (number, scale) = if let Some(n) = v.strip_suffix("pt") {
+        (n.trim(), 1.0)
+    } else if let Some(n) = v.strip_suffix("px") {
+        (n.trim(), 0.75)
+    } else if v
+        .chars()
+        .last()
+        .is_some_and(|c| c.is_ascii_digit() || c == '.')
+    {
+        (v.as_str(), 1.0)
+    } else {
+        return None;
+    };
+    let size = number.parse::<f64>().ok()?;
+    if !size.is_finite() || size <= 0.0 {
+        return None;
+    }
+    Some(size * scale)
 }
 
 /// A narrow `font-size` parser: absolute `pt`, `px` (at 96 dpi) and a bare
