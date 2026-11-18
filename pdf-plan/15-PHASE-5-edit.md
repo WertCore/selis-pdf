@@ -102,15 +102,34 @@ Normative spec: `23-EDIT-MODEL-SPEC.md`. Read it before any task here.
     every redefined object. The appended trailer carries `/Encrypt`, `/Root`, `/Info` and a refreshed
     `/ID`; the `/Encrypt` dictionary itself stays plaintext. Read-back reopens the bytes with the
     policy and compares the full decrypted model, proving no plaintext object was emitted.
-    `EncryptionPolicy::UpgradeToAesV3 { user_consent }` refuses without consent
-    (`PERMISSION_DENIED`) and, **with** consent, still refuses (`ENCRYPT_UNSUPPORTED`) because an
-    incremental save cannot re-key earlier revisions — callers must use `save_rewritten` with a
-    fresh AESV3 handler. No silent upgrade. Key-less `save_incremental` still refuses encrypted
-    input. Tests cover RC4 (R3), AESV2 (R4) and AESV3 (R6) fixtures built with
-    `EncryptInfo::new_legacy`/`new_r6`, plus the plaintext-marker and wrong-password cases.
+    `EncryptionPolicy::UpgradeToAesV3 { user_consent, new_user_password, new_owner_password }`
+    refuses without consent (`PERMISSION_DENIED`). **With** consent it authenticates the source
+    with the OLD password and `save_incremental_encrypted` performs a **full, verified rewrite**
+    under a fresh AESV3/R6 handler: a brand-new file key/salts from the OS CSPRNG, a new `/Encrypt`
+    dictionary (the old one is dropped), new `/ID`, `/Info` carried forward, and the whole object
+    graph re-encrypted. An append is never attempted under the new key (the old `/Encrypt` bytes
+    would stay authoritative in the preserved prefix), so the report says `prefix_preserved =
+    false`, `revisions = 1`. The result is returned only if it reopens with the NEW password,
+    materialises to the expected model, and installs r=6/v=5; otherwise `VERIFY_FAILED` (or
+    `ENCRYPT_UNSUPPORTED` when no CSPRNG is reachable) with no bytes. No silent upgrade. Key-less
+    `save_incremental` still refuses encrypted input. COS `encrypt_object` now also encrypts
+    `Obj::HexString` write-only payloads (with a round-trip test), so a writer-built hex string
+    can never leak plaintext.
+    **Public-key sources:** `open_encrypted_public_key` authenticates an `/Adobe.PPKLite` /
+    `/Adobe.PubSec` document with the recipient's PKCS#7 credential (reusing COS `parse_encrypt` /
+    `authenticate_public_key`); the same incremental save re-encrypts changed objects under the
+    unchanged handler file key, so the existing `/Recipients` blobs still open the result. Both
+    the RSA s4 (AESV2) and EC s5 (AESV3) committed fixtures round-trip. No new CMS envelopes are
+    minted — the PKCS#7 layer is read-only — so this edits an existing public-key document, never
+    creates one, and the caller enforces the CMS permission bits via the returned `PubKeyAuth`.
+    Tests cover RC4 (R3), AESV2 (R4) and AESV3 (R6) fixtures built with
+    `EncryptInfo::new_legacy`/`new_r6`, the consented AESV3 upgrade (new password opens, old one
+    gets `WRONG_PASSWORD`), public-key save, plus the plaintext-marker and wrong-password cases.
     Interop oracle: `qpdf --check --password= ` and `qpdf --password= --decrypt` pass for all three
     (`encrypted_tests::qpdf_interop_oracle`, skipped when qpdf is absent). Acrobat GUI opening is
-    a **manual** check — not automated here.
+    a **manual** check — not automated here. Residual honest limits: a public-key document whose
+    recipient must change (new CMS envelope) is still out of scope; an AESV3 upgrade needs an OS
+    CSPRNG in the build (`selis-edit/rng` → `selis-crypto/rng`), refusing cleanly without one.
 - [x] **SL-5.EDIT.07 — Save preserving existing signatures** · deps: EDIT.03 · owner: HUMAN
   - **Do:** An incremental save must leave existing signature byte ranges intact so signatures stay
     valid, and must respect MDP/DocMDP permission levels — refusing changes the certification

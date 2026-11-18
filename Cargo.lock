@@ -1822,6 +1822,7 @@ version = "0.1.0"
 dependencies = [
  "md-5",
  "selis-bytes",
+ "selis-crypto",
  "selis-error",
  "selis-font",
  "selis-geom",

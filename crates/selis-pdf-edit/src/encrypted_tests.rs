@@ -19,8 +19,9 @@
 )]
 
 use crate::incremental::{
-    encrypted_save_key_from_parts, materialise, open_encrypted, save_incremental,
-    save_incremental_encrypted, EncryptedSaveKey, EncryptionPolicy, ObjectModel, ObjectMutation,
+    encrypted_save_key_from_parts, materialise, open_encrypted, open_encrypted_public_key,
+    save_incremental, save_incremental_encrypted, EncryptedSaveKey, EncryptionPolicy, ObjectModel,
+    ObjectMutation,
 };
 use selis_bytes::Bytes;
 use selis_pdf_cos::doc_writer::{ContentBuilder, DocumentBuilder};
@@ -336,12 +337,15 @@ fn aesv3_upgrade_requires_explicit_consent() {
     let src = encrypted_base(HandlerCase::Rc4);
     let mut g = guard(&b);
 
-    // No consent: refused as a policy/consent error before any key work.
+    // No consent: refused as a policy/consent error before any key work, even
+    // though the correct OLD password was supplied.
     let no_consent = open_encrypted(
         &src,
         b"",
         EncryptionPolicy::UpgradeToAesV3 {
             user_consent: false,
+            new_user_password: b"new-user".to_vec(),
+            new_owner_password: b"new-owner".to_vec(),
         },
         &b,
         &mut g,
@@ -358,21 +362,6 @@ fn aesv3_upgrade_requires_explicit_consent() {
         "{no_consent:?}"
     );
 
-    // With consent: still refused, honestly, because an incremental save
-    // cannot re-key the untouched prefix. The message names the rewrite path.
-    let consent = open_encrypted(
-        &src,
-        b"",
-        EncryptionPolicy::UpgradeToAesV3 { user_consent: true },
-        &b,
-        &mut g,
-    )
-    .expect_err("consent does not make an incremental re-key possible");
-    assert_eq!(consent.code(), selis_error::Code::EncryptUnsupported);
-    let detail = consent.ctx().detail.as_deref().unwrap_or("").to_string();
-    assert!(detail.contains("not implemented"), "{detail}");
-    assert!(detail.contains("save_rewritten"), "{detail}");
-
     // The default path on the same bytes still works: no silent upgrade.
     let key = open_encrypted(&src, b"", EncryptionPolicy::KeepExisting, &b, &mut g)
         .expect("default")
@@ -383,6 +372,102 @@ fn aesv3_upgrade_requires_explicit_consent() {
         "RC4 handler is reused, not upgraded"
     );
     assert!(!key.is_aes());
+}
+
+/// With consent, the upgrade is a full rewrite under a fresh AESV3 handler.
+/// The source authenticates with the OLD (empty) password; the output opens
+/// with the NEW password and the old one no longer works. The mutation still
+/// decrypts and every untouched object survives.
+#[test]
+fn aesv3_upgrade_with_consent_rewrites_and_rotates_password() {
+    let b = budget();
+    let src = encrypted_base(HandlerCase::Rc4);
+    let mut g = guard(&b);
+    let new_user = b"new-user";
+    let new_owner = b"new-owner";
+
+    let key = open_encrypted(
+        &src,
+        b"", // the OLD user password authenticates the source
+        EncryptionPolicy::UpgradeToAesV3 {
+            user_consent: true,
+            new_user_password: new_user.to_vec(),
+            new_owner_password: new_owner.to_vec(),
+        },
+        &b,
+        &mut g,
+    )
+    .expect("consented upgrade authenticates with the old password")
+    .expect("encrypted source has a key");
+    // The key still describes the OLD handler: it was only used to decrypt.
+    assert_eq!(key.handler_revision(), 3);
+    assert!(!key.is_aes());
+
+    let model = materialise_decrypted(&src, &key, &b, &mut g);
+    let info_num = object_with_title(&model, b"ORIGINAL_TITLE");
+    let content_num = object_with_stream_marker(&model, CONTENT_MARKER);
+    let mutations = vec![ObjectMutation::SetObject {
+        num: info_num,
+        value: expected_title(TITLE_MARKER),
+    }];
+
+    let (out, report) =
+        save_incremental_encrypted(&src, &model, &mutations, &key, &b, &mut g).expect("upgrade");
+    assert!(
+        !report.prefix_preserved,
+        "a handler change cannot keep the old bytes as a prefix"
+    );
+    assert_eq!(report.revisions, 1, "the rewrite is a single revision");
+    assert_ne!(out, src, "the upgraded bytes differ from the source");
+    assert!(
+        !out.windows(TITLE_MARKER.len()).any(|w| w == TITLE_MARKER),
+        "the edited value must be ciphertext in the rewritten file"
+    );
+
+    // The NEW password opens the output as AESV3/R6.
+    let mut g2 = guard(&b);
+    let out_key = open_encrypted(&out, new_user, EncryptionPolicy::KeepExisting, &b, &mut g2)
+        .expect("new password opens the upgraded file")
+        .expect("output is still encrypted");
+    assert_eq!(out_key.handler_revision(), 6, "installed AESV3/R6");
+    assert!(out_key.is_aes());
+    assert_eq!(out_key.handler_name(), "AESV3 (R6)");
+
+    // The OLD password no longer opens it.
+    let mut g3 = guard(&b);
+    let old = open_encrypted(&out, b"", EncryptionPolicy::KeepExisting, &b, &mut g3)
+        .expect_err("the old password must not open the upgraded file");
+    assert_eq!(old.code(), selis_error::Code::WrongPassword);
+
+    // The owner password of the new handler also authenticates (owner keys
+    // open the file too), and the decrypted model matches the edit.
+    let mut g4 = guard(&b);
+    let owner_key = open_encrypted(&out, new_owner, EncryptionPolicy::KeepExisting, &b, &mut g4)
+        .expect("new owner password opens the upgraded file")
+        .expect("owner key");
+    assert_eq!(owner_key.handler_revision(), 6);
+
+    let reopened = materialise_decrypted(&out, &out_key, &b, &mut g2);
+    assert_eq!(
+        reopened.get(&info_num),
+        Some(&expected_title(TITLE_MARKER)),
+        "the mutation decrypts under the new key"
+    );
+    let content = reopened.get(&content_num).expect("content survived");
+    match content {
+        Obj::Stream { data, .. } => assert!(
+            data.windows(CONTENT_MARKER.len())
+                .any(|w| w == CONTENT_MARKER),
+            "an untouched stream still decrypts"
+        ),
+        other => panic!("content is no longer a stream: {other:?}"),
+    }
+
+    // The engine tolerantly opens the rewritten file (its page-tree structure
+    // is plaintext) and sees one page — the full rewrite is well-formed.
+    let session = selis_pdf_engine::Session::open(out.clone(), &b, &FixedClock(0))
+        .expect("engine opens the upgraded file");
+    assert_eq!(session.len(), 1, "page count survives the rewrite");
 }
 
 #[test]
@@ -405,7 +490,11 @@ fn unencrypted_source_needs_no_key_and_refuses_upgrade() {
     let err = open_encrypted(
         &src,
         b"",
-        EncryptionPolicy::UpgradeToAesV3 { user_consent: true },
+        EncryptionPolicy::UpgradeToAesV3 {
+            user_consent: true,
+            new_user_password: b"new-user".to_vec(),
+            new_owner_password: b"new-owner".to_vec(),
+        },
         &b,
         &mut g,
     )
@@ -428,6 +517,122 @@ fn key_from_parts_rejects_public_key_and_empty_keys() {
     let mut pubkey = key.info.clone();
     pubkey.handler = selis_pdf_cos::encrypt::Handler::PubKey;
     assert!(encrypted_save_key_from_parts(pubkey, key.file_key.clone()).is_none());
+}
+
+/// The first ordinary content stream (not an object/xref stream) in a model.
+fn first_content_stream(model: &ObjectModel) -> u32 {
+    *model
+        .iter()
+        .find(|(_, obj)| {
+            matches!(obj, Obj::Stream { dict, .. } if !dict.iter().any(|(k, v)| {
+                k.as_slice() == b"Type"
+                    && matches!(v, Obj::Name(n) if n.as_slice() == b"ObjStm" || n.as_slice() == b"XRef")
+            }))
+        })
+        .map(|(num, _)| num)
+        .expect("the fixture has a content stream")
+}
+
+/// SL-1.ENC.03 read/write interop for the `/Adobe.PPKLite` handler: an
+/// incremental save into a public-key-encrypted fixture re-encrypts the
+/// changed stream under the SAME file key, so the unchanged `/Recipients`
+/// blobs still open it with the recipient private key. Both the RSA s4
+/// (AESV2) and EC s5 (AESV3) shapes are covered.
+#[test]
+fn public_key_incremental_save_roundtrips() {
+    fn run(label: &str, pdf: &[u8], key_der: &[u8], ec: bool) {
+        let b = budget();
+        let credential = if ec {
+            selis_crypto::pkcs7::PubKeyCredential::ec_p256(key_der.to_vec())
+        } else {
+            selis_crypto::pkcs7::PubKeyCredential::rsa(key_der.to_vec())
+        };
+        let mut g = guard(&b);
+        let (key, auth) = open_encrypted_public_key(pdf, &credential, &b, &mut g)
+            .unwrap_or_else(|e| panic!("{label}: public-key open failed: {e:?}"))
+            .unwrap_or_else(|| panic!("{label}: fixture is encrypted"));
+        assert_eq!(key.info.handler, selis_pdf_cos::encrypt::Handler::PubKey);
+        assert!(!key.file_key.is_empty(), "{label}: unwrapped a file key");
+        let _ = auth; // the receipt is the caller's to enforce (SL-1.ENC.09)
+
+        let model = materialise_decrypted(pdf, &key, &b, &mut g);
+        let stream_num = first_content_stream(&model);
+        let marker: &[u8] = b"% EDIT06 PUBLIC-KEY MARKER\n";
+        let replacement = match model.get(&stream_num).expect("stream object") {
+            Obj::Stream { dict, .. } => Obj::Stream {
+                dict: dict.clone(),
+                data: Bytes::copy_from_slice(marker),
+            },
+            other => panic!("{label}: not a stream: {other:?}"),
+        };
+        let mutations = vec![ObjectMutation::SetObject {
+            num: stream_num,
+            value: replacement,
+        }];
+
+        let (out, report) = save_incremental_encrypted(pdf, &model, &mutations, &key, &b, &mut g)
+            .unwrap_or_else(|e| panic!("{label}: public-key save failed: {e:?}"));
+        assert!(
+            report.prefix_preserved,
+            "{label}: original bytes are the prefix"
+        );
+        assert_eq!(report.objects_changed, 1, "{label}: one object changed");
+        let appended = &out[pdf.len()..];
+        assert!(
+            !appended.windows(marker.len()).any(|w| w == marker),
+            "{label}: the marker must be ciphertext in the appended revision"
+        );
+
+        let mut g2 = guard(&b);
+        let (out_key, _) = open_encrypted_public_key(&out, &credential, &b, &mut g2)
+            .unwrap_or_else(|e| panic!("{label}: reopen failed: {e:?}"))
+            .expect("output is still public-key encrypted");
+        let reopened = materialise_decrypted(&out, &out_key, &b, &mut g2);
+        match reopened.get(&stream_num).expect("stream survived") {
+            Obj::Stream { data, .. } => {
+                assert_eq!(
+                    data.as_slice(),
+                    marker,
+                    "{label}: edit decrypts for the recipient"
+                )
+            }
+            other => panic!("{label}: not a stream on reopen: {other:?}"),
+        }
+    }
+
+    run(
+        "RSA s4 / AESV2",
+        include_bytes!("../../selis-pdf-engine/tests/fixtures/pubkey-rsa-s4.pdf"),
+        include_bytes!("../../selis-pdf-engine/tests/fixtures/enc03-recipient-rsa2048.pk8.der"),
+        false,
+    );
+    run(
+        "EC s5 / AESV3",
+        include_bytes!("../../selis-pdf-engine/tests/fixtures/pubkey-ec-s5.pdf"),
+        include_bytes!("../../selis-pdf-engine/tests/fixtures/enc03-recipient-ecp256.pk8.der"),
+        true,
+    );
+}
+
+/// The public-key opener refuses a standard-handler `/Encrypt` with a typed,
+/// precise error — the caller must use the password path instead.
+#[test]
+fn public_key_open_refuses_standard_handler() {
+    let b = budget();
+    let src = encrypted_base(HandlerCase::AesV3);
+    let mut g = guard(&b);
+    let credential = selis_crypto::pkcs7::PubKeyCredential::rsa(vec![0u8; 8]);
+    let e = open_encrypted_public_key(&src, &credential, &b, &mut g)
+        .expect_err("a password handler is not a public-key document");
+    assert_eq!(e.code(), selis_error::Code::EncryptUnsupported);
+    assert!(
+        e.ctx()
+            .detail
+            .as_deref()
+            .unwrap_or("")
+            .contains("standard handler"),
+        "{e:?}"
+    );
 }
 
 /// qpdf interop oracle: every output must pass `--check` and decrypt with the

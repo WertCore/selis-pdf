@@ -18,6 +18,7 @@ rng = ["selis-pdf-cos/rng", "selis-pdf-doc/rng"]
 [dependencies]
 selis-font = { workspace = true }
 selis-error = { workspace = true }
+selis-crypto = { workspace = true }
 selis-bytes = { workspace = true }
 selis-sandbox = { workspace = true }
 selis-geom = { workspace = true }
@@ -36,5 +37,7 @@ md-5 = { workspace = true }
 [dev-dependencies]
 # Read-back verification for the full-rewrite writer (EDIT.05): open the
 # rewritten bytes with the real engine in tests. A dev-dependency cycle with
-# selis-pdf-engine is intentional and permitted by Cargo.
-selis-pdf-engine = { workspace = true }
+# selis-pdf-engine is intentional and permitted by Cargo. `rng` is enabled so
+# the consented AESV3-upgrade tests can draw a fresh file key from the OS
+# CSPRNG (the upgrade refuses outright when no entropy source is reachable).
+selis-pdf-engine = { workspace = true, features = ["rng"] }

@@ -890,15 +890,25 @@ pub fn encrypt_dict(info: &EncryptInfo) -> Obj {
 ///
 /// The object graph is trusted (it was built by the writer, not parsed from
 /// a document). Names, references, and numbers pass through unchanged;
-/// strings and streams are encrypted in place. `/Length` is rewritten to the
-/// ciphertext length, so a wrong pre-existing `/Length` cannot corrupt the
-/// output.
+/// strings, hex strings and streams are encrypted in place. `/Length` is
+/// rewritten to the ciphertext length, so a wrong pre-existing `/Length`
+/// cannot corrupt the output.
+///
+/// [`Obj::HexString`] is a write-only variant (the parser emits
+/// [`Obj::String`] for both literal and hex literals), but a caller that
+/// builds an object graph with hex strings must not get plaintext: it is
+/// encrypted under the same per-object key as a literal string and the
+/// variant is preserved so the writer still serialises it as `<…>`.
 #[must_use]
 pub fn encrypt_object(obj: &Obj, key: &[u8], objnum: u32, gen: u16, rev: u8, aes: bool) -> Obj {
     match obj {
         Obj::String(b) => {
             let ct = selis_crypto::encrypt_data(key, objnum, gen, b.as_slice(), rev, aes);
             Obj::String(bytes(&ct))
+        }
+        Obj::HexString(b) => {
+            let ct = selis_crypto::encrypt_data(key, objnum, gen, b.as_slice(), rev, aes);
+            Obj::HexString(bytes(&ct))
         }
         Obj::Array(items) => Obj::Array(
             items
@@ -1303,5 +1313,59 @@ mod tests {
             .expect("info");
         assert!(!info.stream_encrypted());
         assert!(!info.string_encrypted());
+    }
+
+    /// `Obj::HexString` is write-only (the parser emits `Obj::String` for hex
+    /// literals), so the round trip here is explicit: encrypt a hex payload,
+    /// prove it moved off the plaintext, decrypt it with the matching
+    /// per-object key, and confirm it matches both the literal-string branch
+    /// and the original bytes. Nested hex strings must be reached too.
+    #[test]
+    fn hex_string_payload_encrypts_and_decrypts_like_string() {
+        let key = [0x42u8; 16];
+        let plain: &[u8] = b"a hex payload that must not stay in the clear";
+        let (objnum, gen, rev, aes) = (7u32, 0u16, 4u8, true);
+
+        let hex = Obj::HexString(bytes(plain));
+        let lit = Obj::String(bytes(plain));
+        let enc_hex = encrypt_object(&hex, &key, objnum, gen, rev, aes);
+        let enc_lit = encrypt_object(&lit, &key, objnum, gen, rev, aes);
+
+        let hex_ct = match &enc_hex {
+            Obj::HexString(b) => b.as_slice(),
+            other => panic!("hex variant preserved: {other:?}"),
+        };
+        let lit_ct = match &enc_lit {
+            Obj::String(b) => b.as_slice(),
+            other => panic!("literal variant preserved: {other:?}"),
+        };
+        assert_eq!(
+            hex_ct, lit_ct,
+            "a hex string must use the same per-object cipher as a literal string"
+        );
+        assert_ne!(hex_ct, plain, "the hex payload must be ciphertext");
+
+        let recovered = selis_crypto::decrypt_data(&key, objnum, gen, hex_ct, rev, aes);
+        assert_eq!(
+            recovered.as_slice(),
+            plain,
+            "round trip recovers the payload"
+        );
+
+        // The recursive walk must reach a hex string inside an array/dict.
+        let nested = Obj::Dict(vec![(bytes(b"K"), Obj::Array(vec![hex]))]);
+        let enc_nested = encrypt_object(&nested, &key, objnum, gen, rev, aes);
+        let Obj::Dict(pairs) = &enc_nested else {
+            panic!("dict preserved")
+        };
+        let Obj::Array(items) = &pairs[0].1 else {
+            panic!("array preserved")
+        };
+        match &items[0] {
+            Obj::HexString(b) => {
+                assert_eq!(b.as_slice(), hex_ct, "nested hex payload was encrypted")
+            }
+            other => panic!("nested hex string variant preserved: {other:?}"),
+        }
     }
 }
