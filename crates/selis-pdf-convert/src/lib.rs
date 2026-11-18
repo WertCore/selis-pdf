@@ -21,9 +21,9 @@
 //! has a zero-width border and no appearance stream — it is clickable, but
 //! the label is not automatically underlined or recoloured. An **image whose
 //! whole paragraph is `![alt](data:image/…,…)`** is embedded as a real PDF
-//! XObject (see below): JPEG, PNG and SVG data URIs are accepted; inline images
-//! inside other text, reference links, and raw HTML inside Markdown are ignored
-//! or rendered as plain text.
+//! XObject (see below): JPEG, PNG, GIF, WebP and SVG data URIs are accepted;
+//! inline images inside other text, reference links, and raw HTML inside
+//! Markdown are ignored or rendered as plain text.
 //!
 //! # Supported HTML subset
 //!
@@ -34,16 +34,16 @@
 //! `<th>` in the first row makes a header row; nested tables and lists inside
 //! cells are not supported), and block containers (`<div>`, `<section>`,
 //! `<article>`, `<main>`, `<table>` cells). `<img src="…">` embeds an image
-//! when `src` is a **JPEG, PNG or SVG data URI** (SVG either `;base64,` or
+//! when `src` is a **JPEG, PNG, GIF, WebP or SVG data URI** (SVG either `;base64,` or
 //! percent-encoded); `width`/`height` attributes override its intrinsic size
 //! (see below). An inline `style="background-image: url(data:image/…;base64,…)"`
-//! paints a JPEG/PNG behind that element's text runs (see below). A **single
+//! paints a JPEG/PNG/GIF/WebP behind that element's text runs (see below). A **single
 //! inline `<style>` block** contributes an element-type rulesheet (see below);
 //! `<script>` content is always dropped. Unknown tags unwrap to their text.
 //! Named (`&amp;`, `&eacute;`, …) and numeric (`&#8212;`, `&#x2014;`) entities
 //! are decoded.
 //!
-//! # Supported images (JPEG, PNG and SVG data URIs)
+//! # Supported images (JPEG, PNG, GIF, WebP and SVG data URIs)
 //!
 //! HTML `<img src="data:image/…">` and a Markdown paragraph that is exactly the
 //! same data URI inside `![alt]()` are decoded and embedded as a real XObject:
@@ -58,6 +58,17 @@
 //!   non-interlaced colour types 0 (grey), 2 (RGB), 4 (grey+alpha) and 6
 //!   (RGBA) are accepted; palette (3), interlaced and other bit depths are
 //!   refused.
+//! - **GIF** (`data:image/gif;base64,…`) — decoded by the engine's GIF87a/89a
+//!   reader (LZW, interlaced scanlines, global/local palettes and the
+//!   transparent index), alpha flattened over white, then the same `/FlateDecode`
+//!   `/DeviceRGB` re-encode as PNG. Frames are composited by overwrite; a frame
+//!   asking for a restore-to-background/previous disposal method is refused by
+//!   name. Animation timing is not carried into the PDF.
+//! - **WebP** (`data:image/webp;base64,…`) — decoded from the lossless VP8L
+//!   bitstream, including the color cache and color-indexing transform used by
+//!   `cwebp`/`Pillow`, then flattened and re-encoded exactly like PNG. VP8
+//!   lossy, extended WebP, colour transforms, meta prefix codes, close-range
+//!   LZ77 distances and metadata chunks are refused by name.
 //! - **SVG** (`data:image/svg+xml;base64,…` or percent-encoded
 //!   `data:image/svg+xml,…`) — the text is fed through the **existing** `svg`
 //!   subset parser/emitter (the same one behind `svg_to_pdf`). The resulting
@@ -78,9 +89,9 @@
 //!
 //! Everything else is **refused by name and skipped** (no text painted, no
 //! XObject emitted): remote `http(s)` URLs, `file:` paths, any other scheme,
-//! GIF/WebP data URIs, malformed or truncated files, unsafe SVGs, and inline
-//! images mixed with other text. There is no network access anywhere on the
-//! conversion path.
+//! malformed or truncated files, unsupported image profiles named above, unsafe
+//! SVGs, and inline images mixed with other text. There is no network access
+//! anywhere on the conversion path.
 //!
 //! # Supported inline styling
 //!
@@ -97,8 +108,8 @@
 //!   table cells by shifting the laid-out text runs. `align="left|center|right"`
 //!   on `<td>`/`<th>` is honoured too.
 //! - `background-image:` — only a single `url("data:image/…;base64,…")` token
-//!   (quoted or bare) is understood; the JPEG/PNG is painted behind that
-//!   element's text runs. Remote URLs, gradients, multiple images and unknown
+//!   (quoted or bare) is understood; the JPEG/PNG/GIF/WebP is painted behind
+//!   that element's text runs. Remote URLs, gradients, multiple images and unknown
 //!   declarations are ignored or refused by name.
 //! - `background-size:` — `auto`, `contain`, `cover`, or one/two absolute
 //!   lengths (`pt`, `px` at 96 dpi, bare number = pt) resize that background
@@ -141,10 +152,11 @@
 //! # Still out of scope (honest gaps)
 //!
 //! No font embedding or subsetting (only the standard-14 base fonts). Image
-//! embedding is limited to the JPEG/PNG/SVG data URIs and the single `url(...)`
-//! `background-image` described above; GIF/WebP data URIs, remote images,
-//! arbitrary CSS backgrounds, images embedded in DOCX / XLSX / PPTX / EPUB, and
-//! inline images inside a Markdown paragraph are still not embedded. The SVG
+//! embedding is limited to the JPEG/PNG/GIF/WebP/SVG data URIs and the single
+//! `url(...)` `background-image` described above; remote images, arbitrary CSS
+//! backgrounds, images embedded in DOCX / XLSX / PPTX / EPUB, and inline images
+//! inside a Markdown paragraph are still not embedded. Animated GIFs are
+//! flattened to their composited final frame (no timing, no disposal 2/3). The SVG
 //! subset is the same one the standalone converter uses (no gradients, arcs,
 //! `use`, external references or scripting). CSS support is the small inline +
 //! rulesheet subset above: no selectors beyond bare element names, no real
@@ -152,7 +164,7 @@
 //! positioning, flex/grid or CSS-driven page margins. There are no charts, math
 //! or general HTML/SVG rendering, and no fidelity renderer. This subset
 //! produces honest, structurally useful PDFs with clickable links, a little
-//! inline/rulesheet styling and embedded JPEG/PNG/SVG images — not an
+//! inline/rulesheet styling and embedded JPEG/PNG/GIF/WebP/SVG images — not an
 //! Aspose-equivalent conversion.
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
@@ -1557,6 +1569,176 @@ mod fidelity {
             }
         }
         assert!(red, "PNG did not render red ink inside the image box");
+    }
+
+    // ---- Embedded GIF / WebP data URIs (Flate image XObjects) --------------
+
+    /// 32×32 solid red, written by Pillow as a GIF89a and as a lossless VP8L
+    /// WebP. Both are real encoder output, not hand-assembled streams.
+    const RED_GIF_32: &str = "R0lGODdhIAAgAIEAAP8AAAAAAAAAAAAAACwAAAAAIAAgAEAINQABCBxIsKDBgwgTKlzIsKHDhxAjSpxIsaLFixgzatzIsaPHjyBDihxJsqTJkyhTqlzJUmRAADs=";
+    const RED_WEBP_32: &str = "UklGRhwAAABXRUJQVlA4TA8AAAAvH8AHAAcQ/Y/+ByKi/wEA";
+
+    fn raster_uri(kind: &str, payload: &str) -> String {
+        format!("data:image/{kind};base64,{payload}")
+    }
+
+    /// Decode the fixture's base64 so a test can truncate the actual bytes.
+    fn unb64(text: &str) -> Vec<u8> {
+        let value = |byte: u8| match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            b'=' => 0,
+            _ => 0,
+        };
+        let bytes: Vec<u8> = text.bytes().collect();
+        let mut out = Vec::new();
+        for chunk in bytes.chunks(4) {
+            let n = (u32::from(value(chunk[0])) << 18)
+                | (u32::from(value(*chunk.get(1).unwrap_or(&b'A'))) << 12)
+                | (u32::from(value(*chunk.get(2).unwrap_or(&b'A'))) << 6)
+                | u32::from(value(*chunk.get(3).unwrap_or(&b'A')));
+            out.push((n >> 16) as u8);
+            if chunk.len() > 2 {
+                out.push((n >> 8) as u8);
+            }
+            if chunk.len() > 3 {
+                out.push(n as u8);
+            }
+        }
+        out
+    }
+
+    fn assert_red_raster_xobject(bytes: &[u8]) {
+        crate::testkit::opens_with_page_count(bytes, 1);
+        let (dict, data) = image_stream(bytes).expect("image XObject in re-opened PDF");
+        assert_eq!(dict_name(&dict, b"Type").as_deref(), Some(&b"XObject"[..]));
+        assert_eq!(dict_name(&dict, b"Subtype").as_deref(), Some(&b"Image"[..]));
+        assert_eq!(dict_int(&dict, b"Width"), Some(32));
+        assert_eq!(dict_int(&dict, b"Height"), Some(32));
+        assert_eq!(dict_int(&dict, b"BitsPerComponent"), Some(8));
+        assert_eq!(
+            dict_name(&dict, b"Filter").as_deref(),
+            Some(&b"FlateDecode"[..])
+        );
+        assert_eq!(
+            dict_name(&dict, b"ColorSpace").as_deref(),
+            Some(&b"DeviceRGB"[..])
+        );
+        let raw = selis_pdf_filter::flate_decode(&data).expect("raw RGB samples");
+        assert_eq!(raw.len(), 32 * 32 * 3);
+        assert!(raw.chunks_exact(3).all(|px| px == [0xFF, 0, 0]));
+
+        let xobj = crate::testkit::resolved_objects(bytes)
+            .into_iter()
+            .any(|(_, obj)| {
+                if let Obj::Dict(pairs) = obj {
+                    pairs.iter().any(|(k, v)| {
+                        k.as_slice() == b"XObject"
+                            && matches!(v, Obj::Dict(x) if x.iter().any(|(nk, _)| nk.as_slice() == b"Im1"))
+                    })
+                } else {
+                    false
+                }
+            });
+        assert!(xobj, "page resources must carry /XObject /Im1");
+        let content = stream(bytes);
+        assert!(content.contains("/Im1 Do"), "no image draw: {content}");
+        assert!(
+            content.contains("24 0 0 24 54 714 cm"),
+            "unexpected placement rect: {content}"
+        );
+    }
+
+    #[test]
+    fn html_gif_data_uri_becomes_a_flate_image_xobject() {
+        let src = raster_uri("gif", RED_GIF_32);
+        assert_red_raster_xobject(&from_html(&format!("<img src=\"{src}\">")));
+    }
+
+    #[test]
+    fn html_webp_data_uri_becomes_a_flate_image_xobject() {
+        let src = raster_uri("webp", RED_WEBP_32);
+        assert_red_raster_xobject(&from_html(&format!("<img src=\"{src}\">")));
+    }
+
+    #[test]
+    fn markdown_gif_and_webp_data_uris_embed_the_same_xobject() {
+        for (kind, payload) in [("gif", RED_GIF_32), ("webp", RED_WEBP_32)] {
+            let src = raster_uri(kind, payload);
+            let bytes = from_md(&format!("![a red square]({src})"));
+            let (dict, data) =
+                image_stream(&bytes).unwrap_or_else(|| panic!("{kind} from Markdown"));
+            assert_eq!(dict_int(&dict, b"Width"), Some(32), "{kind} width");
+            assert_eq!(dict_int(&dict, b"Height"), Some(32), "{kind} height");
+            assert_eq!(
+                dict_name(&dict, b"Filter").as_deref(),
+                Some(&b"FlateDecode"[..])
+            );
+            assert!(!data.is_empty());
+            assert!(stream(&bytes).contains("/Im1 Do"));
+        }
+    }
+
+    /// Re-open each converted PDF in the engine, rasterise the page and look
+    /// for red ink inside the image's measured box — the samples really reach
+    /// the canvas, not just the XObject dictionary.
+    #[test]
+    fn embedded_gif_and_webp_render_the_source_colour() {
+        for (kind, payload) in [("gif", RED_GIF_32), ("webp", RED_WEBP_32)] {
+            let src = raster_uri(kind, payload);
+            let bytes = from_html(&format!("<img src=\"{src}\" width=\"100\" height=\"100\">"));
+            let budget = Budget::unlimited();
+            let session = selis_pdf_engine::Session::open(bytes, &budget, &FixedClock(0))
+                .unwrap_or_else(|_| panic!("engine re-open for {kind}"));
+            let mut g = guard();
+            let page = session
+                .render_page_rgba(0, 72.0, &budget, &mut g)
+                .expect("rasterize");
+            assert_eq!((page.width, page.height), (612, 792));
+            let mut red = false;
+            for y in 60usize..150 {
+                for x in 60usize..150 {
+                    let idx = (y * page.width as usize + x) * 4;
+                    let (r, g_ch, b) = (page.rgba[idx], page.rgba[idx + 1], page.rgba[idx + 2]);
+                    if r > 150 && g_ch < 100 && b < 100 {
+                        red = true;
+                    }
+                }
+            }
+            assert!(red, "{kind} did not render red ink inside the image box");
+        }
+    }
+
+    #[test]
+    fn remote_truncated_and_unsupported_gif_webp_sources_emit_no_xobject() {
+        let gif_bytes = unb64(RED_GIF_32);
+        let webp_bytes = unb64(RED_WEBP_32);
+        let truncated_gif = format!(
+            "data:image/gif;base64,{}",
+            b64(gif_bytes.get(..8).unwrap_or(&gif_bytes))
+        );
+        let truncated_webp = format!(
+            "data:image/webp;base64,{}",
+            b64(webp_bytes.get(..20).unwrap_or(&webp_bytes))
+        );
+        let bytes = from_html(&format!(
+            "<img src=\"https://example.com/a.gif\">\
+             <img src=\"https://example.com/b.webp\">\
+             <img src=\"file:///etc/passwd\">\
+             <img src=\"{truncated_gif}\">\
+             <img src=\"{truncated_webp}\">"
+        ));
+        assert!(
+            image_stream(&bytes).is_none(),
+            "no image XObject for refused sources"
+        );
+        assert!(!stream(&bytes).contains(" Do\n"), "no stray image draw");
+
+        let md = from_md("![no](data:image/webp;base64,UklGRiYAAABXRUJQVlA4)");
+        assert!(image_stream(&md).is_none());
     }
 
     // ---- Embedded SVG data URIs (Form XObjects) ----------------------------

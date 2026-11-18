@@ -1,8 +1,8 @@
 //! The image engine of the Selis PDF engine (SL-1A.TOOL.08, SL-5.CONV.01/02).
 //!
-//! Decodes standalone image *files* — PNG and JPEG — into an RGBA8 buffer
-//! ready for embedding as a PDF image XObject. Codec work is delegated, never
-//! re-implemented: JPEG goes through [`selis_pdf_filter::dct_decode`]
+//! Decodes standalone image *files* — PNG, JPEG, GIF and WebP — into an RGBA8
+//! buffer ready for embedding as a PDF image XObject. Codec work is delegated
+//! where an owner exists: JPEG goes through [`selis_pdf_filter::dct_decode`]
 //! (zune-jpeg) and PNG's zlib stream through
 //! [`selis_pdf_filter::flate_decode_bounded`] (miniz_oxide), per the layering
 //! allowlist (selis-image → selis-pdf-filter).
@@ -22,14 +22,18 @@
 //! delegated: a parser has to be lenient about what a file can get wrong, and
 //! an encoder does not.
 //!
-//! [`tiff`] and [`webp`] are the exceptions on both counts. A TIFF is a
+//! [`tiff`], [`webp`] and [`gif`] are the exceptions on both counts. A TIFF is a
 //! container whose pages live in one file, so the raster tools needed a reader
 //! for it too, and the reader is this crate's own — there is nothing delegated
 //! to fall back on. WebP lossless is a bitstream of its own with no owner at
-//! all, so [`encode_webp`] and [`decode_webp`] come as a pair: the reader is
-//! what lets the lossless claim be checked sample for sample. Because it
-//! returns several pages, [`decode`] still sniffs only PNG and JPEG; a caller
-//! that knows it holds a TIFF calls [`decode_tiff`].
+//! all, so [`encode_webp`] and [`decode_webp`] come as a pair: the reader also
+//! understands the color-cache and color-indexing constructs that `cwebp` /
+//! `Pillow` emit, which is what lets a small real-world lossless WebP be
+//! embedded. GIF's LZW + interlace + palette reader is [`decode_gif`]; it
+//! flattens the frames it can composite and refuses disposal methods it cannot
+//! by name. Because TIFF returns several pages and GIF/WebP have their own
+//! entry points, [`decode`] still sniffs only PNG and JPEG; a caller that knows
+//! what it holds calls [`decode_tiff`], [`decode_webp`] or [`decode_gif`].
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 #![forbid(unsafe_code)]
@@ -37,9 +41,11 @@
 use selis_error::{err, Code, Result};
 use selis_sandbox::{alloc, BudgetGuard, Resource};
 
+mod gif;
 mod tiff;
 mod webp;
 
+pub use gif::decode_gif;
 pub use tiff::{
     decode_tiff, encode_tiff, encode_tiff_one, tiff_page_infos, tiff_strip, tiff_strip_rgb,
     TiffPageInfo, TiffStrip,

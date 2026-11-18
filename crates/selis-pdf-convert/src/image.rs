@@ -1,28 +1,31 @@
-//! Inbound JPEG, PNG and SVG images from `data:` URIs (HTML `<img>` / Markdown
-//! `![]()`).
+//! Inbound JPEG, PNG, GIF, WebP and SVG images from `data:` URIs (HTML `<img>`
+//! / Markdown `![]()`).
 //!
 //! Accepted media types are `data:image/jpeg;base64,…`,
-//! `data:image/png;base64,…` and `data:image/svg+xml[,base64],…`
+//! `data:image/png;base64,…`, `data:image/gif;base64,…`,
+//! `data:image/webp;base64,…` and `data:image/svg+xml[,base64],…`
 //! (case-insensitive media type). A JPEG's SOF marker is read for the *true*
 //! width, height and component count, and the JPEG bytes are embedded verbatim
-//! as a `DCTDecode` stream (no decoder runs on that path). A PNG is decoded with
-//! the engine's [`selis_image::decode_png`] (zlib Flate IDAT + PNG scanline
-//! filters), its alpha — if any — is flattened over white, and the raw samples
-//! are re-encoded with [`selis_pdf_filter::flate_encode`] into a `FlateDecode`
-//! stream. An SVG is *not* rasterised: its text is handed to the existing
-//! [`crate::svg`] subset parser, which produces a ready-to-embed PDF content
-//! stream plus a natural canvas size; the emitter wraps that in a `Form`
-//! XObject placed at the image box.
+//! as a `DCTDecode` stream (no decoder runs on that path). PNG, GIF and WebP are
+//! decoded with the engine's [`selis_image`] readers (PNG's zlib + scanline
+//! filters, GIF's LZW + interlace + palette, WebP's VP8L entropy code), their
+//! alpha — if any — is flattened over white, and the raw RGB samples are
+//! re-encoded with [`selis_pdf_filter::flate_encode`] into a `FlateDecode`
+//! stream, exactly as PNG already was. An SVG is *not* rasterised: its text is
+//! handed to the existing [`crate::svg`] subset parser, which produces a
+//! ready-to-embed PDF content stream plus a natural canvas size; the emitter
+//! wraps that in a `Form` XObject placed at the image box.
 //!
 //! SVG payloads may be base64 (`;base64,`) or percent-encoded (bare `,`);
 //! decoded text is bounded to [`MAX_SVG_BYTES`]. The SVG subset refuses scripts,
 //! external references and non-local `href` targets *by name* — see
 //! [`crate::svg::parse_embedded_svg`]. Nothing is ever fetched.
 //!
-//! Anything else — remote `http(s)` URLs, file paths, other schemes, GIF/WebP
-//! data URIs, palette/interlaced/non-8-bit PNGs, and malformed or truncated
-//! files — is refused with a typed [`ImageError`] and skipped by the parsers;
-//! the offending source text is not painted and no XObject is emitted.
+//! Anything else — remote `http(s)` URLs, file paths, other schemes,
+//! palette/interlaced/non-8-bit PNGs, animated GIFs with disposal methods, VP8
+//! lossy / extended WebP, and malformed or truncated files — is refused with a
+//! typed [`ImageError`] and skipped by the parsers; the offending source text
+//! is not painted and no XObject is emitted. Nothing is ever fetched.
 //!
 //! See the crate docs for the honest list of what is *not* supported.
 
@@ -159,6 +162,18 @@ pub(crate) enum ImageError {
     /// A structurally sound PNG whose feature set this subset refuses (palette,
     /// interlacing, a bit depth other than 8, an unknown colour type).
     UnsupportedPng,
+    /// The GIF bytes are truncated, corrupt, or fail a structural check; the
+    /// label says which invariant failed.
+    MalformedGif(&'static str),
+    /// A valid GIF construct this subset does not composite (a frame disposal
+    /// method, an LZW code size outside 2..=8).
+    UnsupportedGif,
+    /// The WebP bytes are truncated, corrupt, or fail a structural check; the
+    /// label says which invariant failed.
+    MalformedWebp(&'static str),
+    /// A valid WebP profile this subset refuses by name (VP8 lossy, extended
+    /// WebP, embedded metadata, a colour transform, close-range distances).
+    UnsupportedWebp,
     /// The SVG text (after data-URI decoding) is malformed or unsafe. The label
     /// says which invariant failed; it is sanitised before it reaches a log.
     MalformedSvg(String),
@@ -224,6 +239,26 @@ impl ImageError {
                 "image-png",
                 "unsupported PNG feature (only 8-bit grey/RGB/RGBA, non-interlaced)".to_string(),
             ),
+            Self::MalformedGif(why) => (
+                Code::ConvertMalformed,
+                "image-gif",
+                format!("malformed GIF: {why}"),
+            ),
+            Self::UnsupportedGif => (
+                Code::ConvertUnsupported,
+                "image-gif",
+                "unsupported GIF feature (animated disposal or LZW width)".to_string(),
+            ),
+            Self::MalformedWebp(why) => (
+                Code::ConvertMalformed,
+                "image-webp",
+                format!("malformed WebP: {why}"),
+            ),
+            Self::UnsupportedWebp => (
+                Code::ConvertUnsupported,
+                "image-webp",
+                "unsupported WebP profile (only VP8L lossless)".to_string(),
+            ),
             Self::MalformedSvg(why) => (
                 Code::ConvertMalformed,
                 "image-svg",
@@ -244,10 +279,11 @@ impl ImageError {
     }
 }
 
-/// Parse one image source into an embed-ready JPEG or PNG.
+/// Parse one image source into an embed-ready JPEG or raster image.
 ///
-/// Accepted forms: `data:image/jpeg;base64,<payload>` and
-/// `data:image/png;base64,<payload>` (media type is case-insensitive). Nothing
+/// Accepted forms: `data:image/jpeg;base64,<payload>`,
+/// `data:image/png;base64,<payload>`, `data:image/gif;base64,<payload>` and
+/// `data:image/webp;base64,<payload>` (media type is case-insensitive). Nothing
 /// is fetched: any other scheme or a bare path is refused by name with
 /// [`ImageError::NonDataUri`].
 ///
@@ -255,16 +291,17 @@ impl ImageError {
 ///
 /// No budget charge here: the decoder allocates only the decoded payload and
 /// the caller charges the resulting buffer's bytes when it writes the XObject.
-/// PNG decoding runs under an internal unlimited guard; its allocations are
-/// bounded by the IHDR caps in [`parse_png`] before that guard is created.
-/// The payload is bounded by the document text that carried it.
+/// PNG/GIF/WebP decoding runs under an internal unlimited guard; allocations
+/// are bounded by the IHDR caps in [`parse_png`] and the pixel caps inside the
+/// engine's GIF/WebP readers before that guard is created. The payload is
+/// bounded by the document text that carried it.
 ///
 /// # Malformed Input
 ///
 /// Returns a typed [`ImageError`] for a non-data URI, an unsupported media type,
 /// a missing `;base64` marker, invalid base64, a JPEG with no readable SOF
-/// marker, or a PNG that is truncated, corrupt, or outside the supported
-/// feature subset. No partial image is returned.
+/// marker, and a PNG/GIF/WebP that is truncated, corrupt, or outside the
+/// supported feature subset. No partial image is returned.
 pub(crate) fn parse_data_uri(src: &str) -> Result<EmbeddedImage, ImageError> {
     let (meta, encoded) = data_uri_meta(src)?;
     let bytes = decode_base64(encoded).ok_or(ImageError::InvalidBase64)?;
@@ -281,6 +318,8 @@ pub(crate) fn parse_data_uri(src: &str) -> Result<EmbeddedImage, ImageError> {
             })
         }
         "image/png;base64" => parse_png(&bytes),
+        "image/gif;base64" => parse_gif(&bytes),
+        "image/webp;base64" => parse_webp(&bytes),
         _ => {
             let kind = meta_lower
                 .strip_suffix(";base64")
@@ -506,6 +545,109 @@ fn parse_png(png: &[u8]) -> Result<EmbeddedImage, ImageError> {
         color_space,
         filter: ImageFilter::FlateDecode,
     })
+}
+
+/// Decode a GIF through the engine reader and re-encode its samples exactly as
+/// a PNG would be: alpha over white, raw RGB behind `FlateDecode`, `/DeviceRGB`.
+///
+/// GIF frames are single logical-screen images; disposal methods the reader
+/// cannot composite are refused by name inside [`selis_image::decode_gif`].
+///
+/// # Budget
+///
+/// Decoding uses a fresh unlimited guard whose allocations are bounded by the
+/// 8192×8M caps in the GIF reader; the re-encoded bytes are charged later by
+/// the layout and document writer.
+///
+/// # Malformed Input
+///
+/// A typed [`ImageError`] for any GIF the engine reader rejects; no partial
+/// image is returned.
+fn parse_gif(gif: &[u8]) -> Result<EmbeddedImage, ImageError> {
+    let mut g = Budget::unlimited().guard();
+    let decoded =
+        selis_image::decode_gif(gif, &mut g).map_err(|err| map_raster_error(err, true))?;
+    embed_decoded_rgb(decoded, &mut g, true)
+}
+
+/// Decode a WebP through the engine's VP8L reader and re-encode as above.
+/// VP8 lossy, extended WebP, colour transforms and other unimplemented profiles
+/// are refused by name, never decoded partially.
+///
+/// # Budget
+///
+/// Same as [`parse_gif`], with the VP8L reader's 8-million-pixel cap.
+///
+/// # Malformed Input
+///
+/// A typed [`ImageError`] for any WebP the engine reader rejects; no partial
+/// image is returned.
+fn parse_webp(webp: &[u8]) -> Result<EmbeddedImage, ImageError> {
+    let mut g = Budget::unlimited().guard();
+    let decoded =
+        selis_image::decode_webp(webp, &mut g).map_err(|err| map_raster_error(err, false))?;
+    embed_decoded_rgb(decoded, &mut g, false)
+}
+
+/// Flatten a decoded RGBA buffer over white and Flate-encode its RGB samples.
+/// Shared by the GIF/WebP paths; PNG keeps its grey/RGB choice in [`parse_png`].
+///
+/// # Budget
+///
+/// Charges nothing here: the decoded buffer is already held by `g`, and the
+/// compressed stream is charged when the XObject is written.
+///
+/// # Malformed Input
+///
+/// Refuses a decoded image with zero or oversized dimensions, before the
+/// flattening can allocate anything from a hostile header.
+fn embed_decoded_rgb(
+    decoded: selis_image::Image,
+    g: &mut selis_sandbox::BudgetGuard<'_>,
+    gif: bool,
+) -> Result<EmbeddedImage, ImageError> {
+    if decoded.width == 0
+        || decoded.height == 0
+        || decoded.width > MAX_PNG_DIM
+        || decoded.height > MAX_PNG_DIM
+        || u64::from(decoded.width).saturating_mul(u64::from(decoded.height)) > MAX_PNG_PIXELS
+    {
+        return Err(if gif {
+            ImageError::MalformedGif("image too large")
+        } else {
+            ImageError::MalformedWebp("image too large")
+        });
+    }
+    let rgb = selis_image::flatten_over_white(&decoded.rgba, g)
+        .map_err(|err| map_raster_error(err, false))?;
+    let data = selis_pdf_filter::flate_encode(&rgb, 6);
+    Ok(EmbeddedImage {
+        data,
+        width: decoded.width,
+        height: decoded.height,
+        color_space: ImageColorSpace::DeviceRGB,
+        filter: ImageFilter::FlateDecode,
+    })
+}
+
+/// Map an engine image-decode failure for GIF/WebP onto this module's typed
+/// refusal, preserving whether the construct was malformed or unsupported.
+///
+/// # Budget
+///
+/// No budget charge: this inspects only the error's code.
+///
+/// # Malformed Input
+///
+/// No input is parsed here; the code decides which typed refusal to return.
+fn map_raster_error(err: selis_error::Error, gif: bool) -> ImageError {
+    let unsupported = err.code() == Code::ImageUnsupported;
+    match (gif, unsupported) {
+        (true, true) => ImageError::UnsupportedGif,
+        (true, false) => ImageError::MalformedGif("decode failed"),
+        (false, true) => ImageError::UnsupportedWebp,
+        (false, false) => ImageError::MalformedWebp("decode failed"),
+    }
 }
 
 /// Map an engine image-decode failure onto this module's typed refusal.
@@ -871,9 +1013,15 @@ mod tests {
             parse_data_uri("/tmp/a.jpg"),
             Err(ImageError::NonDataUri(scheme)) if scheme == "path"
         ));
+        // GIF is now a supported media type, but this payload is only a
+        // truncated header, so it is a typed malformed-GIF refusal instead.
         assert!(matches!(
             parse_data_uri("data:image/gif;base64,R0lGOD"),
-            Err(ImageError::NotImage(kind)) if kind == "image/gif"
+            Err(ImageError::MalformedGif(_))
+        ));
+        assert!(matches!(
+            parse_data_uri("data:image/bmp;base64,Qk06AAAA"),
+            Err(ImageError::NotImage(kind)) if kind == "image/bmp"
         ));
     }
 
@@ -1024,6 +1172,72 @@ mod tests {
         assert!(matches!(
             parse_data_uri(&pal_src),
             Err(ImageError::UnsupportedPng) | Err(ImageError::MalformedPng(_))
+        ));
+    }
+
+    // Real 4×4 GIF/WebP fixtures written by Pillow (base64 text kept here so
+    // the tests never need an external encoder at run time).
+    const RED_GIF: &str = "R0lGODdhBAAEAIEAAP8AAAAAAAAAAAAAACwAAAAABAAEAAAICQABCBxIsCCAgAA7";
+    const TRANS_GIF: &str =
+        "R0lGODlhBAAEAIEAAP8AAAAA/wAAAAAAACH5BAEAAAEALAAAAAAEAAQAAAgOAAEACBBAIEGDBQcGCAgAOw==";
+    const RED_WEBP: &str = "UklGRhwAAABXRUJQVlA4TA8AAAAvA8AAAAcQ/Y/+ByKi/wEA";
+    const LOSSY_WEBP: &str = "UklGRjwAAABXRUJQVlA4IDAAAADQAQCdASoIAAgAAUAmJaACdLoB+AADsAD+8ut//NgVzXPv9//S4P0uD9Lg/9KQAAA=";
+
+    #[test]
+    fn gif_and_webp_data_uris_become_flate_images() {
+        for (kind, payload) in [("gif", RED_GIF), ("webp", RED_WEBP)] {
+            let src = format!("data:image/{kind};base64,{payload}");
+            let img = parse_data_uri(&src).unwrap_or_else(|_| panic!("{kind} image"));
+            assert_eq!((img.width, img.height), (4, 4), "{kind} geometry");
+            assert_eq!(img.color_space, ImageColorSpace::DeviceRGB, "{kind} colour");
+            assert_eq!(img.filter, ImageFilter::FlateDecode, "{kind} filter");
+            let raw = selis_pdf_filter::flate_decode(&img.data).expect("raw samples");
+            assert_eq!(raw, [0xFF, 0, 0].repeat(16), "{kind} samples");
+        }
+    }
+
+    #[test]
+    fn gif_transparency_is_flattened_over_white() {
+        let bytes = decode_base64(TRANS_GIF).expect("fixture");
+        let src = format!("data:image/gif;base64,{}", encode_base64(&bytes));
+        let img = parse_data_uri(&src).expect("GIF with transparency");
+        let raw = selis_pdf_filter::flate_decode(&img.data).expect("flattened samples");
+        let mut expected = Vec::new();
+        for _ in 0..4 {
+            expected
+                .extend_from_slice(&[0xFF, 0, 0, 0xFF, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+        }
+        assert_eq!(raw, expected);
+    }
+
+    #[test]
+    fn truncated_and_unsupported_gif_webp_sources_have_typed_errors() {
+        let gif = decode_base64(RED_GIF).expect("GIF fixture");
+        let cut = gif.len().saturating_sub(10);
+        let truncated = format!(
+            "data:image/gif;base64,{}",
+            encode_base64(gif.get(..cut).unwrap_or(&gif))
+        );
+        assert!(matches!(
+            parse_data_uri(&truncated),
+            Err(ImageError::MalformedGif(_))
+        ));
+        let webp = decode_base64(RED_WEBP).expect("WebP fixture");
+        let cut = webp.len().saturating_sub(10);
+        let truncated = format!(
+            "data:image/webp;base64,{}",
+            encode_base64(webp.get(..cut).unwrap_or(&webp))
+        );
+        assert!(matches!(
+            parse_data_uri(&truncated),
+            Err(ImageError::MalformedWebp(_))
+        ));
+        // A VP8 lossy frame is a valid WebP profile this subset refuses by name.
+        let lossy = decode_base64(LOSSY_WEBP).expect("lossy WebP fixture");
+        let src = format!("data:image/webp;base64,{}", encode_base64(&lossy));
+        assert!(matches!(
+            parse_data_uri(&src),
+            Err(ImageError::UnsupportedWebp)
         ));
     }
 

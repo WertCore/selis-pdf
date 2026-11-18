@@ -17,13 +17,16 @@
 //! beat a filtered PNG on a text page; a card that produced larger files was
 //! never going to be a feature.
 //!
-//! The reader is deliberately narrow, and says so by name when it meets
-//! something outside the profile: a color cache, a meta prefix code, a color
-//! transform, a color-indexing transform, one of the 120 close-range distance
-//! codes, or a chunk that is not `VP8L`, is `IMAGE_UNSUPPORTED` — each is a
-//! construct this crate does not write and therefore has no test for. A broken
-//! container, an incomplete prefix code, a backward reference that reaches past
-//! the image, or a stream that stops early is `IMAGE_MALFORMED`.
+//! The reader understands more than the writer emits, because the data URIs
+//! that reach the conversion path are produced by other encoders: a color
+//! cache (RFC 9649 §3.5) and a color-indexing transform with pixel bundling
+//! (§3.4) are decoded too, which is what lets a small `cwebp`/`Pillow`
+//! lossless file be embedded. What it still refuses by name is a meta prefix
+//! code, a color transform, one of the 120 close-range distance codes, or a
+//! chunk that is not `VP8L` — each is a construct with no test here. A broken
+//! container, an incomplete prefix code, a cache symbol without a cache, a
+//! backward reference that reaches past the image, or a stream that stops early
+//! is `IMAGE_MALFORMED`.
 
 use selis_error::{err, Code, Result};
 use selis_sandbox::{alloc, BudgetGuard};
@@ -38,17 +41,25 @@ const VP8L: [u8; 4] = *b"VP8L";
 const SIGNATURE: u8 = 0x2F;
 /// Both dimensions are 14-bit minus-one fields, so 16384 is the largest side.
 const MAX_SIDE: u32 = 16_384;
+/// A pixel ceiling for callers that decode untrusted data URIs: a full
+/// 16384×16384 frame would be a gigabyte of RGBA before any budget is charged.
+const MAX_PIXELS: u64 = 8_000_000;
 
-/// Transform type codes (RFC 9649 §3.5, table 1). The fourth type, color
-/// indexing, is value 3; it only means something with a color cache, which this
-/// writer never emits, so it has no constant here.
+/// Transform type codes (RFC 9649 §3.4, table 1).
 const TX_PREDICTOR: u32 = 0;
 const TX_COLOR: u32 = 1;
 const TX_SUBTRACT_GREEN: u32 = 2;
+const TX_COLOR_INDEXING: u32 = 3;
 
-/// The green channel's alphabet is 256 literals plus 24 length codes; the color
-/// cache would add more, and this crate does not use one.
+/// The green channel's alphabet is 256 literals plus 24 length codes; a color
+/// cache, when one is present, extends it by the cache size.
 const GREEN_ALPHABET: usize = 256 + 24;
+/// The first cache symbol, after the 256 literals and 24 length codes.
+const CACHE_SYMBOL_BASE: u32 = 280;
+/// `color_cache_code_bits` must be in 1..=11 (RFC 9649 §3.5.3).
+const MAX_CACHE_BITS: u32 = 11;
+/// The multiplicative hash that indexes a color cache (RFC 9649 §3.5.3).
+const CACHE_HASH: u32 = 0x1E35_A7BD;
 /// Red, blue and alpha each carry a plain 256-symbol alphabet.
 const LITERAL_ALPHABET: usize = 256;
 /// Distance codes carry the 40 LZ77 prefix codes.
@@ -240,6 +251,79 @@ fn reverse_bits(n: u32, value: u32) -> u32 {
         shift += 1;
     }
     out
+}
+
+// ---------------------------------------------------------------------------
+// Color cache
+// ---------------------------------------------------------------------------
+
+/// The small hash-addressed palette of recently seen ARGB colors (RFC 9649
+/// §3.5.3). `bits == 0` means no cache: every method is then a no-op, and a
+/// stream that nevertheless uses a cache symbol is malformed.
+#[derive(Debug)]
+struct ColorCache {
+    bits: u32,
+    colors: Vec<Argb>,
+}
+
+impl ColorCache {
+    /// Read the cache marker and, when present, its size and empty entries.
+    fn read(g: &mut BudgetGuard<'_>, br: &mut BitReader<'_>) -> Result<Self> {
+        if br.read_bit()? == 0 {
+            return Ok(Self {
+                bits: 0,
+                colors: Vec::new(),
+            });
+        }
+        let bits = br.read_bits(4)?;
+        if bits == 0 || bits > MAX_CACHE_BITS {
+            return Err(malformed("a color cache size outside 1..=11"));
+        }
+        let size = 1usize.checked_shl(bits).unwrap_or(usize::MAX);
+        let mut colors = alloc::vec_with_capacity::<Argb>(g, size)?;
+        colors.resize(size, 0);
+        Ok(Self { bits, colors })
+    }
+
+    /// An empty cache, for tests that drive the item reader directly.
+    #[cfg(test)]
+    fn empty() -> Self {
+        Self {
+            bits: 0,
+            colors: Vec::new(),
+        }
+    }
+
+    /// How many symbols the green alphabet gains from this cache.
+    fn size(&self) -> usize {
+        self.colors.len()
+    }
+
+    /// Insert every decoded pixel, literal or copied (RFC 9649 §3.5.3).
+    #[allow(clippy::arithmetic_side_effects)]
+    fn remember(&mut self, pixel: Argb) {
+        if self.bits == 0 {
+            return;
+        }
+        let hash = u64::from(CACHE_HASH).saturating_mul(u64::from(pixel));
+        let shift = 32u32.saturating_sub(self.bits);
+        let slot = usize::try_from(hash >> shift).unwrap_or(usize::MAX);
+        if let Some(cell) = self.colors.get_mut(slot) {
+            *cell = pixel;
+        }
+    }
+
+    /// The color a cache symbol refers to.
+    fn lookup(&self, symbol: u32) -> Result<Argb> {
+        if self.bits == 0 {
+            return Err(malformed("a color cache symbol without a color cache"));
+        }
+        let index = usize::try_from(symbol.saturating_sub(CACHE_SYMBOL_BASE)).unwrap_or(usize::MAX);
+        self.colors
+            .get(index)
+            .copied()
+            .ok_or_else(|| malformed("a color cache symbol outside the cache"))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1146,20 +1230,18 @@ fn read_entropy_image(
     count: usize,
     spatial: bool,
 ) -> Result<Vec<Argb>> {
-    if br.read_bit()? == 1 {
-        return Err(unsupported("a color cache"));
-    }
+    let mut cache = ColorCache::read(g, br)?;
     if spatial && br.read_bit()? == 1 {
         return Err(unsupported("meta prefix codes"));
     }
     let group = CodeGroup {
-        green: PrefixCode::read_code(g, br, GREEN_ALPHABET)?,
+        green: PrefixCode::read_code(g, br, GREEN_ALPHABET.saturating_add(cache.size()))?,
         red: PrefixCode::read_code(g, br, LITERAL_ALPHABET)?,
         blue: PrefixCode::read_code(g, br, LITERAL_ALPHABET)?,
         alpha: PrefixCode::read_code(g, br, LITERAL_ALPHABET)?,
         dist: PrefixCode::read_code(g, br, DIST_ALPHABET)?,
     };
-    read_items(g, br, count, &group)
+    read_items(g, br, count, &group, &mut cache)
 }
 
 /// Emit the pixels of one entropy-coded image.
@@ -1238,6 +1320,7 @@ fn read_items(
     br: &mut BitReader<'_>,
     count: usize,
     group: &CodeGroup,
+    cache: &mut ColorCache,
 ) -> Result<Vec<Argb>> {
     let mut pixels: Vec<Argb> = alloc::vec_with_capacity(g, count)?;
     while pixels.len() < count {
@@ -1246,11 +1329,16 @@ fn read_items(
             let red = group.red.read(br)?;
             let blue = group.blue.read(br)?;
             let alpha = group.alpha.read(br)?;
-            pixels.push((alpha << 24) | (red << 16) | (symbol << 8) | blue);
+            let pixel = (alpha << 24) | (red << 16) | (symbol << 8) | blue;
+            cache.remember(pixel);
+            pixels.push(pixel);
             continue;
         }
-        if symbol >= 280 {
-            return Err(unsupported("a color cache symbol"));
+        if symbol >= CACHE_SYMBOL_BASE {
+            let pixel = cache.lookup(symbol)?;
+            cache.remember(pixel);
+            pixels.push(pixel);
+            continue;
         }
         let length_code = symbol - 256;
         let length = prefix_decode(length_code, br.read_bits(prefix_extra_bits(length_code))?);
@@ -1267,6 +1355,7 @@ fn read_items(
         let start = pixels.len() - distance;
         for offset in 0..length {
             let pixel = pixels[start + offset];
+            cache.remember(pixel);
             pixels.push(pixel);
         }
     }
@@ -1299,6 +1388,26 @@ struct Plan {
 
 /// A transform list is at most four entries, each read as one bit and two more.
 const MAX_TRANSFORMS: usize = 4;
+
+/// One transform as read from the bitstream. Inverting them in reverse order
+/// rebuilds the original pixels; each carries the image width it operated at,
+/// because a color-indexing transform subsamples that width for the transforms
+/// that follow it (RFC 9649 §3.4).
+#[derive(Debug, Clone)]
+enum Tx {
+    Predictor {
+        size_bits: u32,
+        modes: Vec<Argb>,
+        width: usize,
+    },
+    SubtractGreen,
+    ColorIndex {
+        table: Vec<Argb>,
+        width_bits: u32,
+        before: usize,
+        after: usize,
+    },
+}
 
 /// Pixels laid out for one entropy-coded image, with whatever the plan made of
 /// them, plus the predictor's mode image when the plan asked for one.
@@ -1804,32 +1913,111 @@ pub fn encode_webp(image: &Image, g: &mut BudgetGuard<'_>) -> Result<Vec<u8>> {
     container(g, &payload)
 }
 
-/// Decode a WebP lossless file written by [`encode_webp`] back to its samples.
+/// Add two ARGB pixels component-wise, keeping only the low eight bits of each
+/// channel — the delta accumulation a color-indexing table requires (RFC 9649
+/// §3.4).
+#[allow(clippy::arithmetic_side_effects)]
+fn argb_add(a: Argb, b: Argb) -> Argb {
+    let sum = |shift: u32| {
+        let x = u8::try_from((a >> shift) & 0xFF).unwrap_or(0);
+        let y = u8::try_from((b >> shift) & 0xFF).unwrap_or(0);
+        u32::from(x.wrapping_add(y))
+    };
+    sum(24) << 24 | sum(16) << 16 | sum(8) << 8 | sum(0)
+}
+
+/// Read a color-indexing transform: the delta-coded palette and the number of
+/// pixels bundled into each stored pixel (RFC 9649 §3.4).
+#[allow(clippy::arithmetic_side_effects, clippy::integer_division)]
+fn read_color_index(
+    g: &mut BudgetGuard<'_>,
+    br: &mut BitReader<'_>,
+    width: u32,
+) -> Result<(Vec<Argb>, u32, u32)> {
+    let table_size = usize::try_from(br.read_bits(8)?)
+        .unwrap_or(usize::MAX)
+        .saturating_add(1);
+    let mut table = read_entropy_image(g, br, table_size, false)?;
+    for index in 1..table.len() {
+        let previous = table.get(index.saturating_sub(1)).copied().unwrap_or(0);
+        let delta = table.get(index).copied().unwrap_or(0);
+        if let Some(cell) = table.get_mut(index) {
+            *cell = argb_add(previous, delta);
+        }
+    }
+    let width_bits = if table_size <= 2 {
+        3u32
+    } else if table_size <= 4 {
+        2
+    } else if table_size <= 16 {
+        1
+    } else {
+        0
+    };
+    let block = 1u32 << width_bits;
+    let after = width.saturating_add(block.saturating_sub(1)) / block;
+    Ok((table, width_bits, after))
+}
+
+/// Undo a color-indexing transform: unpack the bundled indices in each stored
+/// pixel, look them up in the palette, and lay the result out at full width.
+/// An index past the palette becomes transparent black, as the spec requires.
+#[allow(clippy::arithmetic_side_effects, clippy::integer_division)]
+fn apply_color_index(
+    g: &mut BudgetGuard<'_>,
+    pixels: &[Argb],
+    table: &[Argb],
+    width_bits: u32,
+    before: usize,
+    after: usize,
+    height: usize,
+) -> Result<Vec<Argb>> {
+    let bundle = 1usize << width_bits;
+    let index_bits = 8usize >> width_bits;
+    let index_mask = (1u32 << index_bits).saturating_sub(1);
+    let mut out = alloc::vec_with_capacity::<Argb>(g, before.saturating_mul(height))?;
+    for y in 0..height {
+        for x in 0..after {
+            let packed = pixels
+                .get(y.saturating_mul(after).saturating_add(x))
+                .copied()
+                .unwrap_or(0);
+            let green = (packed >> 8) & 0xFF;
+            for slot in 0..bundle {
+                let target = x.saturating_mul(bundle).saturating_add(slot);
+                if target >= before {
+                    continue;
+                }
+                let shift = slot.saturating_mul(index_bits);
+                let index = usize::try_from((green >> shift) & index_mask).unwrap_or(usize::MAX);
+                out.push(table.get(index).copied().unwrap_or(0));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Decode a WebP lossless file back to its samples.
 ///
-/// This is the reader that makes the lossless claim checkable: it walks the
-/// container, rebuilds the prefix codes, replays the LZ77 copies and undoes the
-/// transforms, and hands back exactly the pixels the encoder was given.
+/// The reader walks the container, rebuilds the prefix codes, replays the LZ77
+/// copies and color-cache symbols, and undoes the transforms — including the
+/// color-indexing transform and pixel bundling that small `cwebp`/`Pillow`
+/// lossless files commonly use — to hand back exactly the pixels the encoder
+/// was given. VP8 lossy, extended WebP and metadata chunks are refused by name.
 ///
 /// # Budget
 ///
-/// Charges the prefix codes, the LZ77 hash chains and the decoded pixels it
-/// holds against `Bytes`. An image whose working set the budget cannot cover
-/// is refused rather than attempted.
+/// Charges the prefix codes, the LZ77 hash chains, the color cache, the palette
+/// and the decoded pixels it holds against `Bytes`. An image whose working set
+/// the budget cannot cover is refused rather than attempted.
 ///
 /// # Malformed Input
 ///
-/// A broken container, an incomplete prefix code, a copy that reaches outside
-/// the image, or a stream that ends early is refused as malformed; a
-/// construct this crate does not write is refused as unsupported.
-///
-/// # Errors
-///
-/// `IMAGE_UNSUPPORTED` for a construct this crate does not write and has no
-/// test for — a color cache, meta prefix codes, a color transform, a color
-/// indexing transform, a close-range LZ77 distance code, a VP8 lossy or
-/// extended file, or a chunk of metadata. `IMAGE_MALFORMED` for a broken
-/// container, an incomplete prefix code, a copy that reaches outside the image
-/// or a stream that ends early.
+/// A broken container, an incomplete prefix code, a cache symbol without a
+/// cache, a copy that reaches outside the image, or a stream that ends early is
+/// refused as `IMAGE_MALFORMED`. `IMAGE_UNSUPPORTED` names the constructs with
+/// no reader here: meta prefix codes, a color transform, a close-range LZ77
+/// distance code, a VP8 lossy or extended file, and embedded metadata.
 pub fn decode_webp(data: &[u8], g: &mut BudgetGuard<'_>) -> Result<Image> {
     let payload = vp8l_payload(data)?;
     let mut br = BitReader::new(payload);
@@ -1838,19 +2026,20 @@ pub fn decode_webp(data: &[u8], g: &mut BudgetGuard<'_>) -> Result<Image> {
     }
     let width = br.read_bits(14)?.saturating_add(1);
     let height = br.read_bits(14)?.saturating_add(1);
+    if u64::from(width).saturating_mul(u64::from(height)) > MAX_PIXELS {
+        return Err(malformed("a frame above the 8-million-pixel cap"));
+    }
     let _alpha_used = br.read_bits(1)?;
     if br.read_bits(3)? != 0 {
         return Err(unsupported("a VP8L version other than 0"));
     }
-    let count = usize::try_from(width.saturating_mul(height)).unwrap_or(usize::MAX);
-    let mut order: Vec<u32> = Vec::new();
     let mut used = [false; 4];
-    let mut size_bits = 0u32;
-    let mut modes: Vec<Argb> = Vec::new();
+    let mut transforms: Vec<Tx> = Vec::new();
+    let mut work_width = width;
     while br.read_bit()? == 1 {
         let kind = br.read_bits(2)?;
         let slot = usize::try_from(kind).unwrap_or(usize::MAX);
-        if order.len() >= MAX_TRANSFORMS {
+        if transforms.len() >= MAX_TRANSFORMS {
             return Err(malformed("more transforms than the format allows"));
         }
         if used.get(slot).copied().unwrap_or(true) {
@@ -1858,42 +2047,85 @@ pub fn decode_webp(data: &[u8], g: &mut BudgetGuard<'_>) -> Result<Image> {
         }
         match kind {
             TX_PREDICTOR => {
-                size_bits = br.read_bits(3)?.saturating_add(2);
-                let across = subresolution(width, size_bits);
+                let size_bits = br.read_bits(3)?.saturating_add(2);
+                let across = subresolution(work_width, size_bits);
                 let down = subresolution(height, size_bits);
-                let read = read_entropy_image(g, &mut br, across.saturating_mul(down), false)?;
-                for &mode in &read {
+                let modes = read_entropy_image(g, &mut br, across.saturating_mul(down), false)?;
+                for &mode in &modes {
                     if ((mode >> 8) & 0xFF) > 13 {
                         return Err(malformed("a prediction mode above 13"));
                     }
                 }
-                modes = read;
+                transforms.push(Tx::Predictor {
+                    size_bits,
+                    modes,
+                    width: usize::try_from(work_width).unwrap_or(usize::MAX),
+                });
             }
             TX_COLOR => return Err(unsupported("a color transform")),
-            TX_SUBTRACT_GREEN => {}
-            _ => return Err(unsupported("a color indexing transform")),
+            TX_SUBTRACT_GREEN => transforms.push(Tx::SubtractGreen),
+            TX_COLOR_INDEXING => {
+                let (table, width_bits, after) = read_color_index(g, &mut br, work_width)?;
+                transforms.push(Tx::ColorIndex {
+                    table,
+                    width_bits,
+                    before: usize::try_from(work_width).unwrap_or(usize::MAX),
+                    after: usize::try_from(after).unwrap_or(usize::MAX),
+                });
+                work_width = after;
+            }
+            _ => return Err(unsupported("an unknown WebP transform")),
         }
         if let Some(cell) = used.get_mut(slot) {
             *cell = true;
         }
-        order.push(kind);
     }
+    let count = usize::try_from(work_width)
+        .unwrap_or(usize::MAX)
+        .saturating_mul(usize::try_from(height).unwrap_or(usize::MAX));
     let mut pixels = read_entropy_image(g, &mut br, count, true)?;
     if pixels.len() != count {
         return Err(malformed("the image data did not cover the whole frame"));
     }
-    for &kind in order.iter().rev() {
-        match kind {
-            TX_PREDICTOR => predictor_inverse(
-                &mut pixels,
-                &modes,
-                usize::try_from(width).unwrap_or(0),
-                usize::try_from(height).unwrap_or(0),
+    let mut at_width = usize::try_from(work_width).unwrap_or(usize::MAX);
+    for tx in transforms.iter().rev() {
+        match tx {
+            Tx::Predictor {
                 size_bits,
-            ),
-            TX_SUBTRACT_GREEN => add_green(&mut pixels),
-            _ => {}
+                modes,
+                width,
+            } => {
+                predictor_inverse(
+                    &mut pixels,
+                    modes,
+                    *width,
+                    usize::try_from(height).unwrap_or(0),
+                    *size_bits,
+                );
+                at_width = *width;
+            }
+            Tx::SubtractGreen => add_green(&mut pixels),
+            Tx::ColorIndex {
+                table,
+                width_bits,
+                before,
+                after,
+            } => {
+                pixels = apply_color_index(
+                    g,
+                    &pixels,
+                    table,
+                    *width_bits,
+                    *before,
+                    *after,
+                    usize::try_from(height).unwrap_or(0),
+                )?;
+                at_width = *before;
+            }
         }
+    }
+    if at_width != usize::try_from(width).unwrap_or(usize::MAX) {
+        return Err(malformed("the transforms did not restore the frame width"));
     }
     Ok(Image {
         width,
@@ -2653,15 +2885,128 @@ mod tests {
         );
     }
 
+    /// An out-of-range cache size is malformed; a valid cache is decoded (see
+    /// `pillow_lossless_webps_decode_with_their_cache_and_palette` below).
     #[test]
-    fn a_color_cache_is_refused_by_name() {
-        // The transform list ends, and the entropy-coded image opens with its
-        // color cache marker set.
+    fn an_invalid_color_cache_size_is_refused_by_name() {
+        let mut g = guard();
+        let mut bw = BitWriter::new(&mut g, 8).expect("writer");
+        bw.put_bits(&mut g, u32::from(SIGNATURE), 8).expect("sig");
+        bw.put_bits(&mut g, 0, 14).expect("width");
+        bw.put_bits(&mut g, 0, 14).expect("height");
+        bw.put_bits(&mut g, 0, 1).expect("alpha");
+        bw.put_bits(&mut g, 0, 3).expect("version");
+        bw.put_bits(&mut g, 0, 1).expect("no transforms");
+        bw.put_bits(&mut g, 1, 1).expect("cache present");
+        bw.put_bits(&mut g, 0, 4).expect("invalid cache bits");
+        let bytes = bw.finish(&mut g).expect("finish");
         refused(
-            &wrapped(&header(&[(0, 1), (1, 1)])),
-            Code::ImageUnsupported,
-            "a color cache",
+            &wrapped(&bytes),
+            Code::ImageMalformed,
+            "a color cache size outside 1..=11",
         );
+    }
+
+    /// A tiny standard-base64 decoder for real lossless WebP fixtures.
+    fn b64(text: &str) -> Vec<u8> {
+        let value = |byte: u8| match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            b'=' => 0,
+            _ => panic!("not base64"),
+        };
+        let bytes: Vec<u8> = text.bytes().collect();
+        let mut out = Vec::new();
+        for chunk in bytes.chunks(4) {
+            let n = (u32::from(value(chunk[0])) << 18)
+                | (u32::from(value(*chunk.get(1).unwrap_or(&b'A'))) << 12)
+                | (u32::from(value(*chunk.get(2).unwrap_or(&b'A'))) << 6)
+                | u32::from(value(*chunk.get(3).unwrap_or(&b'A')));
+            out.push((n >> 16) as u8);
+            if chunk.len() > 2 {
+                out.push((n >> 8) as u8);
+            }
+            if chunk.len() > 3 {
+                out.push(n as u8);
+            }
+        }
+        out
+    }
+
+    /// Files written by libwebp (through Pillow), not by this crate's encoder:
+    /// each uses a color-indexing transform, pixel bundling and a color cache.
+    #[test]
+    fn pillow_lossless_webps_decode_with_their_cache_and_palette() {
+        let red = decode_webp(
+            &b64("UklGRhwAAABXRUJQVlA4TA8AAAAvA8AAAAcQ/Y/+ByKi/wEA"),
+            &mut guard(),
+        )
+        .expect("red WebP");
+        assert_eq!((red.width, red.height), (4, 4));
+        assert_eq!(red.rgba, [255, 0, 0, 255].repeat(16));
+
+        let checker = decode_webp(
+            &b64("UklGRiYAAABXRUJQVlA4TBoAAAAvA8AAAA8wgPs///MfWlDTtgGLr6Qjov9xDg=="),
+            &mut guard(),
+        )
+        .expect("checker WebP");
+        for y in 0..4 {
+            for x in 0..4 {
+                let at = (y * 4 + x) * 4;
+                let expected = if (x + y) % 2 == 0 {
+                    [255, 0, 0, 255]
+                } else {
+                    [0, 128, 255, 255]
+                };
+                assert_eq!(
+                    [
+                        checker.rgba[at],
+                        checker.rgba[at + 1],
+                        checker.rgba[at + 2],
+                        checker.rgba[at + 3]
+                    ],
+                    expected,
+                    "pixel {x},{y}"
+                );
+            }
+        }
+
+        let rgba = decode_webp(
+            &b64("UklGRh4AAABXRUJQVlA4TBEAAAAvA8AAEA8Q8x/zH4wORPQ/AAA="),
+            &mut guard(),
+        )
+        .expect("alpha WebP");
+        for y in 0..4 {
+            for x in 0..4 {
+                let at = (y * 4 + x) * 4;
+                let expected = if x < 2 {
+                    [255, 0, 0, 255]
+                } else {
+                    [0, 0, 0, 0]
+                };
+                assert_eq!(
+                    [
+                        rgba.rgba[at],
+                        rgba.rgba[at + 1],
+                        rgba.rgba[at + 2],
+                        rgba.rgba[at + 3]
+                    ],
+                    expected,
+                    "pixel {x},{y}"
+                );
+            }
+        }
+
+        let green = decode_webp(
+            &b64("UklGRhwAAABXRUJQVlA4TA8AAAAvH8AHAAdQ0Ij+ByKi/wEA"),
+            &mut guard(),
+        )
+        .expect("green WebP");
+        assert_eq!((green.width, green.height), (32, 32));
+        assert_eq!(green.rgba, [0, 160, 0, 255].repeat(32 * 32));
     }
 
     #[test]
@@ -2679,11 +3024,6 @@ mod tests {
             &wrapped(&header(&[(1, 1), (TX_COLOR, 2)])),
             Code::ImageUnsupported,
             "a color transform",
-        );
-        refused(
-            &wrapped(&header(&[(1, 1), (3, 2)])),
-            Code::ImageUnsupported,
-            "a color indexing transform",
         );
         // A version this writer never emits is not a stream it can promise.
         refused(
@@ -2805,7 +3145,7 @@ mod tests {
             .expect("distance extras");
         let bytes = bw.finish(&mut g).expect("finish");
         let mut br = BitReader::new(&bytes);
-        let error = read_items(&mut g, &mut br, 3, &group)
+        let error = read_items(&mut g, &mut br, 3, &group, &mut ColorCache::empty())
             .expect_err("a neighbourhood distance is refused");
         assert_eq!(error.code(), Code::ImageUnsupported, "{error:?}");
         assert!(
@@ -2835,7 +3175,8 @@ mod tests {
         write_items(&mut g, &mut bw, &wanted, &items, &group).expect("write");
         let bytes = bw.finish(&mut g).expect("finish");
         let mut br = BitReader::new(&bytes);
-        let back = read_items(&mut g, &mut br, 4, &group).expect("four pixels");
+        let back =
+            read_items(&mut g, &mut br, 4, &group, &mut ColorCache::empty()).expect("four pixels");
         assert_eq!(back, wanted, "the copy replays itself across its own end");
     }
 
@@ -2858,7 +3199,7 @@ mod tests {
         write_items(&mut g, &mut bw, &hostile, &items, &group).expect("write");
         let bytes = bw.finish(&mut g).expect("finish");
         let mut br = BitReader::new(&bytes);
-        let error = read_items(&mut g, &mut br, 4, &group)
+        let error = read_items(&mut g, &mut br, 4, &group, &mut ColorCache::empty())
             .expect_err("a copy from beyond the frame is refused");
         assert_eq!(error.code(), Code::ImageMalformed, "{error:?}");
         assert!(
@@ -2881,7 +3222,7 @@ mod tests {
         write_items(&mut g, &mut bw, &hostile, &items, &group).expect("write");
         let bytes = bw.finish(&mut g).expect("finish");
         let mut br = BitReader::new(&bytes);
-        let error = read_items(&mut g, &mut br, 2, &group)
+        let error = read_items(&mut g, &mut br, 2, &group, &mut ColorCache::empty())
             .expect_err("a copy past the end of the frame is refused");
         assert_eq!(error.code(), Code::ImageMalformed, "{error:?}");
     }

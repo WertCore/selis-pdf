@@ -85,7 +85,7 @@ columns' body x values move right versus the plain table.
 HTML cell alignment `<td align="right">x</td>` likewise shifts the cell's
 text x versus the same cell without the attribute.
 
-## 4. Embedded JPEG and PNG images (HTML and Markdown)
+## 4. Embedded JPEG, PNG, GIF and WebP images (HTML and Markdown)
 
 Before — `<img>` was dropped and `![alt](…)` was skipped; no image XObject,
 no pixels on the page:
@@ -93,40 +93,52 @@ no pixels on the page:
 ```html
 <img src="data:image/jpeg;base64,/9j/4AAQSkZJRg…" width="100" height="50">
 <img src="data:image/png;base64,iVBORw0KGgo…">
+<img src="data:image/gif;base64,R0lGODdh…">
+<img src="data:image/webp;base64,UklGRhwAAABXRUJQVlA4…">
 ```
 
 ```markdown
 ![a red square](data:image/jpeg;base64,/9j/4AAQSkZJRg…)
 ![a red square](data:image/png;base64,iVBORw0KGgo…)
+![a red square](data:image/gif;base64,R0lGODdh…)
+![a red square](data:image/webp;base64,UklGRhwAAABXRUJQVlA4…)
 ```
 
 After — the base64 payload is decoded without fetching anything. A JPEG's SOF
 marker supplies the true geometry and its bytes are embedded verbatim behind a
 `DCTDecode` XObject. A PNG's IHDR supplies the geometry; its IDAT is decoded
-through the engine's PNG reader (zlib + scanline filters), alpha (if any) is
-flattened over white, and the raw samples are Flate-re-encoded behind a
-`FlateDecode` XObject. Observable in the re-opened PDF:
+through the engine's PNG reader (zlib + scanline filters). A GIF is decoded by
+the engine's GIF87a/89a reader (LZW, interlaced rows, global/local palettes,
+transparent index); a WebP is decoded from its lossless VP8L bitstream (including
+the colour cache and colour-indexing transform `cwebp`/`Pillow` emit). For all
+three decoded formats, alpha is flattened over white and the raw samples are
+Flate-re-encoded through the same path as PNG behind a `FlateDecode` XObject.
+Observable in the re-opened PDF:
 
 - exactly one `/Subtype /Image` stream with `Width`/`Height` from the source,
-  `/Filter /DCTDecode` (JPEG) or `/FlateDecode` (PNG), `/BitsPerComponent 8`,
-  and `/ColorSpace` from the SOF component count or the PNG IHDR (`/DeviceGray`
-  for grey, `/DeviceRGB` for colour). JPEG stream bytes are byte-identical to
-  the source; PNG stream bytes decode back to the unfiltered RGB/gray samples;
+  `/Filter /DCTDecode` (JPEG) or `/FlateDecode` (PNG/GIF/WebP),
+  `/BitsPerComponent 8`, and `/ColorSpace` from the SOF component count or the
+  PNG IHDR (`/DeviceGray` for grey, `/DeviceRGB` for colour; GIF and WebP are
+  always `/DeviceRGB`). JPEG stream bytes are byte-identical to the source;
+  PNG/GIF/WebP stream bytes decode back to the unfiltered RGB/gray samples;
 - the page's `/Resources` carries an `/XObject << /Im1 … >>` entry;
 - the content stream draws it with a `cm` matrix whose rectangle is the
   measured box — intrinsic pixels × 0.75 pt (96 dpi), or the explicit
   `width`/`height` attributes when given, clamped to the 504 pt text column —
   followed by `/Im1 Do`;
 - rasterising the re-opened document at 72 dpi shows the image's ink inside
-  that rectangle (a solid-red 32×32 JPEG **or PNG** paints red pixels there);
+  that rectangle (a solid-red 32×32 JPEG, PNG, GIF **or WebP** paints red pixels
+  there);
 - a 2×1 grey PNG reads back as `/DeviceGray` with samples `[0x20, 0xE0]`; an
   RGBA PNG with one opaque red and one fully transparent pixel reads back as
   `/DeviceRGB` samples `[255,0,0, 255,255,255]` (alpha flattened over white).
 
-The refusal path is part of the case: `https://…`, `file://…`, GIF/WebP/SVG
-data URIs, malformed/truncated JPEGs and PNGs, and PNGs outside the supported
-subset (palette, interlaced, non-8-bit) are refused by name with typed image
-errors, produce **no** XObject and **no** `Do` operator, and are never fetched.
+The refusal path is part of the case: `https://…`, `file://…`, SVG data URIs
+with scripts/remote references, malformed/truncated images of every accepted
+type, GIF frames with a restore-to-background/previous disposal method, VP8
+lossy or extended WebP, and PNGs outside the supported subset (palette,
+interlaced, non-8-bit) are refused by name with typed image errors, produce
+**no** XObject and **no** `Do` operator, and are never fetched.
 
 ## 5. Inline `background-image` data URIs
 
@@ -138,13 +150,13 @@ Before — `style="background-image: …"` was dropped; no pixels behind the tex
 </p>
 ```
 
-After — a single `url(...)` token with a base64 JPEG/PNG data URI is decoded
-through the same image path as `<img src>` and drawn as an image XObject
+After — a single `url(...)` token with a base64 JPEG/PNG/GIF/WebP data URI is
+decoded through the same image path as `<img src>` and drawn as an image XObject
 **before** the element's text runs in the content stream, so the image sits
 behind the glyphs. Observable in the re-opened PDF:
 
 - a `/Subtype /Image` XObject with the same geometry/filter/colour-space rules
-  as case 4 (`/FlateDecode` for a PNG background, `/DCTDecode` for JPEG);
+  as case 4 (`/FlateDecode` for PNG/GIF/WebP backgrounds, `/DCTDecode` for JPEG);
 - the `/Im1 Do` operator appears before the styled text's `Tj` operator.
 
 This is a deliberately narrow CSS subset: remote URLs, gradients, multiple
@@ -241,9 +253,9 @@ default black fill for a paragraph whose only rules are ignored.
 
 Font embedding/subsetting, full CSS layout (general selectors/cascade,
 relative units, floats/positioning, flex/grid), chart/math rendering, and a
-true fidelity renderer remain out of scope. Cases 4–6 cover JPEG/PNG/SVG
-data-URI images; cases 7–8 cover a narrow `background-size` and a two-level
-inline-over-rulesheet subset. GIF/WebP data URIs, remote images, arbitrary CSS
+true fidelity renderer remain out of scope. Cases 4–6 cover JPEG/PNG/GIF/WebP/
+SVG data-URI images; cases 7–8 cover a narrow `background-size` and a two-level
+inline-over-rulesheet subset. Remote images, arbitrary CSS
 backgrounds (gradients, multiple layers, position/repeat), at-rules, images in
 the Office/EPUB readers, and inline images inside a Markdown paragraph are
 still not embedded. SVG support is exactly the standalone `svg` subset — no
