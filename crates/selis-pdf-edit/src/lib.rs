@@ -44,8 +44,11 @@
 #![forbid(unsafe_code)]
 
 mod font;
+pub mod incremental;
 pub mod journal;
 
+#[cfg(test)]
+mod incremental_tests;
 #[cfg(test)]
 mod journal_tests;
 mod reflow;

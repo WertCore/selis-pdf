@@ -1820,6 +1820,7 @@ dependencies = [
 name = "selis-pdf-edit"
 version = "0.1.0"
 dependencies = [
+ "md-5",
  "selis-bytes",
  "selis-error",
  "selis-font",
