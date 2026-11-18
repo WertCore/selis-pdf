@@ -83,12 +83,13 @@ pub use forms::{
     fill_forms, form_fields, FieldEdit, FieldKind, FillFormsOptions, FormField, FormFieldsReport,
 };
 pub use images::{image_to_pdf, ImagePageSize, ImageToPdfOptions};
-pub use linearize::{linearize, linearize_file, LinearizeReport};
+pub use linearize::{linearize, linearize_file, linearize_file_with_mode, LinearizeReport};
 pub use memory::{clear, insert_input, take_output, write_output, MemorySession};
 pub use metadata::{metadata_report, MetadataReport};
 pub use outline::{set_outline, OutlineEntry, OutlineOptions};
 pub use overlay::add_image_watermark;
 pub use privacy::{privacy_report, PrivacyFinding, PrivacyReport};
+pub use selis_pdf_optimize::LinearizeMode;
 pub use selis_pdf_optimize::{CompressionLevel, SubsetError, SubsetReport};
 #[cfg(feature = "sign")]
 pub use sign::{

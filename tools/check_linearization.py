@@ -6,12 +6,19 @@ claims, including a full parse of the hint tables it emits:
 
   * object 1 is a /Linearized dictionary within the first 1024 bytes;
   * /L equals the real file length, /N the leaf-page count, /O a real /Page;
-  * /T points at the whitespace before entry 0 of the first xref section;
+  * /T points at the whitespace before entry 0 of a classic first xref, or at
+    the first-page /Type /XRef stream object;
   * /E is a byte offset at/after the first-page objects;
   * /H is a 2- or 4-element array pointing at real hint stream object(s);
-  * both xref sections parse, their /Prev chain is acyclic, and every in-use
-    entry points at the declared `N 0 obj` header;
-  * the first xref is the startxref target, the main xref has no /Prev;
+  * both xref sections parse (classic table or /Type /XRef stream), their /Prev
+    chain is acyclic, and every in-use entry resolves -- direct entries point
+    at the declared `N 0 obj` header, compressed entries at a live /ObjStm
+    member;
+  * xref streams carry /W, /Index, /Root and /Size; the first xref is the
+    startxref target, the main xref has no /Prev;
+  * hint offsets/lengths are cross-checked against the writer's documented
+    storage-unit view for compressed objects (container offset, container byte
+    length charged to its first member);
   * the PAGE OFFSET HINT TABLE (ISO 32000-1 F.4) parses field-by-field and its
     values agree with the real object layout (first-page offset, per-page
     object counts/lengths, cumulative page offsets, shared-object indices);
@@ -34,6 +41,7 @@ from __future__ import annotations
 
 import re
 import sys
+import zlib
 from dataclasses import dataclass, field
 
 TOKEN = re.compile(rb"(\d+)\s+(\d+)\s+obj\b")
@@ -46,6 +54,10 @@ class Xref:
     trailer: dict[str, object] = field(default_factory=dict)
     prev: int | None = None
     size: int = 0
+    kind: str = "classic"  # "classic" | "stream"
+    # For an xref stream: object number -> (containing /ObjStm, index).
+    compressed: dict[int, tuple[int, int]] = field(default_factory=dict)
+    parsed: dict[str, object] = field(default_factory=dict)  # /W, /Index, ...
 
 
 @dataclass
@@ -95,6 +107,13 @@ def parse_lin_dict(data: bytes) -> dict[str, object]:
 
 
 def parse_xref_at(data: bytes, offset: int) -> Xref | None:
+    """Dispatch a startxref target to a classic table or an xref stream."""
+    if data[offset : offset + 4] == b"xref":
+        return parse_classic_xref_at(data, offset)
+    return parse_xref_stream_at(data, offset)
+
+
+def parse_classic_xref_at(data: bytes, offset: int) -> Xref | None:
     if data[offset : offset + 4] != b"xref":
         return None
     pos = offset + 4
@@ -138,8 +157,149 @@ def parse_xref_at(data: bytes, offset: int) -> Xref | None:
     return None
 
 
+def all_objstms(data: bytes) -> dict[int, tuple[int, bytes, list[tuple[int, tuple[int, int]]]]]:
+    """Decode every `/ObjStm`: number -> (container offset, decoded payload, pairs).
+
+    Pairs are `(object number, byte range inside the decoded payload)`. A
+    Flate filter (no predictor) is handled; anything else is skipped so a
+    malformed stream degrades to "not found" rather than crashing the checker.
+    """
+    out: dict[int, tuple[int, bytes, list[tuple[int, tuple[int, int]]]]] = {}
+    for m in TOKEN.finditer(data):
+        off = m.start()
+        parsed = read_stream_object(data, off)
+        if parsed is None:
+            continue
+        dict_bytes, payload, _end = parsed
+        if not re.search(rb"/Type\s*/ObjStm\b", dict_bytes):
+            continue
+        if b"/FlateDecode" in dict_bytes:
+            try:
+                payload = zlib.decompress(payload)
+            except Exception:  # noqa: BLE001 - degrade, never crash
+                continue
+        fm = re.search(rb"/First\s+(\d+)", dict_bytes)
+        nm = re.search(rb"/N\s+(\d+)", dict_bytes)
+        if not fm or not nm:
+            continue
+        first, n = int(fm.group(1)), int(nm.group(1))
+        header = payload[:first]
+        nums = [int(x) for x in re.findall(rb"\d+", header)]
+        if len(nums) < 2 * n:
+            continue
+        pairs: list[tuple[int, tuple[int, int]]] = []
+        for i in range(n):
+            num, rel = nums[2 * i], nums[2 * i + 1]
+            start = first + rel
+            # The next pair's second number is the following object's offset.
+            end = first + nums[2 * i + 3] if i + 1 < n else len(payload)
+            pairs.append((num, (start, end)))
+        out[int(m.group(1))] = (off, payload, pairs)
+    return out
+
+
+def parse_xref_stream_at(data: bytes, offset: int) -> Xref | None:
+    """Parse a PDF 1.5 cross-reference stream (`/Type /XRef`) at `offset`."""
+    parsed = read_stream_object(data, offset)
+    if parsed is None:
+        return None
+    dict_bytes, payload, _end = parsed
+    if not re.search(rb"/Type\s*/XRef\b", dict_bytes):
+        return None
+    if b"/FlateDecode" in dict_bytes:
+        try:
+            payload = zlib.decompress(payload)
+        except Exception:  # noqa: BLE001 - degrade, never crash
+            return None
+    wm = re.search(rb"/W\s*\[([^\]]*)\]", dict_bytes)
+    sm = re.search(rb"/Size\s+(\d+)", dict_bytes)
+    if not wm or not sm:
+        return None
+    widths = [int(x) for x in re.findall(rb"\d+", wm.group(1))]
+    if len(widths) != 3:
+        return None
+    size = int(sm.group(1))
+    im = re.search(rb"/Index\s*\[([^\]]*)\]", dict_bytes)
+    index = [int(x) for x in re.findall(rb"\d+", im.group(1))] if im else [0, size]
+    row = sum(widths)
+    if row <= 0:
+        return None
+
+    x = Xref(offset=offset, kind="stream", size=size)
+    x.parsed = {"W": widths, "Index": index}
+    pm = re.search(rb"/Prev\s+(\d+)", dict_bytes)
+    if pm:
+        x.prev = int(pm.group(1))
+    rm = re.search(rb"/Root\s+(\d+)\s+\d+\s+R", dict_bytes)
+    if rm:
+        x.trailer["Root"] = int(rm.group(1))
+
+    stms = all_objstms(data)
+    pos = 0
+    for pair in range(0, min(len(index), len(index) - len(index) % 2), 2):
+        start, count = index[pair], index[pair + 1]
+        for k in range(count):
+            if pos + row > len(payload):
+                break
+            fields = []
+            for width in widths:
+                value = 0
+                for b in payload[pos : pos + width]:
+                    value = (value << 8) | b
+                fields.append(value)
+                pos += width
+            num = start + k
+            ty, f2, f3 = fields
+            if ty == 1:
+                x.entries[num] = f2
+            elif ty == 2:
+                x.compressed[num] = (f2, f3)
+                container = stms.get(f2)
+                if container is not None:
+                    pairs = container[2]
+                    if f3 < len(pairs) and pairs[f3][0] == num:
+                        x.entries[num] = container[0]
+    return x
+
+
 def object_numbers(data: bytes) -> dict[int, int]:
+    """File offsets of direct `N 0 obj` headers (compressed objects excluded)."""
     return {int(m.group(1)): m.start() for m in TOKEN.finditer(data)}
+
+
+def object_directory(data: bytes, xrefs: list[Xref]) -> dict[int, tuple[int, int, bool]]:
+    """Effective offset, length and compressed flag for every addressed object.
+
+    Mirrors the writer's documented view: a compressed object is addressed by
+    its containing `/ObjStm`'s offset and the length of its value in the
+    decoded payload; a direct object by its header and record length.
+    """
+    main = xrefs[-1]
+    direct: dict[int, int] = dict(main.entries)
+    starts = sorted(set(direct.values()) | {main.offset})
+    lengths: dict[int, int] = {}
+    for num, off in direct.items():
+        nxt = next((s for s in starts if s > off), main.offset)
+        lengths[num] = nxt - off
+    out: dict[int, tuple[int, int, bool]] = {
+        num: (off, lengths[num], False) for num, off in direct.items()
+    }
+    stms = all_objstms(data)
+    for num, (stmnum, idx) in main.compressed.items():
+        st = stms.get(stmnum)
+        if st is None or idx >= len(st[2]):
+            continue
+        off = direct.get(stmnum)
+        if off is None:
+            continue
+        # Same storage-unit accounting as the writer: the container's bytes
+        # are charged to its first member, the others carry zero. Therefore a
+        # section's summed lengths equal its real physical byte span.
+        end = data.find(b"endobj", off)
+        # `write_one` terminates each record with `endobj\n`.
+        container_len = (end + len(b"endobj") + 1 - off) if end >= 0 else 0
+        out[num] = (off, container_len if idx == 0 else 0, True)
+    return out
 
 
 def page_count(data: bytes, objects: dict[int, int]) -> int | None:
@@ -194,6 +354,11 @@ def read_stream_object(data: bytes, offset: int) -> tuple[bytes, bytes, int] | N
     sm = re.search(rb"\bstream\r?\n", data[offset:])
     if not sm:
         return None
+    # The `stream` keyword must belong to *this* object: a later object's
+    # stream must not be mistaken for it when this object is not a stream.
+    prior_end = data.find(b"endobj", offset)
+    if prior_end >= 0 and prior_end < offset + sm.start():
+        return None
     dict_bytes = data[offset : offset + sm.start()]
     payload_start = offset + sm.end()
     em = data.find(b"\nendstream", payload_start)
@@ -208,10 +373,15 @@ def read_stream_object(data: bytes, offset: int) -> tuple[bytes, bytes, int] | N
 
 def obj_dict(data: bytes, num: int) -> bytes:
     off = object_numbers(data).get(num)
-    if off is None:
-        return b""
-    end = data.find(b"endobj", off)
-    return data[off:end]
+    if off is not None:
+        end = data.find(b"endobj", off)
+        return data[off:end]
+    # A compressed object has no header: read its value from the /ObjStm.
+    for _stm_num, payload, pairs in all_objstms(data).values():
+        for onum, (start, end) in pairs:
+            if onum == num:
+                return payload[start:end]
+    return b""
 
 
 def page_objects(data: bytes, root_num: int) -> list[int]:
@@ -592,8 +762,7 @@ def check_hint_tables(r: Result, data: bytes, lin: dict, xrefs: list[Xref]) -> N
         "nbits_delta_content_length == nbits_delta_page_length",
     )
 
-    objects = object_numbers(data)
-    lengths = object_lengths(data, {**objects}, xrefs[-1].offset)
+    directory = object_directory(data, xrefs)
     main_xref = xrefs[-1]
     h_off = hint_offset
     h_len = hint_length
@@ -604,7 +773,7 @@ def check_hint_tables(r: Result, data: bytes, lin: dict, xrefs: list[Xref]) -> N
 
     # Cross-check first page offset.
     o = lin.get("O")
-    first_page_off = objects.get(o) if isinstance(o, int) else None
+    first_page_off = directory[o][0] if isinstance(o, int) and o in directory else None
     r.check(
         first_page_off is not None and adjusted(page.first_page_offset) == first_page_off,
         f"first_page_offset ({adjusted(page.first_page_offset)}) == /O object offset ({first_page_off})",
@@ -619,7 +788,7 @@ def check_hint_tables(r: Result, data: bytes, lin: dict, xrefs: list[Xref]) -> N
     for i in range(npages):
         if i < len(pages):
             num = pages[i]
-            actual_off = objects.get(num)
+            actual_off = directory[num][0] if num in directory else None
             r.check(
                 adjusted(cumulative) == actual_off,
                 f"page {i} table offset ({adjusted(cumulative)}) == object {num} offset ({actual_off})",
@@ -631,11 +800,10 @@ def check_hint_tables(r: Result, data: bytes, lin: dict, xrefs: list[Xref]) -> N
             contiguous = True
             for k in range(nobj):
                 onum = num + k
-                ooff = objects.get(onum) if onum in objects else main_xref.entries.get(onum)
-                if ooff is None:
+                if onum not in directory:
                     contiguous = False
                     break
-                span += lengths.get(onum, main_xref.entries.get(onum + 1, ooff) - ooff)
+                span += directory[onum][1]
             hlength = page.min_page_length + page.delta_page_length[i]
             r.check(contiguous and span == hlength,
                     f"page {i} length ({hlength}) == sum of {nobj} real object lengths ({span})")
@@ -658,7 +826,7 @@ def check_hint_tables(r: Result, data: bytes, lin: dict, xrefs: list[Xref]) -> N
             if i == shared.nshared_first_page:
                 cur = shared.first_shared_obj
                 if shared.nshared_total > shared.nshared_first_page:
-                    real = objects.get(cur)
+                    real = directory[cur][0] if cur in directory else None
                     r.check(
                         adjusted(shared.first_shared_offset) == real,
                         f"first_shared_offset ({adjusted(shared.first_shared_offset)}) == object {cur} offset ({real})",
@@ -667,11 +835,10 @@ def check_hint_tables(r: Result, data: bytes, lin: dict, xrefs: list[Xref]) -> N
             span = 0
             for k in range(nobj):
                 onum = cur + k
-                ooff = objects.get(onum) if onum in objects else main_xref.entries.get(onum)
-                if ooff is None:
+                if onum not in directory:
                     span = -1
                     break
-                span += lengths.get(onum, 0)
+                span += directory[onum][1]
             glen = shared.min_group_length + shared.delta_group_length[i]
             if i < shared.nshared_first_page or shared.nshared_total > shared.nshared_first_page:
                 r.check(span == glen,
@@ -730,7 +897,7 @@ def check(path: str) -> Result:
             seen.add(cur)
             x = parse_xref_at(data, cur)
             if x is None:
-                r.check(False, f"xref at {cur} parses")
+                r.check(False, f"xref at {cur} parses (classic table or /Type /XRef stream)")
                 break
             xrefs.append(x)
             cur = x.prev or 0
@@ -739,29 +906,57 @@ def check(path: str) -> Result:
             r.check(xrefs[0].offset == start, "startxref targets the first-page xref")
             r.check(xrefs[-1].prev is None, "main xref has no /Prev")
             r.check(xrefs[0].prev == xrefs[-1].offset, "first xref /Prev targets main xref")
+            if xrefs[0].kind == "stream":
+                # This writer emits pure xref-stream files: both sections are
+                # streams, so a hybrid /XRefStm is neither present nor needed.
+                r.check(all(x.kind == "stream" for x in xrefs),
+                        "both xref sections are /Type /XRef streams")
+                r.check(all(b"/Type /XRef" in data[x.offset : x.offset + 128] for x in xrefs),
+                        "each xref section is labelled /Type /XRef")
+                r.check(all("W" in x.parsed and "Index" in x.parsed for x in xrefs),
+                        "each xref stream carries /W and /Index")
+                r.check(all(x.trailer.get("Root") is not None for x in xrefs),
+                        "each xref stream carries /Root")
+            stms = all_objstms(data)
             for x in xrefs:
                 covered = max(x.entries, default=0)
-                r.check(x.size == covered + 1, f"xref {x.offset} /Size covers its entries")
+                r.check(x.size > covered, f"xref {x.offset} /Size covers its entries")
+                bad = False
                 for num, off in x.entries.items():
-                    header = data[off : off + 40]
-                    expected = f"{num} 0 obj".encode()
-                    if not header.startswith(expected):
-                        r.check(False, f"xref {x.offset} entry {num} points at {off}")
-                        break
-                else:
-                    r.check(True, f"all in-use entries in xref {x.offset} point at correct headers")
+                    if num in x.compressed:
+                        stmnum, idx = x.compressed[num]
+                        st = stms.get(stmnum)
+                        if st is None or idx >= len(st[2]) or st[2][idx][0] != num:
+                            r.check(False, f"xref {x.offset} compressed entry {num} is invalid")
+                            bad = True
+                            break
+                    else:
+                        header = data[off : off + 40]
+                        expected = f"{num} 0 obj".encode()
+                        if not header.startswith(expected):
+                            r.check(False, f"xref {x.offset} entry {num} points at {off}")
+                            bad = True
+                            break
+                if not bad:
+                    r.check(True, f"all in-use entries in xref {x.offset} resolve")
 
     if "T" in lin and xrefs:
         t = lin["T"]
         r.check(0 <= t < len(data), f"/T ({t}) within file")
         if 0 <= t < len(data):
-            p = t
-            while p < len(data) and data[p : p + 1] in (b" ", b"\r", b"\n"):
-                p += 1
-            first_xref = xrefs[0].offset
-            hdr = re.match(rb"\s*xref\s+\d+\s+\d+\s*\n", data[first_xref:])
-            entry0 = first_xref + (hdr.end() if hdr else 0)
-            r.check(p == entry0, f"/T skips to first xref entry ({p} == {entry0})")
+            if xrefs[0].kind == "stream":
+                # For an xref-stream first page, /T is the offset of the xref
+                # stream object (also the startxref target).
+                r.check(t == xrefs[0].offset,
+                        f"/T ({t}) targets the first-page xref stream ({xrefs[0].offset})")
+            else:
+                p = t
+                while p < len(data) and data[p : p + 1] in (b" ", b"\r", b"\n"):
+                    p += 1
+                first_xref = xrefs[0].offset
+                hdr = re.match(rb"\s*xref\s+\d+\s+\d+\s*\n", data[first_xref:])
+                entry0 = first_xref + (hdr.end() if hdr else 0)
+                r.check(p == entry0, f"/T skips to first xref entry ({p} == {entry0})")
 
     if "E" in lin:
         e = lin["E"]

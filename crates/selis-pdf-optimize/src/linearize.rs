@@ -43,8 +43,18 @@
 //!   fabricated. Their bit layouts are reconstructed from Annex F and are
 //!   validated by `tools/check_linearization.py` against the real structures
 //!   (self-consistency, not an external qpdf verdict).
-//! * Two classic xref sections with a `/Prev` chain that
-//!   `parse_revisions` follows.
+//! * Two xref sections with a `/Prev` chain that `parse_revisions` follows.
+//!   The default is two **classic** tables (`LinearizeMode::Classic`).
+//!   `LinearizeMode::Compressed` writes both as PDF 1.5 cross-reference
+//!   streams (`/Type /XRef`, `/W`, `/Index`, `/Root`, `/Size`, `/Prev`) and
+//!   packs eligible non-stream objects (resources, annotations, outlines,
+//!   info, ...) into `/ObjStm` streams. See `linearize_xref.rs` for the exact
+//!   layout and the documented hint-table offset convention for compressed
+//!   objects. Both modes keep the same Annex F hint tables and `/Linearized`
+//!   dictionary, so viewers that ignore the hint tables see identical pages;
+//!   the compressed mode is opt-in because classic xref is the most widely
+//!   compatible (PDF 1.4). A *hybrid* `/XRefStm` is not emitted: both sections
+//!   are xref streams, so there is no classic trailer to pair it with.
 //!
 //! The hint stream is placed after the first-page section so every object
 //! offset stored in the tables is below `/H`; per the spec those offsets are
@@ -75,6 +85,7 @@
 // bounded counters (bit buffers, fixed-width hint fields); all file offsets
 // use checked arithmetic. The hostile-input boundary is the object graph,
 // which is validated in `build_index`/`discover_page_tree` before any of this.
+#![forbid(unsafe_code)]
 #![allow(
     clippy::indexing_slicing,
     clippy::arithmetic_side_effects,
@@ -87,6 +98,10 @@ use selis_bytes::Bytes;
 use selis_error::{err, Code, Result};
 use selis_pdf_cos::{Obj, Ref, Writer};
 use selis_sandbox::{Budget, BudgetGuard, Resource};
+
+/// The compressed (xref-stream + object-stream) linearization path.
+#[path = "linearize_xref.rs"]
+mod linearize_xref;
 
 /// The fixed PDF header written at the start of every file.
 const HEADER: &[u8] = b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n";
@@ -122,6 +137,13 @@ pub enum LinearizeError {
     OutOfRange,
     /// A hint-table value could not be encoded in its fixed-width field.
     HintTable(&'static str),
+    /// The graph cannot be laid out with compressed/xref-stream output.
+    ///
+    /// The writer never guesses: an object that cannot legally live in an
+    /// object stream, an offset that will not fit the chosen `/W` widths, or a
+    /// numbering that cannot hold the extra xref-stream objects all fail here
+    /// with a typed error. No partially-labelled file is returned.
+    UnsupportedLayout(&'static str),
 }
 
 impl LinearizeError {
@@ -132,7 +154,9 @@ impl LinearizeError {
             Self::Encrypted => Code::AlreadyEncrypted,
             Self::BadPageTree(_) | Self::DuplicateObject(_) => Code::PageTreeMalformed,
             Self::ObjectOneTaken => Code::ObjUnexpected,
-            Self::LayoutDidNotConverge | Self::HintTable(_) => Code::VerifyFailed,
+            Self::LayoutDidNotConverge | Self::HintTable(_) | Self::UnsupportedLayout(_) => {
+                Code::VerifyFailed
+            }
             Self::OutOfRange => Code::ObjUnexpected,
         }
     }
@@ -150,8 +174,25 @@ impl LinearizeError {
             Self::LayoutDidNotConverge => "linearised layout did not converge".to_string(),
             Self::OutOfRange => "object number or offset out of range".to_string(),
             Self::HintTable(why) => format!("hint table cannot be encoded: {why}"),
+            Self::UnsupportedLayout(why) => format!("unsupported linearized layout: {why}"),
         }
     }
+}
+
+/// How the two cross-reference sections of a linearized file are encoded.
+///
+/// The classic mode is the default because it is the most widely compatible
+/// (PDF 1.4, no object streams). The compressed mode writes both xref sections
+/// as cross-reference streams (`/Type /XRef`) and packs eligible non-stream
+/// objects into object streams (`/ObjStm`), while keeping the Annex F hint
+/// tables and the `/Linearized` dictionary intact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LinearizeMode {
+    /// Classic `xref` tables + `trailer` dictionaries (PDF 1.4). Default.
+    #[default]
+    Classic,
+    /// Cross-reference streams + object streams (PDF 1.5+).
+    Compressed,
 }
 
 /// What the caller must supply to linearise an already-collected object graph.
@@ -191,6 +232,32 @@ pub fn write_linearized(
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
 ) -> Result<Vec<u8>> {
+    // Compatibility default: classic xref tables (see [`LinearizeMode`]).
+    write_linearized_with_mode(input, budget, g, LinearizeMode::Classic)
+}
+
+/// As [`write_linearized`], with an explicit cross-reference encoding mode.
+///
+/// Both modes produce a genuine linearized file with the same Annex F hint
+/// tables; only the xref representation and the packing of non-stream objects
+/// differ. See the module docs for the exact layout of each mode.
+///
+/// # Budget
+///
+/// As [`write_linearized`]; the compressed mode additionally charges the
+/// Flate-encoded object/xref stream bytes.
+///
+/// # Malformed Input
+///
+/// As [`write_linearized`]. The compressed mode refuses (with
+/// [`LinearizeError::UnsupportedLayout`]) any graph it cannot legally place in
+/// object streams or an offset that will not fit the chosen `/W` widths.
+pub fn write_linearized_with_mode(
+    input: &LinearizeInput<'_>,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+    mode: LinearizeMode,
+) -> Result<Vec<u8>> {
     let index = build_index(input.objects)?;
 
     let (_first_page, pages, tree_nodes) = discover_page_tree(&index, input.root, input.page_count)
@@ -214,7 +281,12 @@ pub fn write_linearized(
         main_xref: 0,
     };
     for _ in 0..MAX_LAYOUT_PASSES {
-        let (bytes, actual) = render(input, &layout, &sizes, guess, budget, g)?;
+        let (bytes, actual) = match mode {
+            LinearizeMode::Classic => render(input, &layout, &sizes, guess, budget, g)?,
+            LinearizeMode::Compressed => {
+                linearize_xref::render(input, &layout, &sizes, guess, budget, g)?
+            }
+        };
         if actual == guess {
             return Ok(bytes);
         }
@@ -1678,6 +1750,7 @@ mod tests {
         clippy::cast_sign_loss,
         clippy::arithmetic_side_effects,
         clippy::integer_division,
+        clippy::type_complexity,
         clippy::panic
     )]
 
@@ -2044,6 +2117,346 @@ mod tests {
                 "no {key} hint without a source structure"
             );
         }
+    }
+
+    /// A two-page document with compressible non-stream objects: resource
+    /// dictionaries, annotations, a font dictionary and trailer `/Info`.
+    fn resource_objects() -> Vec<(u32, Obj)> {
+        vec![
+            (
+                2,
+                Obj::Dict(vec![
+                    (bytes(b"Type"), Obj::Name(bytes(b"Catalog"))),
+                    (bytes(b"Pages"), Obj::Ref(Ref::new(3, 0))),
+                ]),
+            ),
+            (
+                3,
+                Obj::Dict(vec![
+                    (bytes(b"Type"), Obj::Name(bytes(b"Pages"))),
+                    (
+                        bytes(b"Kids"),
+                        Obj::Array(vec![Obj::Ref(Ref::new(4, 0)), Obj::Ref(Ref::new(5, 0))]),
+                    ),
+                    (bytes(b"Count"), Obj::Int(2)),
+                ]),
+            ),
+            (
+                4,
+                Obj::Dict(vec![
+                    (bytes(b"Type"), Obj::Name(bytes(b"Page"))),
+                    (bytes(b"Parent"), Obj::Ref(Ref::new(3, 0))),
+                    (bytes(b"Contents"), Obj::Ref(Ref::new(6, 0))),
+                    (bytes(b"Resources"), Obj::Ref(Ref::new(8, 0))),
+                    (
+                        bytes(b"Annots"),
+                        Obj::Array(vec![Obj::Ref(Ref::new(10, 0))]),
+                    ),
+                ]),
+            ),
+            (
+                5,
+                Obj::Dict(vec![
+                    (bytes(b"Type"), Obj::Name(bytes(b"Page"))),
+                    (bytes(b"Parent"), Obj::Ref(Ref::new(3, 0))),
+                    (bytes(b"Contents"), Obj::Ref(Ref::new(7, 0))),
+                    (bytes(b"Resources"), Obj::Ref(Ref::new(9, 0))),
+                    (
+                        bytes(b"Annots"),
+                        Obj::Array(vec![Obj::Ref(Ref::new(11, 0))]),
+                    ),
+                ]),
+            ),
+            (
+                6,
+                Obj::Stream {
+                    dict: vec![],
+                    data: bytes(b"BT (alpha) Tj ET"),
+                },
+            ),
+            (
+                7,
+                Obj::Stream {
+                    dict: vec![],
+                    data: bytes(b"BT (beta) Tj ET"),
+                },
+            ),
+            (
+                8,
+                Obj::Dict(vec![(bytes(b"ProcSet"), Obj::Name(bytes(b"PDF")))]),
+            ),
+            (
+                9,
+                Obj::Dict(vec![(bytes(b"ProcSet"), Obj::Name(bytes(b"PDF")))]),
+            ),
+            (
+                10,
+                Obj::Dict(vec![
+                    (bytes(b"Type"), Obj::Name(bytes(b"Annot"))),
+                    (bytes(b"Subtype"), Obj::Name(bytes(b"Text"))),
+                    (
+                        bytes(b"Rect"),
+                        Obj::Array(vec![Obj::Int(1), Obj::Int(2), Obj::Int(3), Obj::Int(4)]),
+                    ),
+                ]),
+            ),
+            (
+                11,
+                Obj::Dict(vec![
+                    (bytes(b"Type"), Obj::Name(bytes(b"Annot"))),
+                    (bytes(b"Subtype"), Obj::Name(bytes(b"Text"))),
+                    (
+                        bytes(b"Rect"),
+                        Obj::Array(vec![Obj::Int(5), Obj::Int(6), Obj::Int(7), Obj::Int(8)]),
+                    ),
+                ]),
+            ),
+            (
+                12,
+                Obj::Dict(vec![
+                    (bytes(b"Type"), Obj::Name(bytes(b"Font"))),
+                    (bytes(b"Subtype"), Obj::Name(bytes(b"Type1"))),
+                ]),
+            ),
+            (
+                13,
+                Obj::Dict(vec![(bytes(b"Title"), Obj::String(bytes(b"T")))]),
+            ),
+        ]
+    }
+
+    fn compressed_input() -> (Vec<(u32, Obj)>, Vec<(Vec<u8>, Obj)>) {
+        let objects = resource_objects();
+        let extra = vec![(b"Info".to_vec(), Obj::Ref(Ref::new(13, 0)))];
+        (objects, extra)
+    }
+
+    #[test]
+    fn classic_is_the_default_and_does_not_emit_xref_streams() {
+        let objects = two_page_objects();
+        let input = LinearizeInput {
+            objects: &objects,
+            root: Ref::new(2, 0),
+            trailer_extra: &[],
+            page_count: 2,
+        };
+        let budget = B::unlimited();
+        let mut g = budget.guard();
+        let pdf = write_linearized(&input, &budget, &mut g).expect("linearize");
+        let text = String::from_utf8_lossy(&pdf);
+        assert!(
+            !text.contains("/Type /XRef"),
+            "classic mode has no xref streams"
+        );
+        assert!(
+            !text.contains("/ObjStm"),
+            "classic mode has no object streams"
+        );
+    }
+
+    #[test]
+    fn compressed_mode_emits_both_xref_streams_and_object_streams() {
+        let (objects, extra) = compressed_input();
+        let input = LinearizeInput {
+            objects: &objects,
+            root: Ref::new(2, 0),
+            trailer_extra: &extra,
+            page_count: 2,
+        };
+        let budget = B::unlimited();
+        let mut g = budget.guard();
+        let pdf = write_linearized_with_mode(&input, &budget, &mut g, LinearizeMode::Compressed)
+            .expect("linearize");
+        let text = String::from_utf8_lossy(&pdf);
+
+        assert_eq!(text.matches("/Type /XRef").count(), 2, "two xref streams");
+        assert!(text.contains("/W [1 4 3]"), "xref stream /W array");
+        assert!(text.contains("/Index ["), "xref stream /Index");
+        assert!(text.contains("/Prev "), "first-page xref has /Prev");
+        assert!(
+            text.matches("/Root 2 0 R").count() >= 2,
+            "both xref streams carry /Root"
+        );
+        assert!(
+            text.contains("/ObjStm"),
+            "non-stream objects packed into object streams"
+        );
+        assert!(text.contains("/Linearized 1"), "linearization dict present");
+        assert!(
+            text.matches("/Type /Page/").count() >= 2,
+            "page objects stay direct"
+        );
+
+        let h = parse_lin_array(&text, "H");
+        assert_eq!(h.len(), 2);
+        let (dict, _data) = hint_object(&pdf, h[0] as usize);
+        assert!(dict.contains("/S "), "hint stream still present");
+        assert_eq!(
+            parse_lin_int(&text, "L"),
+            pdf.len() as u64,
+            "/L equals file length"
+        );
+        assert_eq!(parse_lin_int(&text, "N"), 2, "/N page count");
+    }
+
+    /// Re-open with the engine and resolve every object: pages, contents,
+    /// resources, annotations and trailer info must all survive the rewrite.
+    #[test]
+    fn compressed_mode_reopens_with_all_pages_content_and_annotations() {
+        let (objects, extra) = compressed_input();
+        let input = LinearizeInput {
+            objects: &objects,
+            root: Ref::new(2, 0),
+            trailer_extra: &extra,
+            page_count: 2,
+        };
+        let budget = B::unlimited();
+        let mut g = budget.guard();
+        let pdf = write_linearized_with_mode(&input, &budget, &mut g, LinearizeMode::Compressed)
+            .expect("linearize");
+
+        let sx = selis_pdf_cos::xref::find_startxref(&pdf, 4096).expect("startxref");
+        let doc = selis_pdf_cos::parse_revisions(&pdf, sx, &budget, &mut g).expect("reparse");
+        assert_eq!(
+            doc.revisions().len(),
+            2,
+            "first-page xref /Prev -> main xref"
+        );
+        let mut resolve = |r: Ref| {
+            selis_pdf_cos::copy::resolve_ref(&pdf, &doc, r, &budget, &mut g).expect("resolve")
+        };
+
+        // Object 1, catalog, page tree and both page objects resolve.
+        let lin = resolve(Ref::new(1, 0));
+        assert!(matches!(lin, Obj::Dict(_)), "object 1 is a dictionary");
+        let catalog = resolve(Ref::new(2, 0));
+        let pages_ref = match catalog {
+            Obj::Dict(pairs) => pairs
+                .iter()
+                .find(|(k, _)| k.as_slice() == b"Pages")
+                .and_then(|(_, v)| match v {
+                    Obj::Ref(r) => Some(*r),
+                    _ => None,
+                })
+                .expect("pages ref"),
+            _ => panic!("catalog is a dictionary"),
+        };
+        let pages = resolve(pages_ref);
+        let kids: Vec<Ref> = match pages {
+            Obj::Dict(pairs) => pairs
+                .iter()
+                .find(|(k, _)| k.as_slice() == b"Kids")
+                .and_then(|(_, v)| match v {
+                    Obj::Array(items) => Some(
+                        items
+                            .iter()
+                            .filter_map(|i| match i {
+                                Obj::Ref(r) => Some(*r),
+                                _ => None,
+                            })
+                            .collect(),
+                    ),
+                    _ => None,
+                })
+                .expect("kids"),
+            _ => panic!("pages is a dictionary"),
+        };
+        assert_eq!(kids.len(), 2, "both pages survive");
+
+        let mut contents = Vec::new();
+        let mut annots = 0;
+        for kid in kids {
+            let page = resolve(kid);
+            let (content_ref, annots_ref) = match page {
+                Obj::Dict(pairs) => (
+                    pairs
+                        .iter()
+                        .find(|(k, _)| k.as_slice() == b"Contents")
+                        .and_then(|(_, v)| match v {
+                            Obj::Ref(r) => Some(*r),
+                            _ => None,
+                        })
+                        .expect("content ref"),
+                    pairs
+                        .iter()
+                        .find(|(k, _)| k.as_slice() == b"Annots")
+                        .and_then(|(_, v)| match v {
+                            Obj::Array(items) => items.iter().find_map(|i| match i {
+                                Obj::Ref(r) => Some(*r),
+                                _ => None,
+                            }),
+                            _ => None,
+                        })
+                        .expect("annot ref"),
+                ),
+                _ => panic!("page is a dictionary"),
+            };
+            match resolve(content_ref) {
+                Obj::Stream { data, .. } => contents.push(data.as_slice().to_vec()),
+                _ => panic!("content is still a stream"),
+            }
+            match resolve(annots_ref) {
+                Obj::Dict(_) => annots += 1,
+                _ => panic!("annotation survives as a dictionary"),
+            }
+        }
+        assert_eq!(
+            contents,
+            vec![b"BT (alpha) Tj ET".to_vec(), b"BT (beta) Tj ET".to_vec()]
+        );
+        assert_eq!(annots, 2, "both annotations survive");
+
+        // Trailer /Info is compressed too and still resolves from the xref.
+        let info_ref = doc
+            .revisions()
+            .last()
+            .and_then(|rev| rev.trailer.iter().find(|(k, _)| k.as_slice() == b"Info"))
+            .and_then(|(_, v)| match v {
+                Obj::Ref(r) => Some(*r),
+                _ => None,
+            })
+            .expect("trailer /Info");
+        match resolve(info_ref) {
+            Obj::Dict(_) => {}
+            _ => panic!("info dictionary survives"),
+        }
+    }
+
+    #[test]
+    fn compressed_mode_negative_control_rejects_a_broken_prev_chain() {
+        let (objects, extra) = compressed_input();
+        let input = LinearizeInput {
+            objects: &objects,
+            root: Ref::new(2, 0),
+            trailer_extra: &extra,
+            page_count: 2,
+        };
+        let budget = B::unlimited();
+        let mut g = budget.guard();
+        let mut pdf =
+            write_linearized_with_mode(&input, &budget, &mut g, LinearizeMode::Compressed)
+                .expect("linearize");
+
+        // Corrupt the /Prev value: the first-page xref must still parse, but
+        // following its chain to a non-existent main xref must fail loudly.
+        let anchor = b"/Prev ".to_vec();
+        let at = pdf
+            .windows(anchor.len())
+            .position(|w| w == anchor.as_slice())
+            .expect("prev");
+        let start = at + anchor.len();
+        let end = pdf[start..]
+            .iter()
+            .position(|b| !b.is_ascii_digit())
+            .map(|n| start + n)
+            .unwrap_or(pdf.len());
+        pdf.splice(start..end, b"99999999".iter().copied());
+        let sx = selis_pdf_cos::xref::find_startxref(&pdf, 4096).expect("startxref");
+        let mut g2 = budget.guard();
+        assert!(
+            selis_pdf_cos::parse_revisions(&pdf, sx, &budget, &mut g2).is_err(),
+            "broken /Prev chain is refused, never silently accepted"
+        );
     }
 
     fn parse_lin_int(text: &str, key: &str) -> u64 {

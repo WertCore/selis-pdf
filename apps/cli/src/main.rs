@@ -968,6 +968,10 @@ enum Command {
         /// The output PDF.
         #[arg(short, long)]
         output: String,
+        /// Write both xref sections as PDF 1.5 xref streams and pack eligible
+        /// non-stream objects into object streams (default: classic xref).
+        #[arg(long)]
+        xref_streams: bool,
         /// Emit the verification object as JSON on stdout (SL-1A.UI.02).
         #[arg(long)]
         json: bool,
@@ -1514,8 +1518,9 @@ fn run() {
         Command::Linearize {
             path,
             output,
+            xref_streams,
             json,
-        } => finish(linearize::run(&path, &output), json),
+        } => finish(linearize::run(&path, &output, xref_streams), json),
         Command::Unlock {
             path,
             output,
