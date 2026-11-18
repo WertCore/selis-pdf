@@ -323,6 +323,72 @@ Page operations are the single area where Selis is at or beyond full parity.
 | Font subsetting as an optimize step | Yes | ✅ Shipped (scoped) | `subset_fonts` in `selis-pdf-optimize` orchestrates the existing `selis-font` TrueType subsetter (SL-3.FONT.11) over the codes actually shown by each page's text, rewrites `/FontFile2` streams and returns a strictly-smaller document; exposed through `selis-pdf-tools` and the host op map; op 41 is now exported by the dedicated `selis-pdf-wasm-optimize` lazy chunk (it used to be dispatched by the tools chunk). The op code is unchanged. Supported: embedded TrueType simple fonts with `/Encoding /WinAnsiEncoding`, and `Type0` → `Identity-H` → `CIDFontType2` with `/CIDToGIDMap /Identity` (a rewritten CIDToGIDMap stream carries the subsetter's renumbering). Fail-loud typed errors for CFF/`FontFile3`/`CIDFontType0`, non-Identity-H CMaps, stream `/CIDToGIDMap`, `/Differences` and non-WinAnsi simple encodings, unsupported stream filters, and rewrites that would not shrink the file. Read-back tests re-open the output: WinAnsi 140,376→4,386 B and Identity-H 185,630→2,637 B, identical extracted text and pixel-identical renders. **User-facing:** a web card at `/subset-pdf-fonts/` invokes op 41 on one local PDF and shows fonts subset, glyphs kept and before→after size; the CLI `selis subset-fonts -o out.pdf [--json]` wraps the same op. Neither surface uploads bytes. **Remaining:** CFF subsetting; CID edge cases (non-Identity CMaps, stream CIDToGIDMap inputs, shared font programs). |
 | Linearize / "fast web view" | Yes | 🟡 Partial | `selis-pdf-optimize::linearize` + `selis-pdf-tools::linearize[_file]` reorder objects into linearisation parts (catalog, one contiguous run per page, shared objects, remainder) with consecutively assigned object numbers, and emit a genuine single-stream hint stream: the ISO 32000-1 §F.4 page-offset table and §F.5 shared-object table serialized bit-for-bit, located by `/H [ offset length ]` and by `/S` inside the stream, **plus the OPTIONAL Annex F hint tables emitted only when their source structure exists**: outline (§F.6, `/O` in the hint-stream dictionary), thumbnail (§F.7, `/T`), named destination (§F.8, `/A`) and page label (§F.9, `/E`). Documents with none of those structures emit no optional keys; nothing is fabricated. `tools/check_linearization.py` parses and cross-checks each emitted optional table against the real outline tree, page `/Thumb` streams, `/Dests`/`/Names` name tree and `/PageLabels` number tree (including a negative control: corrupt the `/O` pointer and the outline checks fail). `/Linearized` carries `/L /H /O /E /N /T /P` from the bytes written; two classic xref sections with `/Prev`; engine re-open + write-gate verification preserve pages/content/annotations/forms. `tools/check_linearization.py` independently parses both core hint tables and every optional table present, cross-checking every field against the object graph; it passes on all test outputs and fails on a deliberately corrupted hint offset (and on a corrupted optional `/O` table pointer). **User-facing:** the CLI `selis linearize -o out.pdf [--json]` wraps the op (integration test reads `/L` and `/N` from object 1) and op 43 is dispatched by the dedicated `selis-pdf-wasm-optimize` lazy chunk with a matching host protocol entry (the earlier 472,194 B figure was measured while op 43 still lived in the tools chunk; that chunk later measured 494,896 B). After the split, the optimise chunk measures 186,423 B brotli against a 200,000 B ceiling and the tools chunk 424,472 B against 440,000 B, with baselines re-recorded. The host still routes the `/linearize/` card to op 43, only the module that exports it changed. A dedicated web card at `/linearize/` now invokes op 43 on one local PDF and shows an honest report read straight from the output bytes — `/L` (declared file length), `/N` (page count), `/O` and the last page object number, the object-header count, before→after size and the structural verdict — with the engine's refusals surfacing through the existing error path. No new WASM op, no upload: the file is read and written in the tab and the no-upload recorder still guards every run. **Independent viewer (PDFium) interop — evidence, not conformance:** `tools/check_linearization_pdfium.py` opens a linearized output with pypdfium2 (PDFium, Chrome/Edge's engine), asserts the viewer sees the expected page count and that each page renders to a non-blank bitmap, and exits non-zero on failure. Run on a real CLI output from `corpus/fixtures/form_two_pages.pdf` (2 pages, 23,136 → 26,791 B, 50 collected objects, `/L 26791`, `/N 2`): PDFium saw 2 pages and rendered both (page 1 612×792 with 1,143/1,454,112 non-white bytes, page 2 with 1,548/1,454,112), exit 0; a deliberate `--pages 3` mismatch exits 1. **This is PDFium interop, NOT a `qpdf --check-linearization` verdict** — it does not parse the hint tables or validate `/L /H /O /E /N /T /P`. **Not claimed qpdf-conformant:** qpdf/mutool/pdftk/pikepdf are absent and were not installed from the network, so no external linearisation-checker verdict exists; `check_linearization.py` is a strong self-consistency check, not the qpdf binary (it also passes on the output above, exit 0). **Remaining / blocking:** classic xref only; no incremental-update interaction (full rewrite drops revision history); the OPTIONAL form hint table is still not emitted. An earlier writer exposed only the first page to the engine `Session`; the linearisation-part renumber in this slice fixed that, and a CLI read-back test (`linearized_output_opens_with_every_page_in_the_engine`) now opens a 3-page linearized output through `Session::open` and asserts all three pages are visible. The remaining 🟡 reasons are the missing external linearisation-checker verdict (PDFium interop is not qpdf conformance), classic-xref-only output, no incremental-update interaction, and the still-unemitted optional form hint table — the thumbnail, outline (`/O`), named-destination and page-label tables are now emitted for documents that have those structures. The dedicated web card is now shipped; see the user-facing note above.
 
+### CFF subsetting — feasibility note and implementation plan (SL-3.FONT.11 follow-up)
+
+CFF program subsetting is the one remaining font-subsetting gap and is
+**deliberately not shipped**. The typed refusal (`SubsetError::UnsupportedFont`
+for `/FontFile3`, `/CIDFontType0` and OpenType/CFF) stays; it never passes an
+unmodified CFF program through and never emits a partial font. The same
+honest note lives at the top of `crates/selis-font/src/subset.rs`; a regression
+test there proves the low-level entry point returns `None` for both
+`cff.otf` and `cff-cid.otf`.
+
+The engine reference is `crates/selis-font/src/subset.rs` → "CFF subsetting
+feasibility (SL-3.FONT.11 follow-up)".
+
+**Why it is not a small extension of the TrueType subsetter.** Subsetting
+TrueType `glyf` is table surgery; subsetting CFF is program surgery. A correct
+name-keyed (`/FontFile3 /Subtype /Type1C`) subsetter must: parse the CFF
+(header, Name/Top DICT/String/Global Subr INDEXes, charset, Encoding,
+CharStrings INDEX, Private DICT and local Subrs); close over used GIDs plus
+`.notdef` *and* the transitive edges a charstring can reach — `seac` (a
+four-operand `endchar` naming a base and accent glyph) and `callsubr`/`callgsubr`
+(a recursive local/global subr graph, cycles possible); re-encode each kept
+Type 2 charstring's subr operands against a **new bias** (107 / 1131 / 32768 by
+subr count) while keeping the nibble-aligned `hintmask` byte boundary exact;
+rebuild the local and global subr INDEXes; rebuild the charset so glyph *names*
+survive (the `/Encoding` / `/Differences` path resolves names, so dropping them
+silently breaks text); rewrite every CFF-absolute DICT offset (`CharStrings`,
+`charset`, `Encoding`, `Private`, `Subrs`, and for CID `FDArray`, `FDSelect`,
+`ROS`) with a two-pass fixpoint because DICT INTEGER operands are
+variable-length; reassemble the sfnt `CFF ` table, directory and checksums;
+then rewrite the PDF `/FontFile3` stream, `/Length1`, and for CID-keyed
+`/CIDFontType0C` the `/W` widths and any `/CIDToGIDMap`.
+
+**Primitives: present vs. missing.** Present — `skrifa::raw::ps::cff`
+(read-fonts 0.44 via skrifa 0.47) provides read-only `Index`, `Charset`, `dict::Entry`,
+`fd_select`, `encoding`, `stack` and `CffFontRef`/`Subfont` with
+`charstrings()`, `global_subrs()` and `evaluate_charstring()`; §FONT.04 already
+renders CFF and CID-keyed CFF outlines; this crate's `assemble_sfnt` /
+`patch_checksum` and the COS layer's code walk, stream codec and `WouldGrow`
+gate are reusable. Missing — **no** CFF/INDEX/DICT/charset serializer anywhere
+in the workspace (`Cargo.lock` has `read-fonts`/`skrifa`, no `write-fonts`, and
+read-fonts exposes no write API); **no** Type 2 charstring parser/encoder that
+can splice subr operands while preserving hintmask alignment (the interpreter
+only consumes charstrings); **no** subr call-graph closure, bias recomputation
+or `seac` closure; and **no** subr-bearing fixtures — `cff.otf` (788 B) and
+`cff-cid.otf` (616 B) are trivial hand-built fonts that exercise none of the
+hard cases.
+
+**Plan, in verification order.** (0) Add subr-bearing fixtures (name-keyed OTF
+with local + global subrs, nested calls, a `seac` glyph and hint masks; a
+CID-keyed OTF with two FDArray entries and a non-trivial FDSelect). (1) Wrap the
+read-fonts raw APIs in a validating reader for the name-keyed shape. (2) Build
+a Type 2 charstring scanner/writer and prove byte-exact round-trips for
+subr-free charstrings before rewriting any. (3) Add subr closure, renumbering
+and bias recomputation; verify re-evaluated outlines equal the source for every
+kept GID. (4) Add charset rebuild, the two-pass DICT offset fixpoint, INDEX and
+sfnt assembly; verify the output reopens in `FontRef` with the right glyph
+count, names and advances. (5) Mirror the TrueType COS orchestration for
+`/FontFile3`, then require pixel-identical raster output against the source —
+the same read-back evidence the TrueType path ships. (6) Ship the non-CID path
+first; keep `/CIDFontType0C` a typed refusal until step 5 passes for it.
+Steps 2-5 are a net-new binary writer and charstring engine with no primitive
+to lean on, and would add a new supply-chain-vetted dependency (ADR-P0021) into
+wasm chunks already near their ceilings. Without steps 0 and 5 a shipped
+subsetter could not be proven not to corrupt glyphs — the destructive partial
+output this work forbids — so the refusal is retained.
+
 ---
 
 ## 16. PDF/A, PDF/UA, PDF/X — validate + convert
