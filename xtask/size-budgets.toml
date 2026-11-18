@@ -106,14 +106,20 @@ budget = 900000
 # Op 43 pulls in the full linearisation writer: the ISO 32000-1 Annex F page
 # offset and shared-object hint tables, the linearisation-part object renumber
 # and the two-xref layout — a measured +14.7 KB to 479 700 B brotli. The growth
-# is the operations themselves behind their op codes, not a new dependency;
-# the baseline moves with it. NOTE: only ~300 B of headroom remain under the
-# 480 000 ceiling — the next tools op must either move to its own lazy chunk or
-# carry a budget step with it. The 2% rule gates the next slice.
+# is the operations themselves behind their op codes, not a new dependency.
+# The form-fidelity slice then closed the remaining choice/listbox gaps:
+# multi-select /AP /N with stacked labels, per-field /DR font resolution and
+# exact standard-14 metrics for quadding — a measured +3.1 KB to 482 773 B,
+# over the 480 000 ceiling. The budget moves one 20 KB step to 500 000 rather
+# than shipping a half-synthesised choice field. STRUCTURAL NOTE: three rounds
+# of parity work have carried this chunk from 420 KB to 483 KB; the right next
+# investment is a dedicated lazy chunk for the heavy edit/optimise operations
+# (font subset, linearise, form fidelity) rather than another budget step.
+# The 2% rule still gates every later slice.
 [[budget]]
 chunk = "tools"
 artifact = "selis_pdf_wasm_tools"
-budget = 480000
+budget = 500000
 
 # The raster page's lazy chunk (PDF → PNG, JPG, TIFF and WebP). It carries the
 # whole render walk, tiny-skia, the built-in Liberation fallback faces, the owned
