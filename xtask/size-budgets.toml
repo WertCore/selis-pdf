@@ -160,6 +160,13 @@ budget = 440000
 # Measured at 186 423 B brotli (590 588 B raw) with both operations, hence the
 # 200 000 ceiling. The 2% regression rule gates the next slice; this chunk is
 # deliberately tight because it is fetched only by two explicit card actions.
+# The ceiling later moved to 220 000 when the from-scratch CFF/FontFile3 writer
+# (Type1C + CIDFontType0C) landed — a real font-engine capability, not a new
+# dependency. Subsequent full-qpdf-conformance and incremental-update work on
+# the linearizer also grew this chunk. The recorded baseline had fallen behind
+# that growth (it was last set before the CFF writer); this slice re-records it
+# to the measured 218 996 B. The chunk is still fetched only by two explicit
+# cards. The 2% rule gates the next slice.
 [[budget]]
 chunk = "optimize"
 artifact = "selis_pdf_wasm_optimize"
