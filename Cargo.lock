@@ -2036,6 +2036,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "selis-pdf-wasm-optimize"
+version = "0.1.0"
+dependencies = [
+ "selis-pdf-tools",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "selis-pdf-wasm-raster"
 version = "0.1.0"
 dependencies = [

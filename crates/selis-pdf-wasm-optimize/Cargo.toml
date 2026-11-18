@@ -1,0 +1,23 @@
+[package]
+name = "selis-pdf-wasm-optimize"
+description = "Lazy WASM chunk: font subset and linearisation operations for the browser."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# No `native-fs`: every path is a key in the in-memory tool session, exactly
+# as in the tools chunk. The optimise operations read one document and write
+# one verified result; no path ever reaches a real filesystem.
+selis-pdf-tools = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
