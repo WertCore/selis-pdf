@@ -1132,6 +1132,36 @@ pub fn write_incremental_update_full(
     }
 
     let startxref = u64::try_from(out.len()).unwrap_or(u64::MAX);
+
+    // Match the source's xref flavour (23-EDIT-MODEL-SPEC.md §6 step 4).
+    let prev_cursor = {
+        let kw = usize::try_from(startxref_kw).unwrap_or(usize::MAX);
+        crate::xref::read_startxref_value(original, kw.saturating_add("startxref".len()))
+            .map(|(v, _)| v)
+            .unwrap_or(0)
+    };
+    if crate::xref::newest_xref_is_stream(original, prev_cursor) {
+        let mut pairs: Vec<(selis_bytes::Bytes, Obj)> =
+            trailer.iter().map(|(k, v)| (bytes(k), v.clone())).collect();
+        pairs.push((
+            bytes(b"Size"),
+            Obj::Int(i64::try_from(size).unwrap_or(i64::MAX)),
+        ));
+        pairs.push((
+            bytes(b"Prev"),
+            Obj::Int(i64::try_from(prev).unwrap_or(i64::MAX)),
+        ));
+        return write_incremental_xref_stream(
+            &pairs,
+            &entries,
+            &generations,
+            startxref,
+            budget,
+            g,
+            out,
+        );
+    }
+
     out.extend_from_slice(b"xref\n");
     let mut i = 0usize;
     while i < entries.len() {
@@ -1183,6 +1213,91 @@ pub fn write_incremental_update_full(
     out.push(b'\n');
     out.extend_from_slice(format!("startxref\n{startxref}\n%%EOF\n").as_bytes());
 
+    g.charge(
+        selis_sandbox::Resource::Bytes,
+        u64::try_from(out.len()).unwrap_or(u64::MAX),
+    )?;
+    Ok(out)
+}
+
+/// Append a cross-reference STREAM for an incremental update, matching a
+/// stream-flavoured source (23-EDIT-MODEL-SPEC.md §6 step 4). `out` already
+/// holds `original` plus the appended changed objects; this appends the xref
+/// stream object, `startxref` and `%%EOF`.
+///
+/// The stream uses `/W [1 4 2]` (type, offset-or-next-free, gen) and raw
+/// (unfiltered) data. Only the changed objects get entries; the rest are
+/// inherited through `/Prev`.
+fn write_incremental_xref_stream(
+    pairs: &[(selis_bytes::Bytes, Obj)],
+    entries: &[(u32, Option<u64>)],
+    generations: &std::collections::BTreeMap<u32, u16>,
+    startxref: u64,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+    mut out: Vec<u8>,
+) -> Result<Vec<u8>> {
+    // The xref stream gets a fresh object number above every existing one.
+    let size = pairs
+        .iter()
+        .find(|(k, _)| k.as_slice() == b"Size")
+        .and_then(|(_, v)| match v {
+            Obj::Int(n) => u64::try_from(*n).ok(),
+            _ => None,
+        })
+        .unwrap_or(0);
+    let xref_num = u32::try_from(size).unwrap_or(u32::MAX);
+
+    // Entry 0 is free (type 0, next-free 0, gen 65535), then each changed
+    // object: type 1 (in use, offset, gen 0) or type 0 (free, next-free, gen+1).
+    let mut data = Vec::with_capacity(entries.len().saturating_mul(7).saturating_add(7));
+    data.extend_from_slice(&[0u8, 0, 0, 0, 0, 0xff, 0xff]); // object 0
+    let free_nums: Vec<u32> = entries
+        .iter()
+        .filter(|(_, o)| o.is_none())
+        .map(|(n, _)| *n)
+        .collect();
+    let mut fi = 0usize;
+    for (num, offset) in entries {
+        match offset {
+            Some(off) => {
+                let o = u32::try_from(*off).unwrap_or(u32::MAX);
+                data.push(1); // type 1
+                data.extend_from_slice(&o.to_be_bytes());
+                data.extend_from_slice(&0u16.to_be_bytes());
+            }
+            None => {
+                let next = free_nums.get(fi.saturating_add(1)).copied().unwrap_or(0);
+                fi = fi.saturating_add(1);
+                let gen = generations.get(num).copied().unwrap_or(0).saturating_add(1);
+                data.push(0); // type 0 (free)
+                data.extend_from_slice(&next.to_be_bytes());
+                data.extend_from_slice(&gen.to_be_bytes());
+            }
+        }
+    }
+
+    let mut dict: Vec<(selis_bytes::Bytes, Obj)> = vec![
+        (bytes(b"Type"), Obj::Name(bytes(b"XRef"))),
+        (
+            bytes(b"W"),
+            Obj::Array(vec![Obj::Int(1), Obj::Int(4), Obj::Int(2)]),
+        ),
+        (
+            bytes(b"Length"),
+            Obj::Int(i64::try_from(data.len()).unwrap_or(i64::MAX)),
+        ),
+    ];
+    for (k, v) in pairs {
+        dict.push((k.clone(), v.clone()));
+    }
+    out.extend_from_slice(format!("{xref_num} 0 obj\n").as_bytes());
+    let mut w = Writer::new(budget);
+    out.extend_from_slice(&w.to_bytes(&Obj::Dict(dict), g)?);
+    out.extend_from_slice(b"\nstream\n");
+    out.extend_from_slice(&data);
+    out.extend_from_slice(b"\nendstream\nendobj\n");
+    out.extend_from_slice(format!("startxref\n{startxref}\n%%EOF\n").as_bytes());
     g.charge(
         selis_sandbox::Resource::Bytes,
         u64::try_from(out.len()).unwrap_or(u64::MAX),
@@ -2072,5 +2187,66 @@ mod tests {
             }
         }
         0
+    }
+
+    /// An incremental save into an xref-stream document must emit an xref
+    /// STREAM, matching the source flavour (23-EDIT-MODEL-SPEC.md §6 step 4).
+    #[test]
+    fn incremental_update_matches_xref_stream_flavour() {
+        // Minimal PDF 1.5 with an xref stream (2 objects + xref stream = obj 3).
+        let mut out = String::from("%PDF-1.5\n");
+        let off1 = out.len() as u64;
+        out.push_str("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+        let off2 = out.len() as u64;
+        out.push_str("2 0 obj\n<< /Type /Pages /Kids [] /Count 0 >>\nendobj\n");
+        let xref_off = out.len() as u64;
+        // /W [1 2 1]: entry 0 free, entries 1/2 in use at their offsets, entry 3
+        // is the xref stream itself at xref_off.
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&[0, 0, 0, 0]);
+        for off in [off1, off2, xref_off] {
+            payload.push(1);
+            payload.push(u8::try_from(off >> 8).unwrap_or(0));
+            payload.push(u8::try_from(off & 0xff).unwrap_or(0));
+            payload.push(0);
+        }
+        let ph: Vec<String> = payload.iter().map(|b| format!("{b:02x}")).collect();
+        out.push_str(&format!(
+            "3 0 obj\n<< /Type /XRef /Size 4 /Root 1 0 R /W [1 2 1] /Length {} >>\nstream\n",
+            payload.len()
+        ));
+        out.push_str(&ph.join(""));
+        out.push_str("\nendstream\nendobj\n");
+        out.push_str(&format!("startxref\n{xref_off}\n%%EOF\n"));
+        let src = out.into_bytes();
+
+        assert!(crate::xref::newest_xref_is_stream(&src, xref_off));
+
+        let budget = Budget::unlimited();
+        let mut g = budget.guard();
+        let changes: Vec<(u32, Option<Obj>)> = vec![(
+            2,
+            Some(Obj::Dict(vec![
+                (bytes(b"Type"), Obj::Name(bytes(b"Pages"))),
+                (bytes(b"Kids"), Obj::Array(vec![])),
+                (bytes(b"Count"), Obj::Int(0)),
+                (bytes(b"Note"), Obj::Name(bytes(b"Edited"))),
+            ])),
+        )];
+        let trailer = vec![(b"Root".to_vec(), Obj::Ref(crate::Ref::new(1, 0)))];
+        let updated = write_incremental_update_full(&src, &changes, &trailer, &budget, &mut g)
+            .expect("incremental stream save");
+        assert!(updated.len() > src.len());
+        assert!(updated[..src.len()] == src, "prefix preserved");
+
+        // The appended section carries a /Type /XRef stream object.
+        let appended = String::from_utf8_lossy(&updated[src.len()..]);
+        assert!(appended.contains("/Type /XRef"), "appended an xref stream");
+        assert!(appended.contains("/W "), "xref stream /W present");
+
+        // It still parses with every object resolving.
+        let sx = crate::xref::find_startxref(&updated, 4096).expect("startxref");
+        let doc = crate::parse_revisions(&updated, sx, &budget, &mut g).expect("reparse");
+        assert!(doc.len() >= 2, "appended revision present");
     }
 }

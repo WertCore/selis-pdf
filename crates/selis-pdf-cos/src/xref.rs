@@ -341,6 +341,22 @@ fn parse_xref_stream_revision(
 ///
 /// # Malformed Input
 ///
+/// Whether the newest cross-reference section at `cursor` is an xref STREAM
+/// (`/Type /XRef`) rather than a classic table. An incremental writer must
+/// emit the same flavour it appends to (23-EDIT-MODEL-SPEC.md §6 step 4).
+#[must_use]
+pub fn newest_xref_is_stream(src: &[u8], cursor: u64) -> bool {
+    let pos = usize::try_from(cursor).unwrap_or(usize::MAX);
+    let p = skip_ws(src, pos);
+    if src.get(p..p.saturating_add(4)) == Some(b"xref") {
+        return false;
+    }
+    // A stream revision starts with an object header (`N 0 obj`).
+    src.get(p).is_some_and(|&b| b.is_ascii_digit()) && looks_like_object_header(src, p)
+}
+
+/// Find the byte offset of the last `startxref` keyword in the file's tail.
+///
 /// `None` means the tail does not contain a `startxref` keyword — a file the
 /// classic-trailer path cannot open (the damaged-file reconstruction in
 /// SL-1.COS.06 is the fallback).
