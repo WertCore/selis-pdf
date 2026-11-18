@@ -47,6 +47,11 @@ budget = 800000
 # to 142 546 B brotli. Every byte is the fidelity work itself behind the HTML
 # and Markdown format codes, not a new dependency; the baseline moves with it
 # and the 2% rule gates the next slice.
+# JPEG (verbatim DCTDecode) then PNG/FlateDecode data-URI embedding plus narrow
+# inline `background-image` carried the chunk to 159 774 B brotli (+14.4 KB,
+# +9.94%). The PNG path pulls in the project's existing image decoder and flate
+# encoder — real fidelity work behind the HTML/Markdown format codes, not a new
+# dependency class. The baseline moves with it; still 440 KB under the ceiling.
 [[budget]]
 chunk = "convert"
 artifact = "selis_pdf_wasm_convert"
@@ -111,11 +116,17 @@ budget = 900000
 # multi-select /AP /N with stacked labels, per-field /DR font resolution and
 # exact standard-14 metrics for quadding — a measured +3.1 KB to 482 773 B,
 # over the 480 000 ceiling. The budget moves one 20 KB step to 500 000 rather
-# than shipping a half-synthesised choice field. STRUCTURAL NOTE: three rounds
-# of parity work have carried this chunk from 420 KB to 483 KB; the right next
-# investment is a dedicated lazy chunk for the heavy edit/optimise operations
-# (font subset, linearise, form fidelity) rather than another budget step.
-# The 2% rule still gates every later slice.
+# than shipping a half-synthesised choice field.
+# The form-details slice (editable multi-select with unmatched typed value,
+# dict-valued /DR fonts, WinAnsi metrics) added +870 B to 483 643 B. The
+# optional linearisation hint tables (outline /O, named-dest /A, thumbnail /T,
+# page-label /E) then added a further +11.3 KB to 494 896 B brotli — all behind
+# the linearize op and the fill-forms checkbox, exercised only when those
+# document structures exist. The baseline moves with both; the 2% rule gates
+# the next slice. STRUCTURAL NOTE: parity work has carried this chunk from
+# 420 KB to 495 KB with only ~5 KB of headroom left. The right next investment
+# is a dedicated lazy chunk for the heavy edit/optimise operations (font
+# subset, linearise, form fidelity) rather than another budget step.
 [[budget]]
 chunk = "tools"
 artifact = "selis_pdf_wasm_tools"

@@ -1,7 +1,7 @@
 {
   "selis_pdf_wasm": 1289722,
   "selis_pdf_wasm_cjk": 5000,
-  "selis_pdf_wasm_convert": 145333,
+  "selis_pdf_wasm_convert": 159774,
   "selis_pdf_wasm_editor": 4988,
   "selis_pdf_wasm_html": 231760,
   "selis_pdf_wasm_jpx": 5008,
@@ -10,6 +10,6 @@
   "selis_pdf_wasm_security": 144388,
   "selis_pdf_wasm_sign": 220763,
   "selis_pdf_wasm_text": 320795,
-  "selis_pdf_wasm_tools": 482773,
+  "selis_pdf_wasm_tools": 494896,
   "xtask": 188344
 }
