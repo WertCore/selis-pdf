@@ -32,7 +32,9 @@ pub mod font_subset;
 pub mod linearize;
 
 pub use font_subset::{subset_fonts, SubsetError, SubsetReport};
-pub use linearize::{write_linearized, LinearizeError, LinearizeInput};
+pub use linearize::{
+    write_linearized, write_linearized_with_mode, LinearizeError, LinearizeInput, LinearizeMode,
+};
 
 use selis_bytes::Bytes;
 use selis_pdf_cos::Obj;

@@ -8,6 +8,11 @@
 //!
 //! Encrypted documents are refused — removing encryption is the separate
 //! unlock operation, never a side effect of linearisation.
+//!
+//! The cross-reference encoding is selectable: [`linearize_file`] keeps the
+//! classic PDF 1.4 xref tables (the compatibility default), while
+//! [`linearize_file_with_mode`] can emit PDF 1.5 `/Type /XRef` streams and
+//! `/ObjStm` object streams with the same hint tables.
 
 use selis_pdf_cos::copy::{collect_objects, resolve_ref};
 use selis_pdf_cos::{Obj, Ref};
@@ -40,7 +45,7 @@ pub struct LinearizeReport {
 /// [`crate::ToolError`] when the input cannot be read, is encrypted, has no
 /// usable page tree, or the rewritten output fails re-opening / verification.
 pub fn linearize(path: &str, output: &str) -> CliResult<(LinearizeReport, Verification)> {
-    let (report, verification) = linearize_file(path, output)?;
+    let (report, verification) = linearize_file_with_mode(path, output, Default::default())?;
     eprintln!(
         "linearized {path}: {in} -> {out} bytes, {objects} objects, /L {declared}, /N {pages} -> {output}",
         in = report.in_bytes,
@@ -60,6 +65,25 @@ pub fn linearize(path: &str, output: &str) -> CliResult<(LinearizeReport, Verifi
 ///
 /// As [`linearize`].
 pub fn linearize_file(path: &str, output: &str) -> CliResult<(LinearizeReport, Verification)> {
+    linearize_file_with_mode(path, output, Default::default())
+}
+
+/// As [`linearize_file`], with an explicit cross-reference encoding mode.
+///
+/// `Classic` keeps the PDF 1.4 `xref` tables used by every previous release.
+/// `Compressed` writes both xref sections as `/Type /XRef` streams and packs
+/// eligible non-stream objects into `/ObjStm` streams, while keeping the same
+/// Annex F hint tables and `/Linearized` dictionary.
+///
+/// # Errors
+///
+/// As [`linearize_file`]; the compressed mode also refuses (with a typed
+/// error) a graph it cannot legally lay out in object streams.
+pub fn linearize_file_with_mode(
+    path: &str,
+    output: &str,
+    mode: selis_pdf_optimize::LinearizeMode,
+) -> CliResult<(LinearizeReport, Verification)> {
     let src = read_file(path)?;
     let in_bytes = src.len();
     let budget = Budget::unlimited();
@@ -145,7 +169,7 @@ pub fn linearize_file(path: &str, output: &str) -> CliResult<(LinearizeReport, V
         trailer_extra: &trailer_extra,
         page_count,
     };
-    let bytes = selis_pdf_optimize::write_linearized(&input, &budget, &mut g)
+    let bytes = selis_pdf_optimize::write_linearized_with_mode(&input, &budget, &mut g, mode)
         .map_err(|e| CliError(format!("{path}: linearize: {e}")))?;
     let (declared_length, declared_pages) = read_lin_header(&bytes, &budget, &mut g)
         .map_err(|e| CliError(format!("{path}: output lin dictionary: {e}")))?;
@@ -439,6 +463,127 @@ mod tests {
         assert!(contents[0].contains("PAGE-ONE"));
         assert!(contents[1].contains("PAGE-TWO"));
         assert!(contents[2].contains("PAGE-THREE"));
+    }
+
+    /// A two-page PDF whose resource dictionaries and annotations are
+    /// non-stream objects, so the compressed mode actually builds /ObjStm.
+    fn resource_pdf() -> Vec<u8> {
+        fn nm(s: &[u8]) -> selis_bytes::Bytes {
+            selis_bytes::Bytes::copy_from_slice(s)
+        }
+        let budget = Budget::unlimited();
+        let mut g = budget.guard();
+        let mut b = selis_pdf_cos::doc_writer::DocumentBuilder::new();
+        let res = b.allocate();
+        let font = b.allocate();
+        let annot1 = b.allocate();
+        let annot2 = b.allocate();
+        b.add_object(
+            res,
+            Obj::Dict(vec![(
+                nm(b"Font"),
+                Obj::Dict(vec![(
+                    nm(b"F1"),
+                    Obj::Ref(selis_pdf_cos::Ref::new(font, 0)),
+                )]),
+            )]),
+        );
+        b.add_object(
+            font,
+            Obj::Dict(vec![
+                (nm(b"Type"), Obj::Name(nm(b"Font"))),
+                (nm(b"Subtype"), Obj::Name(nm(b"Type1"))),
+            ]),
+        );
+        let annotation = || {
+            Obj::Dict(vec![
+                (nm(b"Type"), Obj::Name(nm(b"Annot"))),
+                (nm(b"Subtype"), Obj::Name(nm(b"Text"))),
+                (
+                    nm(b"Rect"),
+                    Obj::Array(vec![Obj::Int(1), Obj::Int(2), Obj::Int(3), Obj::Int(4)]),
+                ),
+            ])
+        };
+        b.add_object(annot1, annotation());
+        b.add_object(annot2, annotation());
+        for (tag, annot) in [
+            (b"PAGE-ONE".as_slice(), annot1),
+            (b"PAGE-TWO".as_slice(), annot2),
+        ] {
+            let content = b.allocate();
+            b.add_object(
+                content,
+                Obj::Stream {
+                    dict: vec![],
+                    data: nm(format!("BT ({}) Tj ET\n", String::from_utf8_lossy(tag)).as_bytes()),
+                },
+            );
+            b.add_page_with_extra(
+                200.0,
+                300.0,
+                &[selis_pdf_cos::Ref::new(content, 0)],
+                Some(selis_pdf_cos::Ref::new(res, 0)),
+                vec![(
+                    b"Annots".to_vec(),
+                    Obj::Array(vec![Obj::Ref(selis_pdf_cos::Ref::new(annot, 0))]),
+                )],
+            );
+        }
+        b.write(&budget, &mut g).expect("write fixture")
+    }
+
+    #[test]
+    fn compressed_mode_linearizes_and_reopens_with_all_objects() {
+        let dir = temp_dir("compressed");
+        let input = dir.join("in.pdf");
+        let output = dir.join("out.pdf");
+        std::fs::write(&input, resource_pdf()).expect("write input");
+
+        let (report, verification) = linearize_file_with_mode(
+            input.to_str().unwrap(),
+            output.to_str().unwrap(),
+            crate::LinearizeMode::Compressed,
+        )
+        .expect("linearize");
+        assert_eq!(
+            verification.verdict, "ok",
+            "write gate preserved all structures"
+        );
+        assert_eq!(report.declared_pages, 2);
+        assert_eq!(report.declared_length, report.out_bytes as u64);
+
+        let out = std::fs::read(&output).expect("read output");
+        let text = String::from_utf8_lossy(&out);
+        assert_eq!(text.matches("/Type /XRef").count(), 2, "two xref streams");
+        assert!(text.contains("/ObjStm"), "resources and annotations packed");
+        assert!(
+            text.matches("/Root ").count() >= 2,
+            "both xref streams carry /Root"
+        );
+        assert!(
+            text.contains(&format!("/L {}", out.len())),
+            "/L matches real length"
+        );
+
+        let budget = Budget::unlimited();
+        let mut g = budget.guard();
+        let sx = selis_pdf_cos::xref::find_startxref(&out, 4096).expect("startxref");
+        let doc = selis_pdf_cos::parse_revisions(&out, sx, &budget, &mut g).expect("reopen");
+        assert_eq!(doc.revisions().len(), 2);
+        let pages = crate::tools::page_refs_of(&out, &doc, &budget, &mut g).expect("pages");
+        assert_eq!(pages.len(), 2, "both pages survive");
+        let contents: Vec<String> = pages
+            .iter()
+            .map(|p| {
+                String::from_utf8_lossy(
+                    &page_content(&out, &doc, *p, &budget, &mut g).expect("content"),
+                )
+                .to_string()
+            })
+            .collect();
+        assert!(contents[0].contains("PAGE-ONE"));
+        assert!(contents[1].contains("PAGE-TWO"));
     }
 
     #[test]

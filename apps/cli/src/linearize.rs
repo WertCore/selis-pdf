@@ -32,8 +32,13 @@ use crate::{CliError, CliResult};
 /// The tool op parses and refuses an encrypted document or a broken page tree
 /// with a typed error and writes nothing; malformed input never reaches this
 /// wrapper as a committed file.
-pub(crate) fn run(path: &str, output: &str) -> CliResult<Verification> {
+pub(crate) fn run(path: &str, output: &str, xref_streams: bool) -> CliResult<Verification> {
+    let mode = if xref_streams {
+        selis_pdf_tools::LinearizeMode::Compressed
+    } else {
+        selis_pdf_tools::LinearizeMode::Classic
+    };
     let (_report, verification) =
-        selis_pdf_tools::linearize(path, output).map_err(CliError::from)?;
+        selis_pdf_tools::linearize_file_with_mode(path, output, mode).map_err(CliError::from)?;
     Ok(verification)
 }
