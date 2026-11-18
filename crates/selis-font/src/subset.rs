@@ -3,9 +3,10 @@
 //! Subsets a TrueType font to a glyph set, transitively including the
 //! components of composite glyphs, serialises a valid new SFNT font, and
 //! **merges new glyphs into an existing subset** — the ADR-P0024 editing
-//! path. CFF fonts are **refused** (`Ok(None)` here; a typed
-//! `SubsetError::UnsupportedFont` in `selis-pdf-optimize`) — never silently
-//! passed through. See [CFF subsetting feasibility](#cff-subsetting-feasibility-sl-3font11-follow-up).
+//! path. CFF fonts (`/FontFile3`, both Type1C and CIDFontType0C) are subset
+//! by [`crate::cff_subset`]; the shared entry points dispatch on the table
+//! directory. A CFF this writer cannot faithfully rewrite produces a typed
+//! [`crate::cff_subset::CffError`] — never a partial or passthrough font.
 //!
 //! The output font uses:
 //! * `loca` long format (indexToLocFormat = 1) — always correct, no format
@@ -14,107 +15,14 @@
 //!   subsets;
 //! * checksum adjustment per the TrueType/OpenType spec (§14 — the whole
 //!   file's sum plus the head table's `checksumAdjustment` field zeroes out).
+//! # CFF subsetting (SL-3.FONT.11)
 //!
-//! # CFF subsetting feasibility (SL-3.FONT.11 follow-up)
-//!
-//! This is an honest scope note, written so the next attempt starts from the
-//! real problem instead of a shortcut that drops glyphs or emits an
-//! unparseable font. No CFF subsetter ships today. The refusal is deliberate:
-//! a correct one is a net-new binary writer plus a Type 2 charstring engine,
-//! and this crate currently owns neither.
-//!
-//! ## What a correct CFF subsetter must do
-//!
-//! For a **name-keyed, non-CID** CFF (`CFF ` table used as `/FontFile3
-//! /Subtype /Type1C`) the full pipeline is:
-//!
-//! 1. **Parse** the CFF program: header, Name INDEX, Top DICT INDEX, String
-//!    INDEX, Global Subr INDEX, charset, Encoding, CharStrings INDEX, Private
-//!    DICT and its local Subrs. For CID-keyed CFF also FDArray, FDSelect and
-//!    the ROS (registry/ordering/supplement).
-//! 2. **Close over used glyphs**: the caller's kept GIDs plus glyph 0
-//!    (`.notdef`), then the transitive closure of every *other* glyph a kept
-//!    charstring can reach. Two reachability edges exist and both are easy to
-//!    miss: a Type 2 `endchar` carrying four operands is `seac`, naming a base
-//!    and an accent glyph that must also be kept; and `callsubr` (op 10) /
-//!    `callgsubr` (op 29) reach local and global subrs, which may themselves
-//!    call further subrs (recursive graph, cycles possible).
-//! 3. **Re-encode each kept charstring**, rewriting every `callsubr` /
-//!    `callgsubr` operand from its old subr index to the new one. The operand
-//!    is *biased*: the number in the charstring is `subr_index - bias`, with
-//!    bias 107 (n < 1240), 1131 (1240 <= n < 33900) or 32768 otherwise. The
-//!    bias depends on the new subr count, so it changes when subrs are
-//!    dropped. Type 2 numbers are self-delimiting, so widening/narrowing an
-//!    operand is byte-safe, but the stem-derived `hintmask` / `cntrmask`
-//!    operand is a nibble-aligned bitmap whose byte boundary must stay exact.
-//! 4. **Rebuild the subr INDEXes** (local per FD, plus global) with the new
-//!    numbering and recompute every caller's bias.
-//! 5. **Rebuild the charset** for the kept GIDs only, preserving glyph *names*
-//!    for name-keyed CFF — the PDF simple-font `/Encoding` / `/Differences`
-//!    path resolves names, so a renumbered-but-unnamed charset silently breaks
-//!    text. (CID-keyed needs format 0 over the kept CIDs.)
-//! 6. **Rewrite the DICTs** (Top, Private, one per FD): `CharStrings`,
-//!    `charset`, `Encoding`, `Private`, `Subrs`, `FDArray`, `FDSelect`
-//!    offsets are all CFF-absolute; DICT INTEGER operands are variable-length,
-//!    so removing bytes can change an offset's encoded width. This needs a
-//!    two-pass/fixpoint assembler, not a single splice.
-//! 7. **Reassemble the enclosing sfnt** `CFF ` table (or the bare `/FontFile3`
-//!    program) with a correct table directory, lengths and checksums.
-//! 8. **Rewrite the PDF side**: the `/FontFile3` stream and `/Length1`, and
-//!    for CID-keyed `/CIDFontType0C` the `/W` widths and any `/CIDToGIDMap`.
-//!
-//! ## Primitives that exist vs. those that are missing
-//!
-//! Present: `skrifa::raw::ps::cff` (read-fonts 0.44, via skrifa 0.47) exposes read-only
-//! `index::Index`, `charset::Charset`, `dict::Entry`, `fd_select`, `encoding`,
-//! `stack`, `v1::Cff` and `CffFontRef`/`Subfont` with `charstrings()`,
-//! `global_subrs()` and `evaluate_charstring()`; [`crate::outline`] already
-//! renders CFF and CID-keyed CFF outlines (§FONT.04). The sfnt assembly and
-//! checksum helpers in this module (`assemble_sfnt`, `patch_checksum`) are
-//! reusable once a new `CFF ` table is produced. The COS-side code walk,
-//! stream decode/re-encode and `WouldGrow` gate in `selis-pdf-optimize` are
-//! reusable for the `/FontFile3` rewrite.
-//!
-//! Missing: there is **no** CFF/INDEX/DICT/charset serializer in the workspace
-//! (`Cargo.lock` contains `read-fonts` and `skrifa` but no `write-fonts`, and
-//! read-fonts exposes no write API); **no** Type 2 charstring parser/encoder
-//! that can splice subr operands while preserving hintmask alignment
-//! (`evaluate_charstring` interprets but cannot re-emit); **no** subr
-//! call-graph closure / bias-recomputation utility; **no** `seac` closure;
-//! and **no** subr-bearing test fixtures — `tests/fixtures/cff.otf` (788 B)
-//! and `cff-cid.otf` (616 B) are trivial hand-built fonts, so passing them
-//! would not exercise the hardest part of the algorithm.
-//!
-//! ## Concrete implementation plan
-//!
-//! 0. Add subr-bearing fixtures: a name-keyed OTF with local + global subrs,
-//!    nested `callsubr`/`callgsubr`, a `seac` glyph and hint masks; and a
-//!    CID-keyed OTF with two FDArray entries and a non-trivial FDSelect.
-//! 1. Wrap the read-fonts raw CFF APIs in a validating reader for the common
-//!    name-keyed shape (already possible with the current dependency).
-//! 2. Implement a Type 2 charstring operand scanner/writer; assert byte-exact
-//!    round-trips for charstrings with no subr calls before rewriting any.
-//! 3. Implement subr call-graph closure, renumbering and bias recomputation;
-//!    verify re-evaluated outlines match the source for every kept GID.
-//! 4. Implement charset rebuild, two-pass DICT offset fixpoint, INDEX and sfnt
-//!    assembly; verify the output reopens in `FontRef` with the expected
-//!    glyph count, names and advances.
-//! 5. Mirror the TrueType COS orchestration for `/FontFile3` (stream,
-//!    `/Length1`, `/W`); verify pixel-identical rendering against the source
-//!    through the engine's raster path — the same evidence the TrueType
-//!    subsetter ships.
-//! 6. Ship the non-CID path first; keep CID-keyed CFF (`/CIDFontType0C`) as an
-//!    explicit typed refusal until step 5 passes for it too.
-//!
-//! Why this is not done here: steps 2-5 are a multi-thousand-line subsystem
-//! with no existing primitive to lean on, and adding a CFF writer dependency
-//! would be a new supply-chain-vetted crate (ADR-P0021) landing in wasm chunks
-//! that are already near their ceilings. Without the step-0 fixtures and the
-//! step-5 render harness, any implementation shipped now could not be proven
-//! not to corrupt glyphs — exactly the destructive partial output this work
-//! forbids. The fail-loud refusal is therefore kept, and a regression test
-//! proves the low-level entry point returns `None` (never the input bytes) for
-//! a CFF font.
+//! CFF subsetting is implemented in [`crate::cff_subset`]: a validating CFF
+//! reader, a Type 2 charstring operand scanner/writer with subr-call closure
+//! and bias recomputation, a charset / FDSelect / FDArray rebuild, a two-pass
+//! DICT offset fixpoint, and sfnt reassembly. `seac`, subroutine cycles,
+//! ambiguous hint-mask states and non-convergent offsets are typed refusals —
+//! the writer never emits a partial font.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -151,10 +59,42 @@ pub struct SubsetResult {
     pub gid_map: BTreeMap<u16, u16>,
 }
 
-/// Subset a TrueType font to the glyphs in `keep`, transitively including
-/// composite components.
+/// Whether `data` is a CFF program (bare or in an sfnt `CFF ` table).
+fn is_cff(data: &Bytes) -> bool {
+    if crate::cff_subset::looks_like_cff(data.as_slice()) {
+        return true;
+    }
+    crate::contain(|| {
+        let font = FontRef::new(data.as_slice()).ok()?;
+        Some(
+            font.table_data(Tag::new(b"glyf")).is_none()
+                && font.table_data(Tag::new(b"CFF ")).is_some(),
+        )
+    })
+    .flatten()
+    .unwrap_or(false)
+}
+
+/// Convert a typed CFF refusal into the crate's single error taxonomy.
+fn cff_error(error: crate::cff_subset::CffError) -> selis_error::Error {
+    match error {
+        crate::cff_subset::CffError::Budget => {
+            selis_error::err!(selis_error::Code::BudgetBytes, during = "cff-subset")
+        }
+        other => selis_error::err!(
+            selis_error::Code::ShapeFont,
+            during = "cff-subset",
+            detail = format!("{other}")
+        ),
+    }
+}
+
+/// Subset a TrueType or CFF font to the glyphs in `keep`.
 ///
-/// Returns `None` for a broken font (deviation) or for CFF fonts (deferred).
+/// TrueType glyphs transitively include composite components; CFF glyphs go
+/// through [`crate::cff_subset`] and keep their subroutines and glyph names.
+///
+/// Returns `None` only for a broken font (a deviation).
 ///
 /// # Budget
 ///
@@ -163,7 +103,8 @@ pub struct SubsetResult {
 ///
 /// # Malformed Input
 ///
-/// `BUDGET_BYTES` when exhausted. A broken font → `Ok(None)`.
+/// `BUDGET_BYTES` when exhausted. A broken font → `Ok(None)`; a CFF that cannot
+/// be faithfully rewritten → `SHAPE_FONT` with the typed reason in `/Detail`.
 pub fn subset_ttf(data: &Bytes, keep: &GlyphSet, g: &mut BudgetGuard<'_>) -> Result<Option<Bytes>> {
     subset_ttf_named(data, keep, None, g)
 }
@@ -181,12 +122,16 @@ pub fn subset_ttf(data: &Bytes, keep: &GlyphSet, g: &mut BudgetGuard<'_>) -> Res
 ///
 /// # Malformed Input
 ///
-/// `BUDGET_BYTES` when exhausted. A broken font or CFF font → `Ok(None)`.
+/// `BUDGET_BYTES` when exhausted. A broken font → `Ok(None)`; a CFF that cannot
+/// be faithfully rewritten → `SHAPE_FONT`.
 pub fn subset_ttf_with_map(
     data: &Bytes,
     keep: &GlyphSet,
     g: &mut BudgetGuard<'_>,
 ) -> Result<Option<SubsetResult>> {
+    if is_cff(data) {
+        return crate::cff_subset::subset_cff(data, keep, g).map_err(cff_error);
+    }
     Ok(subset_impl(data, keep, None, g)?.map(|(font, gid_map)| SubsetResult { font, gid_map }))
 }
 
@@ -321,6 +266,14 @@ pub fn subset_ttf_named(
     name: Option<SubsetName>,
     g: &mut BudgetGuard<'_>,
 ) -> Result<Option<Bytes>> {
+    if is_cff(data) {
+        // CFF subsets keep the source font's `name` strings: the CFF charset
+        // and the PDF /Encoding resolve glyph names, so renaming the sfnt
+        // `name` table is both unnecessary and out of scope here.
+        return Ok(crate::cff_subset::subset_cff(data, keep, g)
+            .map_err(cff_error)?
+            .map(|result| result.font));
+    }
     Ok(subset_impl(data, keep, name, g)?.map(|(font, _)| font))
 }
 
@@ -942,7 +895,7 @@ fn build_cmap_format12(font: &FontRef<'_>, keep: &[u16], renumber: &BTreeMap<u16
     build_cmap_format12_from_map(&code_to_new)
 }
 
-fn build_cmap_format12_from_map(code_to_new: &BTreeMap<u32, u16>) -> Vec<u8> {
+pub(crate) fn build_cmap_format12_from_map(code_to_new: &BTreeMap<u32, u16>) -> Vec<u8> {
     let mut groups: Vec<[u32; 3]> = Vec::new(); // [start, end, start_gid]
     let mut iter = code_to_new.iter();
     if let Some((&code, &gid)) = iter.next() {
@@ -1031,7 +984,7 @@ fn assemble_sfnt(tables: &[(&str, &[u8])], g: &mut BudgetGuard<'_>) -> Result<Ve
 }
 
 /// Compute the checksumAdjustment and patch it into the head table.
-fn patch_checksum(output: &[u8]) -> Vec<u8> {
+pub(crate) fn patch_checksum(output: &[u8]) -> Vec<u8> {
     let mut patched = output.to_vec();
     let num_tables = read_u16(output, 4);
     let mut head_offset = 0u32;
@@ -1190,34 +1143,39 @@ mod tests {
             .is_none());
     }
 
-    /// A CFF (`CFF ` table, §FONT.04) font must be **refused**, never silently
-    /// passed through: both the plain and the map-reporting entry points
-    /// return `None` rather than the input bytes or a partial subset. This is
-    /// the low-level half of the fail-loud contract the COS layer turns into
-    /// `SubsetError::UnsupportedFont` (see the orchestrator's
-    /// `a_cff_program_is_refused_loudly` test).
+    /// Both CFF fixtures are now actually subset by the shared entry points:
+    /// neither returns the input bytes nor `None`. This is the low-level half
+    /// of the no-passthrough contract the COS layer turns into a stream rewrite.
     #[test]
-    fn cff_font_is_refused_without_passthrough() {
+    fn cff_fonts_are_subset_by_the_shared_entry_points() {
         let mut g = guard();
         for fixture in [
             &include_bytes!("../tests/fixtures/cff.otf")[..],
             &include_bytes!("../tests/fixtures/cff-cid.otf")[..],
+            &include_bytes!("../tests/fixtures/cff-subr.otf")[..],
+            &include_bytes!("../tests/fixtures/cff-cid-subr.otf")[..],
         ] {
             let data = Bytes::copy_from_slice(fixture);
-            // Sanity: the fixture really is a CFF font (no `glyf` table), so
-            // the assertion below is about CFF refusal, not a broken font.
             let parsed = FontRef::new(data.as_slice()).expect("CFF fixture parses");
             assert!(parsed.table_data(Tag::new(b"glyf")).is_none());
             assert!(parsed.table_data(Tag::new(b"CFF ")).is_some());
 
             let keep = GlyphSet { keep: vec![1] };
-            let out = subset_ttf(&data, &keep, &mut g).expect("subset");
-            assert!(out.is_none(), "CFF must not be silently passed through");
-            let with_map = subset_ttf_with_map(&data, &keep, &mut g).expect("subset");
+            let out = subset_ttf(&data, &keep, &mut g)
+                .expect("subset")
+                .expect("CFF font");
             assert!(
-                with_map.is_none(),
-                "CFF must not be silently passed through (map entry point)"
+                out.len() < data.len(),
+                "subset {}.len < {}.len",
+                out.len(),
+                data.len()
             );
+            let with_map = subset_ttf_with_map(&data, &keep, &mut g)
+                .expect("subset")
+                .expect("CFF font");
+            assert!(with_map.font.len() < data.len());
+            assert!(with_map.gid_map.contains_key(&0));
+            assert!(with_map.gid_map.contains_key(&1));
         }
     }
 

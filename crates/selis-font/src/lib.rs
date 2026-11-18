@@ -29,6 +29,7 @@ pub(crate) fn contain<T>(f: impl FnOnce() -> T) -> Option<T> {
 }
 
 pub mod agl;
+pub mod cff_subset;
 pub mod cid;
 pub mod cjk;
 pub mod cmap;
@@ -50,6 +51,7 @@ pub mod width;
 
 pub use agl::{glyph_to_unicode, AglEntry, AGL};
 
+pub use cff_subset::{subset_cff, CffError};
 pub use cid::{map_cid, resolve_cid_widths, CidToGid, CidWidthEntry, CidWidths};
 pub use cjk::build::{
     build_set, source_codepoints, CjkBuiltChunk, CjkSetBuild, CORE_SAMPLE_HANZI, SELIS_CJK_NAME,
