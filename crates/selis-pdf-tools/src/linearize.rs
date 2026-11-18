@@ -14,6 +14,8 @@
 //! [`linearize_file_with_mode`] can emit PDF 1.5 `/Type /XRef` streams and
 //! `/ObjStm` object streams with the same hint tables.
 
+use std::collections::HashMap;
+
 use selis_pdf_cos::copy::{collect_objects, resolve_ref};
 use selis_pdf_cos::{Obj, Ref};
 use selis_sandbox::{Budget, BudgetGuard};
@@ -134,11 +136,18 @@ pub fn linearize_file_with_mode(
         roots.push(info);
     }
     let mut next_num = 2u32;
-    let (objects, remap) = collect_objects(&src, &roots, &mut next_num, &budget, &mut g)
+    let (mut objects, remap) = collect_objects(&src, &roots, &mut next_num, &budget, &mut g)
         .map_err(|e| CliError(format!("{path}: collect: {e}")))?;
     if objects.is_empty() {
         return Err(CliError(format!("{path}: no reachable objects")));
     }
+
+    // Materialise inherited /Resources on every page. PDF readers (and
+    // `qpdf --check-linearization`) warn when a page has no effective resource
+    // dictionary; qpdf's own linearizer pushes the inherited value down. We
+    // do the same so a clean output stays clean under either checker.
+    materialize_page_resources(&mut objects, &src, &doc, &remap, &budget, &mut g)
+        .map_err(|e| CliError(format!("{path}: page resources: {e}")))?;
 
     let new_root_num = remap.get(&root.num).copied().unwrap_or(root.num);
     let new_root = Ref::new(new_root_num, 0);
@@ -210,6 +219,134 @@ pub fn linearize_file_with_mode(
         u64::try_from(bytes.len()).unwrap_or(u64::MAX),
     );
     Ok((report, verification))
+}
+
+/// Push inherited `/Resources` down to every leaf page in the *collected*
+/// object graph. A page with no effective resource dictionary is valid PDF,
+/// but readers repair it on the fly (qpdf prints "Resources is missing or
+/// invalid; repairing") which also makes `qpdf --check-linearization` exit 3.
+/// The writer only needs the page dictionaries to carry a usable value; an
+/// empty dictionary is what qpdf's own linearizer writes when none is
+/// inherited.
+///
+/// # Budget
+///
+/// Walks the existing page tree (depth capped at 32) and clones at most one
+/// already-collected resource value per page; no new objects are created
+/// except an empty dictionary when a page has no effective resources.
+///
+/// # Malformed Input
+///
+/// A page tree deeper than 32 levels is refused with a typed tool error;
+/// missing or malformed keys are treated as "no inherited resources" and
+/// repaired with an empty dictionary rather than guessed at.
+fn materialize_page_resources(
+    objects: &mut [(u32, Obj)],
+    src: &[u8],
+    doc: &selis_pdf_cos::Doc,
+    remap: &HashMap<u32, u32>,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<(), String> {
+    /// Walk `/Root -> /Pages -> /Kids`, carrying the nearest inherited
+    /// `/Resources` value (in *source* numbering) and patching leaf pages.
+    fn walk(
+        node: Ref,
+        inherited: Option<Obj>,
+        depth: usize,
+        src: &[u8],
+        doc: &selis_pdf_cos::Doc,
+        remap: &HashMap<u32, u32>,
+        objects: &mut [(u32, Obj)],
+        budget: &Budget,
+        g: &mut BudgetGuard<'_>,
+    ) -> Result<(), String> {
+        if depth > 32 {
+            return Err("page tree too deep".to_string());
+        }
+        let obj = resolve_ref(src, doc, node, budget, g).map_err(|e| e.to_string())?;
+        let pairs = match &obj {
+            Obj::Dict(pairs) => pairs,
+            _ => return Ok(()),
+        };
+        let is_leaf = pairs
+            .iter()
+            .find(|(k, _)| k.as_slice() == b"Type")
+            .and_then(|(_, v)| match v {
+                Obj::Name(n) => Some(n.as_slice() == b"Page"),
+                _ => None,
+            })
+            .unwrap_or(false);
+        let here = pairs
+            .iter()
+            .find(|(k, _)| k.as_slice() == b"Resources")
+            .map(|(_, v)| v.clone());
+        let effective = here.or(inherited);
+        if is_leaf {
+            let new_num = remap.get(&node.num).copied().unwrap_or(node.num);
+            if let Some((_, Obj::Dict(pairs))) = objects.iter_mut().find(|(n, _)| *n == new_num) {
+                if !pairs.iter().any(|(k, _)| k.as_slice() == b"Resources") {
+                    let value = match effective {
+                        Some(v) => selis_pdf_cos::copy::renumber(v, remap),
+                        None => Obj::Dict(Vec::new()),
+                    };
+                    pairs.push((b"Resources".to_vec().into(), value));
+                }
+            }
+            return Ok(());
+        }
+        // An interior node: recurse into /Kids with the inherited resources.
+        let kids: Vec<Ref> = pairs
+            .iter()
+            .find(|(k, _)| k.as_slice() == b"Kids")
+            .and_then(|(_, v)| match v {
+                Obj::Array(items) => Some(
+                    items
+                        .iter()
+                        .filter_map(|i| match i {
+                            Obj::Ref(r) => Some(*r),
+                            _ => None,
+                        })
+                        .collect(),
+                ),
+                _ => None,
+            })
+            .unwrap_or_default();
+        for kid in kids {
+            walk(
+                kid,
+                effective.clone(),
+                depth.saturating_add(1),
+                src,
+                doc,
+                remap,
+                objects,
+                budget,
+                g,
+            )?;
+        }
+        Ok(())
+    }
+
+    let pages_ref = doc
+        .revisions()
+        .last()
+        .and_then(|rev| rev.root)
+        .and_then(|r| resolve_ref(src, doc, r, budget, g).ok())
+        .and_then(|catalog| match catalog {
+            Obj::Dict(pairs) => pairs
+                .iter()
+                .find(|(k, _)| k.as_slice() == b"Pages")
+                .and_then(|(_, v)| match v {
+                    Obj::Ref(r) => Some(*r),
+                    _ => None,
+                }),
+            _ => None,
+        });
+    if let Some(pages) = pages_ref {
+        walk(pages, None, 0, src, doc, remap, objects, budget, g)?;
+    }
+    Ok(())
 }
 
 /// Read `/L` and `/N` from the output's object-1 linearisation dictionary via

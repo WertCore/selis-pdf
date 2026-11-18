@@ -1,47 +1,57 @@
 //! Compressed cross-reference path for the linearization writer.
 //!
 //! This is the write counterpart of `selis_pdf_cos::xref_stream`. It emits the
-//! *same* linearized part order and Annex F hint tables as the classic path in
+//! same linearized part order and Annex F hint tables as the classic path in
 //! `linearize.rs`, but represents both xref sections as PDF 1.5 cross-reference
 //! streams (`/Type /XRef`) and packs eligible non-stream objects into object
 //! streams (`/ObjStm`).
 //!
-//! # Layout
+//! # Layout and numbering (qpdf --check-linearization conformant)
+//!
+//! qpdf's checker enforces two rules that this module follows exactly:
+//!
+//! 1. **No type-2 xref entry before a type-1 entry in `/Index` order.** A
+//!    compressed object therefore never keeps a low object number while its
+//!    `/ObjStm` container has a high one. Every object number is assigned so
+//!    that each xref section lists all uncompressed objects (including the
+//!    object-stream containers, the hint stream and both xref streams) first,
+//!    and only then the compressed members. See [`plan_numbers`].
+//! 2. **Annex F tables describe "storage units".** qpdf resolves a compressed
+//!    object to the object stream that contains it before it classifies the
+//!    object into a linearization part. Consequently a page section, the
+//!    shared-object table and the outline table are expressed in terms of
+//!    *units*: an uncompressed object is one unit, and a whole `/ObjStm` is one
+//!    unit charged to its position in the part. A compressed member is not a
+//!    separate unit. `build_layout` classifies the classic (all-direct) graph;
+//!    this module replaces each run of compressed members with its container
+//!    before feeding the result to `build_hint_buffer`.
+//!
+//! Object numbers and part lengths otherwise stay in the classic part order,
+//! so `/O` (first page object), `/N`, `/E` and the optional hint tables keep
+//! the same meaning as in the classic-xref writer. Only the numbers *after*
+//! the storage-unit region are reserved for compressed members, which places
+//! them behind every type-1 entry in both xref streams.
 //!
 //! ```text
 //! header + /Linearized dict (padded)          object 1
-//! first-page XRef stream  <- startxref        its own object number
-//! part 4 (catalog, direct)
-//! part 6 (first page): direct objects, then this section's /ObjStm
-//! part 7 (each later page): direct objects, then that section's /ObjStm
+//! first-page XRef stream  <- startxref
+//! part 4 (catalog, direct) + its /ObjStm
+//! part 6 (first page) + its /ObjStm
+//! part 7 (each later page) + its /ObjStm
 //! part 8 (shared), part 9 (remainder): same pattern
-//! hint stream                                 the largest "classic" number
+//! hint stream
 //! main XRef stream (all objects, /Prev-free)
 //! startxref -> first-page XRef stream, %%EOF
+//!
+//! number order:  2 ..= U            storage units (uncompressed + containers)
+//!                U+1 ..= U+3        hint + first/main xref streams
+//!                U+4 ..= F          compressed members of the FIRST section
+//!                F+1 ..= M          compressed members of the MAIN section
 //! ```
 //!
-//! The first-page xref stream carries `/Prev` -> main xref stream, so a reader
-//! following `startxref` sees the first page immediately and resolves the rest
-//! through the chain. A *hybrid* file would need `/XRefStm` in a classic
-//! trailer; this path is pure xref-stream (both sections are streams), so
-//! `/XRefStm` is neither needed nor emitted.
-//!
-//! # Hint-table offsets for compressed objects
-//!
-//! Annex F tables store byte offsets/lengths. A compressed object has no
-//! `N 0 obj` header, so this writer uses a documented, self-consistent view:
-//!
-//! * direct object -> offset of its `N 0 obj`, length of that record;
-//! * compressed object -> offset of the containing `/ObjStm` object. The
-//!   container's whole byte length is charged to its *first* member and zero
-//!   to the remaining members, so a section's summed lengths equal the real
-//!   physical byte span from its first object to the next section.
-//!
-//! Grouping a section's compressible objects into one stream keeps those
-//! "storage unit" offsets non-decreasing in layout order, so the Annex F
-//! cumulative page offsets chain exactly. `tools/check_linearization.py`
-//! reconstructs the same view from the xref and object streams and cross-checks
-//! every hint field against it.
+//! The first xref stream's `/Index` is `[1 1, 2 (F-1)]` (every object up to the
+//! last first-section compressed member); the main one is `[0 M+1]` (every
+//! object). Both list type-1 entries before type-2 entries, as required.
 
 // This module serialises a byte-exact binary layout. Indexing and arithmetic
 // are over vectors whose bounds are established while classifying parts, and
@@ -58,7 +68,7 @@
     clippy::expect_used
 )]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use selis_bytes::Bytes;
 use selis_error::Result;
@@ -66,8 +76,8 @@ use selis_pdf_cos::Obj;
 use selis_sandbox::{Budget, BudgetGuard, Resource};
 
 use super::{
-    build_hint_buffer, int, key, name_of, to_error, Guess, Layout, LinearizeError, LinearizeInput,
-    Sizes, PREFIX_LEN,
+    build_hint_buffer, int, key, name_of, outline_object_set, to_error, Guess, Layout,
+    LinearizeError, LinearizeInput, Ref, Sizes, PREFIX_LEN,
 };
 
 /// `/W [1 4 3]`: 1-byte type, 4-byte offset/object number, 3-byte generation
@@ -131,12 +141,11 @@ fn validate(entries: &BTreeMap<u32, Entry>) -> Result<()> {
 
 /// A serialized object-stream record ready to be placed in the file.
 struct BuiltObjStm {
-    /// Object number of the `/ObjStm`.
+    /// Object number of the `/ObjStm` (final numbering).
     num: u32,
     /// Full `N 0 obj ... endobj` bytes.
     bytes: Vec<u8>,
-    /// `(member object number, index, decoded value length)` per member; the
-    /// length is informational only (hint tables use the storage-unit view).
+    /// `(member object number, index, value length)` per member, all final.
     members: Vec<(u32, u32, u64)>,
     /// Filled once the record's file offset is known.
     offset: u64,
@@ -149,7 +158,7 @@ struct BuiltObjStm {
 /// carry the byte offsets the hint tables describe, and the catalog is the
 /// trailer `/Root`. Everything else (resources, fonts, annotations, outlines,
 /// info, ...) is eligible.
-fn keep_direct(num: u32, obj: &Obj, root: super::Ref) -> bool {
+fn keep_direct(num: u32, obj: &Obj, root: Ref) -> bool {
     if num == root.num || matches!(obj, Obj::Stream { .. }) {
         return true;
     }
@@ -201,7 +210,261 @@ fn assign_regions(layout: &Layout) -> Result<Vec<usize>> {
     Ok(group_of)
 }
 
+/// Object numbers of the outline tree. qpdf checks the F.6 table against the
+/// outline object group, so those objects stay uncompressed (otherwise qpdf
+/// would count their container instead of the outline items).
+fn outline_objects(layout: &Layout) -> HashSet<u32> {
+    outline_object_set(&layout.new_objects, layout.root)
+        .map(|(_, objs)| objs.into_iter().collect())
+        .unwrap_or_default()
+}
+
+/// The numbering plan: final object numbers and the final, hint-table-ready
+/// layout. Produced once per file; the fixed-point loop in `render` only
+/// resolves byte offsets, which never change these numbers.
+struct NumberingPlan {
+    /// Classic number -> final number (all objects: units and compressed).
+    final_of: BTreeMap<u32, u32>,
+    /// Same mapping as a HashMap for `renumber`.
+    remap: HashMap<u32, u32>,
+    /// Region -> final number of its `/ObjStm` container (if any).
+    objstm_final: Vec<Option<u32>>,
+    /// Classic number -> region.
+    region_of: BTreeMap<u32, usize>,
+    /// Compressible members per region (classic numbers).
+    members: Vec<Vec<u32>>,
+    /// Final number of the first-page xref stream.
+    first_xref_num: u32,
+    /// Final number of the main xref stream.
+    main_xref_num: u32,
+    /// Last object number in the FIRST xref section (all compressed members of
+    /// parts 4 and 6 included). The first xref `/Index` covers `1..=first_end_num`.
+    first_end_num: u32,
+    /// Trailer `/Size` = highest object number + 1.
+    size: u32,
+    /// A layout whose tables and object graph use final storage-unit numbers.
+    hint_layout: Layout,
+}
+
+/// Build the final numbering and the storage-unit view used by the hint tables.
+fn plan_numbers(layout: &Layout) -> Result<NumberingPlan> {
+    let regions = assign_regions(layout)?;
+    let ngroups = layout.page_sections.len().saturating_add(3);
+    let protected = outline_objects(layout);
+
+    // Split each region into storage units (direct objects + one container)
+    // and the compressible members packed into that container.
+    let mut members: Vec<Vec<u32>> = vec![Vec::new(); ngroups];
+    let mut region_of = BTreeMap::new();
+    for (i, (num, obj)) in layout.new_objects.iter().enumerate() {
+        let region = *regions
+            .get(i)
+            .ok_or_else(|| to_error(LinearizeError::UnsupportedLayout("region index")))?;
+        region_of.insert(*num, region);
+        if !keep_direct(*num, obj, layout.root) && !protected.contains(num) {
+            members[region].push(*num);
+        }
+    }
+
+    // Assign final numbers. Storage units first (in part order), then the
+    // hint/xref streams, then compressed members grouped by xref section so
+    // every type-2 entry follows every type-1 entry in `/Index` order.
+    let mut final_of = BTreeMap::new();
+    let mut objstm_final: Vec<Option<u32>> = vec![None; ngroups];
+    let mut next = 2u32;
+    for (i, (num, _)) in layout.new_objects.iter().enumerate() {
+        if members.get(regions[i]).is_some_and(|m| m.contains(num)) {
+            continue;
+        }
+        final_of.insert(*num, next);
+        next = next
+            .checked_add(1)
+            .ok_or_else(|| to_error(LinearizeError::OutOfRange))?;
+        let region = regions[i];
+        if objstm_final[region].is_none() && members.get(region).is_some_and(|m| !m.is_empty()) {
+            objstm_final[region] = Some(next);
+            next = next
+                .checked_add(1)
+                .ok_or_else(|| to_error(LinearizeError::OutOfRange))?;
+        }
+    }
+    // A region whose every object is compressible has no unit to anchor its
+    // container while walking the units above; give that container a number
+    // here so its members still resolve.
+    for region in 0..ngroups {
+        if objstm_final[region].is_none() && !members[region].is_empty() {
+            objstm_final[region] = Some(next);
+            next = next
+                .checked_add(1)
+                .ok_or_else(|| to_error(LinearizeError::OutOfRange))?;
+        }
+    }
+    let hint_obj = next;
+    next = next
+        .checked_add(1)
+        .ok_or_else(|| to_error(LinearizeError::OutOfRange))?;
+    let first_xref_num = next;
+    next = next
+        .checked_add(1)
+        .ok_or_else(|| to_error(LinearizeError::OutOfRange))?;
+    let main_xref_num = next;
+    next = next
+        .checked_add(1)
+        .ok_or_else(|| to_error(LinearizeError::OutOfRange))?;
+    // First-section compressed members (parts 4 and 6) come before main ones.
+    for region in 0..ngroups.min(2) {
+        for member in &members[region] {
+            final_of.insert(*member, next);
+            next = next
+                .checked_add(1)
+                .ok_or_else(|| to_error(LinearizeError::OutOfRange))?;
+        }
+    }
+    let first_end_num = next - 1;
+    for region in 2..ngroups {
+        for member in &members[region] {
+            final_of.insert(*member, next);
+            next = next
+                .checked_add(1)
+                .ok_or_else(|| to_error(LinearizeError::OutOfRange))?;
+        }
+    }
+    let size = next;
+    if main_xref_num > MAX_FIELD || size > MAX_FIELD.saturating_add(1) {
+        return Err(to_error(LinearizeError::UnsupportedLayout(
+            "too many objects for compressed mode",
+        )));
+    }
+
+    // Resolve a classic object number to its final *unit* number. A
+    // compressed member maps to its object stream, everything else to itself.
+    let remap: HashMap<u32, u32> = final_of.iter().map(|(k, v)| (*k, *v)).collect();
+    let unit_final = |classic: u32| -> u32 {
+        if let Some(region) = region_of.get(&classic) {
+            if members.get(*region).is_some_and(|m| m.contains(&classic)) {
+                if let Some(Some(num)) = objstm_final.get(*region) {
+                    return *num;
+                }
+            }
+        }
+        remap.get(&classic).copied().unwrap_or(classic)
+    };
+
+    // Remap the object graph: object streams become unit placeholders (they
+    // carry no references of their own), compressed members are omitted and
+    // every reference to one is rewritten to its container.
+    let mut new_objects: Vec<(u32, Obj)> = Vec::new();
+    for (i, (num, obj)) in layout.new_objects.iter().enumerate() {
+        let region = regions[i];
+        if members[region].contains(num) {
+            continue;
+        }
+        let final_num = *remap
+            .get(num)
+            .ok_or_else(|| to_error(LinearizeError::OutOfRange))?;
+        new_objects.push((
+            final_num,
+            selis_pdf_cos::copy::renumber((*obj).clone(), &remap),
+        ));
+    }
+    for num in objstm_final.iter().flatten() {
+        // A placeholder with no references: F.6/F.4 walkers see the
+        // container exactly where qpdf's `resolveCompressedObject` does.
+        new_objects.push((*num, Obj::Dict(Vec::new())));
+    }
+
+    // Remap every structure consumed by the hint-table builder to units.
+    let page_objs: Vec<u32> = layout.page_objs.iter().map(|n| unit_final(*n)).collect();
+    let mut page_sections: Vec<Vec<u32>> = layout
+        .page_sections
+        .iter()
+        .map(|s| dedup(s.iter().map(|n| unit_final(*n)).collect()))
+        .collect();
+    let shared_list: Vec<u32> = dedup(layout.shared_list.iter().map(|n| unit_final(*n)).collect());
+    let part8: Vec<u32> = dedup(layout.part8.iter().map(|n| unit_final(*n)).collect());
+    let page_shared_ids: Vec<Vec<u32>> = layout
+        .page_shared_ids
+        .iter()
+        .map(|ids| {
+            dedup(
+                ids.iter()
+                    .filter_map(|idx| layout.shared_list.get(*idx as usize))
+                    .map(|classic| {
+                        let unit = unit_final(*classic);
+                        shared_list
+                            .iter()
+                            .position(|n| *n == unit)
+                            .map(|i| i as u32)
+                            .unwrap_or(u32::MAX)
+                    })
+                    .filter(|i| *i != u32::MAX)
+                    .collect(),
+            )
+        })
+        .collect();
+    let part6_len = page_sections.first().map(Vec::len).unwrap_or(0);
+    let root_final = unit_final(layout.root.num);
+    let trailer_extra: Vec<(Vec<u8>, Obj)> = layout
+        .trailer_extra
+        .iter()
+        .map(|(k, v)| (k.clone(), selis_pdf_cos::copy::renumber(v.clone(), &remap)))
+        .collect();
+    let mut optional = layout.optional.clone();
+    if let Some(fields) = optional.forms.as_mut() {
+        for field in fields.iter_mut() {
+            // The F.10 table names the *field object itself* (which may be a
+            // compressed member), not its storage-unit container. Keep its
+            // final member number; only the Annex F tables qpdf checks are
+            // expressed in units.
+            field.obj = remap.get(&field.obj).copied().unwrap_or(field.obj);
+        }
+    }
+    // page_sections must always begin with the first page object.
+    if let Some(first) = page_sections.first_mut() {
+        if let Some(page) = page_objs.first() {
+            if !first.contains(page) {
+                first.insert(0, *page);
+            }
+        }
+    }
+
+    let hint_layout = Layout {
+        new_objects,
+        root: Ref::new(root_final, 0),
+        trailer_extra,
+        page_objs,
+        page_sections,
+        page_shared_ids,
+        shared_list,
+        part8,
+        hint_obj,
+        first_max: first_end_num,
+        part4_len: layout.part4_len,
+        part6_len,
+        optional,
+    };
+    Ok(NumberingPlan {
+        final_of,
+        remap,
+        objstm_final,
+        region_of,
+        members,
+        first_xref_num,
+        main_xref_num,
+        first_end_num,
+        size,
+        hint_layout,
+    })
+}
+
+fn dedup(mut values: Vec<u32>) -> Vec<u32> {
+    values.sort_unstable();
+    values.dedup();
+    values
+}
+
 /// Serialize one region's compressible objects into an `/ObjStm`.
+/// `members` are already in final numbering.
 fn build_objstm(
     num: u32,
     members: &[(u32, Obj)],
@@ -219,9 +482,6 @@ fn build_objstm(
         )));
     }
 
-    // Body: each serialized object value followed by one separator byte so
-    // adjacent tokens cannot merge. The separator belongs to the preceding
-    // object's byte range, which the parser tolerates as trailing whitespace.
     let mut body = Vec::new();
     let mut offsets: Vec<u32> = Vec::with_capacity(members.len());
     let mut lengths: Vec<u64> = Vec::with_capacity(members.len());
@@ -241,8 +501,6 @@ fn build_objstm(
     for ((objnum, _), off) in members.iter().zip(offsets.iter()) {
         header.extend_from_slice(format!("{objnum} {off} ").as_bytes());
     }
-    // `/First` is the byte length of the (objnum offset)* header, not of the
-    // object body that follows it.
     let first = u32::try_from(header.len()).map_err(|_| {
         to_error(LinearizeError::UnsupportedLayout(
             "object stream header offset too large",
@@ -303,13 +561,13 @@ fn xref_index(entries: &BTreeMap<u32, Entry>) -> Vec<u32> {
     out
 }
 
-/// Build one xref-stream object and return its bytes plus its relative `/T`.
+/// Build one xref-stream object and return its bytes.
 #[allow(clippy::too_many_arguments)]
 fn build_xref_stream(
     num: u32,
     entries: &BTreeMap<u32, Entry>,
     size: u32,
-    root: super::Ref,
+    root: Ref,
     extra: &[(Vec<u8>, Obj)],
     prev: Option<u64>,
     budget: &Budget,
@@ -321,12 +579,6 @@ fn build_xref_stream(
         )));
     }
     validate(entries)?;
-    // The payload is intentionally left unfiltered. A Flate-compressed xref
-    // stream's byte length depends on the *values* of the offsets it stores,
-    // which are exactly the forward-referenced quantities the fixed-point
-    // layout is solving for. Keeping it unfiltered makes the section length a
-    // function of the entry count only, so one pass is exact. Object streams
-    // below are still Flate-compressed, which is where the size win is.
     let payload = xref_payload(entries);
     g.charge(Resource::Bytes, payload.len() as u64)?;
 
@@ -362,87 +614,73 @@ fn build_xref_stream(
 }
 
 /// Render the whole file in compressed mode. See the module docs for layout.
+///
+/// # Budget
+///
+/// Charges every serialized object, object stream and xref stream through the
+/// caller's [`BudgetGuard`], including the hint-buffer bytes. The caller's
+/// fixed-point loop runs at most `MAX_LAYOUT_PASSES` times.
+///
+/// # Malformed Input
+///
+/// Object numbers and offsets that exceed the `/W [1 4 3]` fields, a region
+/// that cannot be laid out, or a layout whose forward-referenced offsets do
+/// not converge are refused with a typed [`LinearizeError`]; no partial or
+/// mislabelled file is returned.
 pub(super) fn render(
     _input: &LinearizeInput<'_>,
     layout: &Layout,
-    sizes: &Sizes,
+    _sizes: &Sizes,
     guess: Guess,
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
 ) -> Result<(Vec<u8>, Guess)> {
-    let first_count = layout.part4_len + layout.part6_len;
-    let regions = assign_regions(layout)?;
-    let ngroups = layout.page_sections.len().saturating_add(3);
-    let mut groups: Vec<Vec<(u32, Obj)>> = vec![Vec::new(); ngroups];
-    for (i, (num, obj)) in layout.new_objects.iter().enumerate() {
-        let group = *regions
-            .get(i)
-            .ok_or_else(|| to_error(LinearizeError::UnsupportedLayout("region index")))?;
-        let slot = groups
-            .get_mut(group)
-            .ok_or_else(|| to_error(LinearizeError::UnsupportedLayout("region slot")))?;
-        slot.push((*num, obj.clone()));
-    }
+    let plan = plan_numbers(layout)?;
+    let h = &plan.hint_layout;
+    let ngroups = plan.objstm_final.len();
 
-    // Assign numbers to the object streams, then the two xref streams. All
-    // live past the largest "classic" number, so the part numbering and hint
-    // tables are untouched.
+    // Build the object streams with final member numbers.
     let mut objstms: Vec<Option<BuiltObjStm>> = (0..ngroups).map(|_| None).collect();
-    let mut next_num = layout
-        .hint_obj
-        .checked_add(1)
-        .ok_or_else(|| to_error(LinearizeError::OutOfRange))?;
-    for group in 0..ngroups {
-        let members: Vec<(u32, Obj)> = groups[group]
-            .iter()
-            .filter(|(num, obj)| !keep_direct(*num, obj, layout.root))
-            .cloned()
-            .collect();
-        if members.is_empty() {
+    for region in 0..ngroups {
+        let Some(num) = plan.objstm_final[region] else {
             continue;
+        };
+        let mut members: Vec<(u32, Obj)> = Vec::new();
+        for classic in &plan.members[region] {
+            // Members live in the original (classic) graph under their
+            // classic number; only their final number changes.
+            let obj = layout
+                .new_objects
+                .iter()
+                .find(|(n, _)| *n == *classic)
+                .map(|(_, o)| o.clone())
+                .ok_or_else(|| to_error(LinearizeError::OutOfRange))?;
+            let final_num = *plan
+                .final_of
+                .get(classic)
+                .ok_or_else(|| to_error(LinearizeError::OutOfRange))?;
+            // References inside the member must use the final numbering too,
+            // otherwise they can point at the hint/xref streams instead of the
+            // objects they used to reference.
+            let obj = selis_pdf_cos::copy::renumber(obj, &plan.remap);
+            members.push((final_num, obj));
         }
-        let built = build_objstm(next_num, &members, budget, g)?;
-        next_num = next_num
-            .checked_add(1)
-            .ok_or_else(|| to_error(LinearizeError::OutOfRange))?;
-        objstms[group] = Some(built);
-    }
-    let first_xref_num = next_num;
-    let main_xref_num = first_xref_num
-        .checked_add(1)
-        .ok_or_else(|| to_error(LinearizeError::OutOfRange))?;
-    let size = main_xref_num
-        .checked_add(1)
-        .ok_or_else(|| to_error(LinearizeError::OutOfRange))?;
-    if main_xref_num > MAX_FIELD {
-        return Err(to_error(LinearizeError::UnsupportedLayout(
-            "too many objects for compressed mode",
-        )));
+        objstms[region] = Some(build_objstm(num, &members, budget, g)?);
     }
 
-    // Seed the first-page xref stream to measure its length. /Prev is the only
-    // value-dependent integer; the fixed-point loop resolves its digit width.
+    // Seed the first-page xref stream to measure its fixed length. Its /Prev
+    // is the only value-dependent integer; the fixed-point loop resolves it.
     let mut seed_entries: BTreeMap<u32, Entry> = BTreeMap::new();
-    seed_entries.insert(0, Entry::Free);
-    for num in 1..=sizes.first_max {
+    for num in 1..=plan.first_end_num {
         seed_entries.insert(num, Entry::Direct(0));
     }
-    // The real first-page xref also carries this section's object streams.
-    // The seed must have exactly the same entry count for its length to be a
-    // valid layout guess.
-    // The first-page xref section covers groups 0 (part 4) and 1 (part 6), so
-    // only their object streams appear there. The seed must have exactly the
-    // same entry count for its length to be a valid layout guess.
-    for built in objstms.iter().take(2).flatten() {
-        seed_entries.insert(built.num, Entry::Direct(0));
-    }
-    seed_entries.insert(first_xref_num, Entry::Direct(0));
+    seed_entries.insert(plan.first_xref_num, Entry::Direct(0));
     let seed_xref = build_xref_stream(
-        first_xref_num,
+        plan.first_xref_num,
         &seed_entries,
-        size,
-        layout.root,
-        &layout.trailer_extra,
+        plan.size,
+        h.root,
+        &h.trailer_extra,
         Some(guess.main_xref),
         budget,
         g,
@@ -452,17 +690,30 @@ pub(super) fn render(
         .checked_add(seed_xref.len() as u64)
         .ok_or_else(|| to_error(LinearizeError::OutOfRange))?;
 
-    // Lay out every physical record in part order and build the placement
-    // map used both by the xref streams and by the hint tables.
+    // Lay out every physical record in part order and build the placement map.
     let mut placements: BTreeMap<u32, Entry> = BTreeMap::new();
+    // Entry 0 is free; qpdf needs it to compute `first_xref_item_offset` for
+    // the /T check. Without it the checker reports "computed = 0".
+    placements.insert(0, Entry::Free);
+    // Object 1 is the /Linearized dictionary written in the prefix.
+    placements.insert(1, Entry::Direct(super::HEADER.len() as u64));
     let mut offsets: BTreeMap<u32, u64> = BTreeMap::new();
     let mut lengths: BTreeMap<u32, u64> = BTreeMap::new();
     let mut per_region: Vec<Vec<Vec<u8>>> = vec![Vec::new(); ngroups];
     let mut cursor = objects_start;
     let mut first_end = cursor;
-    for group in 0..ngroups {
-        for (num, obj) in &groups[group] {
-            if !keep_direct(*num, obj, layout.root) {
+    for region in 0..ngroups {
+        for (num, obj) in &h.new_objects {
+            // Unit objects belonging to this region (containers are Dict
+            // placeholders handled below; hint/xref streams are not in the
+            // graph).
+            let classic = plan
+                .final_of
+                .iter()
+                .find(|(_, final_num)| **final_num == *num)
+                .map(|(classic, _)| *classic);
+            let Some(classic) = classic else { continue };
+            if plan.region_of.get(&classic) != Some(&region) {
                 continue;
             }
             let bytes = super::write_one_bytes(*num, obj, budget, g)?;
@@ -472,23 +723,23 @@ pub(super) fn render(
             cursor = cursor
                 .checked_add(bytes.len() as u64)
                 .ok_or_else(|| to_error(LinearizeError::OutOfRange))?;
-            per_region[group].push(bytes);
+            per_region[region].push(bytes);
         }
-        if let Some(built) = objstms[group].as_mut() {
+        if let Some(built) = objstms[region].as_mut() {
             built.offset = cursor;
-            offsets.insert(built.num, cursor);
-            lengths.insert(built.num, built.bytes.len() as u64);
-            placements.insert(built.num, Entry::Direct(cursor));
-            // Hint-table view: every member of one object stream shares the
-            // storage unit's physical offset. Charge the whole container to
-            // its first member and zero to the rest, so a section's summed
-            // object lengths equal the real physical byte span (the Annex F
-            // cumulative offsets then chain exactly).
-            for (i, (member, index, _value_len)) in built.members.iter().enumerate() {
+            let container = built.num;
+            offsets.insert(container, cursor);
+            lengths.insert(container, built.bytes.len() as u64);
+            placements.insert(container, Entry::Direct(cursor));
+            // qpdf's "storage unit" view: a compressed member has no byte
+            // range of its own. Charge the whole container to its first
+            // member and zero to the rest so a section's summed object
+            // lengths equal the real physical byte span.
+            for (i, (member, index, _)) in built.members.iter().enumerate() {
                 placements.insert(
                     *member,
                     Entry::Compressed {
-                        objstm: built.num,
+                        objstm: container,
                         index: *index,
                     },
                 );
@@ -498,31 +749,30 @@ pub(super) fn render(
             cursor = cursor
                 .checked_add(built.bytes.len() as u64)
                 .ok_or_else(|| to_error(LinearizeError::OutOfRange))?;
-            per_region[group].push(built.bytes.clone());
+            per_region[region].push(built.bytes.clone());
         }
-        if group == 1 {
+        if region == 1 {
             first_end = cursor;
         }
     }
     let hint_offset = cursor;
 
-    // Hint tables: same Annex F bytes as the classic path, driven by the
-    // effective offsets/lengths above.
-    let (hint_buffer, shared_offset, hints) =
-        build_hint_buffer(layout, &offsets, &lengths, budget, g)?;
+    // Annex F hint tables from the storage-unit view.
+    let (hint_buffer, shared_offset, hints) = build_hint_buffer(h, &offsets, &lengths, budget, g)?;
     let mut hint_dict = vec![(key(b"S"), int(u64::from(shared_offset)))];
     for (name, offset) in [
         (b"O".as_slice(), hints.outline),
         (b"T".as_slice(), hints.thumbnails),
         (b"A".as_slice(), hints.named_dests),
         (b"E".as_slice(), hints.page_labels),
+        (b"F".as_slice(), hints.forms),
     ] {
         if let Some(off) = offset {
             hint_dict.push((key(name), int(u64::from(off))));
         }
     }
     let hint_obj_bytes = super::write_one_bytes(
-        layout.hint_obj,
+        h.hint_obj,
         &Obj::Stream {
             dict: hint_dict,
             data: Bytes::from(hint_buffer),
@@ -530,38 +780,26 @@ pub(super) fn render(
         budget,
         g,
     )?;
-    // qpdf requires /H[1] to span the whole hint stream object, not just its
-    // stream data (same convention as the classic-xref writer).
+    // qpdf requires /H[1] to span the whole hint stream object.
     let hint_obj_len = hint_obj_bytes.len() as u64;
     let main_xref = hint_offset
         .checked_add(hint_obj_len)
         .ok_or_else(|| to_error(LinearizeError::OutOfRange))?;
     // For xref streams qpdf's `first_xref_item_offset` is the offset of the
-    // xref stream object itself (the last section read via /Prev), and its /T
-    // check seeks to /T, skips whitespace, and expects to land there. Point /T
-    // directly at the main xref stream header.
+    // xref stream object that holds entry 0 (the main xref), so /T points at
+    // its header.
     let t_offset = main_xref;
+    placements.insert(h.hint_obj, Entry::Direct(hint_offset));
+    placements.insert(plan.first_xref_num, Entry::Direct(first_xref_offset));
+    placements.insert(plan.main_xref_num, Entry::Direct(main_xref));
 
-    // Seed the main xref stream to measure the final file length (/L). Its
-    // self-entry depends only on `main_xref`, already known this pass.
-    let mut all_entries: BTreeMap<u32, Entry> = BTreeMap::new();
-    all_entries.insert(0, Entry::Free);
-    all_entries.insert(1, Entry::Direct(super::HEADER.len() as u64));
-    for (num, _) in &layout.new_objects {
-        all_entries.insert(*num, placements[num]);
-    }
-    for built in objstms.iter().flatten() {
-        all_entries.insert(built.num, Entry::Direct(built.offset));
-    }
-    all_entries.insert(layout.hint_obj, Entry::Direct(hint_offset));
-    all_entries.insert(first_xref_num, Entry::Direct(first_xref_offset));
-    all_entries.insert(main_xref_num, Entry::Direct(main_xref));
+    // Seed the main xref stream to measure the final file length (/L).
     let zero_xref = build_xref_stream(
-        main_xref_num,
-        &all_entries,
-        size,
-        layout.root,
-        &layout.trailer_extra,
+        plan.main_xref_num,
+        &placements,
+        plan.size,
+        h.root,
+        &h.trailer_extra,
         None,
         budget,
         g,
@@ -578,9 +816,9 @@ pub(super) fn render(
         l = file_len,
         ho = hint_offset,
         hl = hint_obj_len,
-        o = sizes.first_page_num,
+        o = h.page_objs[0],
         e = first_end,
-        n = sizes.page_count,
+        n = h.page_objs.len(),
         t = t_offset,
     )
     .into_bytes();
@@ -595,47 +833,31 @@ pub(super) fn render(
     prefix.resize(PREFIX_LEN - 1, b' ');
     prefix.push(b'\n');
 
-    // Real first-page xref stream: part 4 + part 6 objects, their object
-    // streams, object 1 and the stream itself. /Prev -> main xref stream.
+    // Real first-page xref stream: objects 1..=first_end_num, with the
+    // compressed members of parts 4 and 6 last. /Prev -> main xref.
     let mut first_entries: BTreeMap<u32, Entry> = BTreeMap::new();
-    first_entries.insert(0, Entry::Free);
-    first_entries.insert(1, Entry::Direct(super::HEADER.len() as u64));
-    for (num, _) in layout.new_objects[..first_count].iter() {
-        first_entries.insert(*num, placements[num]);
+    for num in 1..=plan.first_end_num {
+        if let Some(entry) = placements.get(&num) {
+            first_entries.insert(num, *entry);
+        }
     }
-    for built in objstms.iter().take(2).flatten() {
-        first_entries.insert(built.num, Entry::Direct(built.offset));
-    }
-    first_entries.insert(first_xref_num, Entry::Direct(first_xref_offset));
     let first_xref = build_xref_stream(
-        first_xref_num,
+        plan.first_xref_num,
         &first_entries,
-        size,
-        layout.root,
-        &layout.trailer_extra,
+        plan.size,
+        h.root,
+        &h.trailer_extra,
         Some(guess.main_xref),
         budget,
         g,
     )?;
 
-    let mut all_entries: BTreeMap<u32, Entry> = BTreeMap::new();
-    all_entries.insert(0, Entry::Free);
-    all_entries.insert(1, Entry::Direct(super::HEADER.len() as u64));
-    for (num, _) in &layout.new_objects {
-        all_entries.insert(*num, placements[num]);
-    }
-    for built in objstms.iter().flatten() {
-        all_entries.insert(built.num, Entry::Direct(built.offset));
-    }
-    all_entries.insert(layout.hint_obj, Entry::Direct(hint_offset));
-    all_entries.insert(first_xref_num, Entry::Direct(first_xref_offset));
-    all_entries.insert(main_xref_num, Entry::Direct(main_xref));
     let main_xref_table = build_xref_stream(
-        main_xref_num,
-        &all_entries,
-        size,
-        layout.root,
-        &layout.trailer_extra,
+        plan.main_xref_num,
+        &placements,
+        plan.size,
+        h.root,
+        &h.trailer_extra,
         None,
         budget,
         g,

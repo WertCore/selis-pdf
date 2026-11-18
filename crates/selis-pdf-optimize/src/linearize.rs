@@ -65,9 +65,10 @@
 //! # Verification and limits
 //!
 //! `tools/check_linearization.py` independently parses both hint tables and
-//! cross-checks them against the emitted object graph. That is a strong
-//! self-consistency check, but it is **not** `qpdf --check-linearization`:
-//! no external linearisation checker is installed here. See
+//! cross-checks them against the emitted object graph. Both this writer and
+//! the compressed `linearize_xref.rs` writer also pass the real
+//! `qpdf --check-linearization` binary ("no linearization errors", exit 0) on
+//! every conformance fixture. See `docs/linearization-conformance.md` and
 //! `pdf-plan/37-ASPOSE-PARITY.md` §15 for the precise, honest status.
 //!
 //! # Failure policy
@@ -444,10 +445,11 @@ struct Layout {
 // qpdf's writer; they are validated by `tools/check_linearization.py` and
 // `tools/check_linearization_conformance.py`, which parse them back and
 // cross-check every field against the real object graph, and by PDFium
-// read-back. Classic-xref output also passes the real
-// `qpdf --check-linearization` binary ("no linearization errors") on the
-// conformance fixtures; the opt-in compressed/xref-stream mode still has known
-// qpdf object-stream layout warnings.
+// read-back. Both the classic-xref and the opt-in compressed/xref-stream
+// writers pass the real `qpdf --check-linearization` binary ("no linearization
+// errors", exit 0) on every conformance fixture. The compressed writer numbers
+// storage units before compressed members and computes its Annex F tables in
+// qpdf's storage-unit view (see `linearize_xref.rs`).
 
 /// The optional hint tables detected in the (renumbered) object graph.
 #[derive(Debug, Clone, Default)]
@@ -2631,6 +2633,46 @@ mod tests {
             "/L equals file length"
         );
         assert_eq!(parse_lin_int(&text, "N"), 2, "/N page count");
+    }
+
+    /// qpdf's checker requires every type-1 xref entry to precede every type-2
+    /// entry within each xref section. Our compressed writer renumbers objects
+    /// so this holds in *object-number* order (which is also `/Index` order).
+    #[test]
+    fn compressed_mode_orders_uncompressed_entries_before_compressed_ones() {
+        let (objects, extra) = compressed_input();
+        let input = LinearizeInput {
+            objects: &objects,
+            root: Ref::new(2, 0),
+            trailer_extra: &extra,
+            page_count: 2,
+        };
+        let budget = B::unlimited();
+        let mut g = budget.guard();
+        let pdf = write_linearized_with_mode(&input, &budget, &mut g, LinearizeMode::Compressed)
+            .expect("linearize");
+
+        let sx = selis_pdf_cos::xref::find_startxref(&pdf, 4096).expect("startxref");
+        let doc = selis_pdf_cos::parse_revisions(&pdf, sx, &budget, &mut g).expect("reparse");
+        assert_eq!(doc.revisions().len(), 2, "two xref-stream revisions");
+        let mut any_compressed = false;
+        for (index, revision) in doc.revisions().iter().enumerate() {
+            let mut saw_compressed = false;
+            for (num, entry) in &revision.entries {
+                match entry {
+                    selis_pdf_cos::XrefEntry::Compressed { .. } => {
+                        saw_compressed = true;
+                        any_compressed = true;
+                    }
+                    selis_pdf_cos::XrefEntry::InUse { .. } => assert!(
+                        !saw_compressed,
+                        "revision {index}: object {num} is uncompressed after a compressed one"
+                    ),
+                    selis_pdf_cos::XrefEntry::Free { .. } => {}
+                }
+            }
+        }
+        assert!(any_compressed, "compressed mode really packs an object");
     }
 
     /// Re-open with the engine and resolve every object: pages, contents,
