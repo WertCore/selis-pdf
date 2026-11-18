@@ -1313,7 +1313,7 @@
         await firstLoad;
         const win = frame.contentWindow;
         if (!win) throw new Error("the tools iframe had no window");
-        out.cards = await waitForCards(frame, "the forty-seven tool cards");
+        out.cards = await waitForCards(frame, "the forty-nine tool cards");
         out.cardIds = cardIds(frame);
         out.pageTitle = frameDocument(frame).title;
 
@@ -3523,6 +3523,38 @@ kJq8lO7N01x8TKFI7/kH5MBSsF7qU20c/viTu+QtM53OU6GjjFUZbM9enYCBrJze
           ...legRecord(byUrlSign),
         };
 
+        // Smoke-cover any card without a bespoke leg above. The verdict requires
+        // every rendered card to have been opened at least once; a card that
+        // cannot even open its workspace fails here rather than hiding behind a
+        // hole in the harness's per-tool coverage.
+        {
+          const back = waitForLoad(frame);
+          frame.src = "/tools.html";
+          await back;
+          const doc = frameDocument(frame);
+          await waitForCards(frame, "the tool cards before the smoke legs");
+          const cards = [
+            ...doc.querySelectorAll("#tool-grid .tool-card"),
+          ];
+          for (const card of cards) {
+            const id = card.getAttribute("data-tool") || "";
+            if (clickedOnline.has(id)) continue;
+            markClick(card);
+            await waitFor(
+              () => !doc.getElementById("workspace").hidden,
+              5_000,
+              "the " + id + " workspace (smoke)",
+            );
+            doc.getElementById("back-to-tools").click();
+            await waitFor(
+              () => !doc.getElementById("tools").hidden,
+              5_000,
+              "the tools grid after " + id + " (smoke)",
+            );
+          }
+          out.smokeCovered = [...clickedOnline].sort();
+        }
+
         // Back to the grid for the offline phase, which reloads this document.
         // The mirror path (not "/") for the same reason as the first load above.
         const backToGrid = waitForLoad(frame);
@@ -5341,6 +5373,35 @@ kJq8lO7N01x8TKFI7/kH5MBSsF7qU20c/viTu+QtM53OU6GjjFUZbM9enYCBrJze
           hasGrid: unknownDoc.getElementById("tool-grid") !== null,
           slug: unknownDoc.documentElement.dataset.tool || null,
         };
+
+        // Offline smoke coverage: the verdict requires every rendered card to
+        // have been opened while offline too. The grid mirror is precached, so
+        // it reloads from the worker after the origin cut.
+        {
+          const back = waitForLoad(frame);
+          frame.src = "/tools.html";
+          await back;
+          await waitForCards(frame, "the tool cards before the offline smoke legs");
+          const doc = frameDocument(frame);
+          const cards = [...doc.querySelectorAll("#tool-grid .tool-card")];
+          for (const card of cards) {
+            const id = card.getAttribute("data-tool") || "";
+            if (clickedOffline.has(id)) continue;
+            markClick(card);
+            await waitFor(
+              () => !doc.getElementById("workspace").hidden,
+              5_000,
+              "the " + id + " workspace (offline smoke)",
+            );
+            doc.getElementById("back-to-tools").click();
+            await waitFor(
+              () => !doc.getElementById("tools").hidden,
+              5_000,
+              "the tools grid after " + id + " (offline smoke)",
+            );
+          }
+          out.offlineSmokeCovered = [...clickedOffline].sort();
+        }
 
         out.clicked = clickRecord();
         clearTimeout(watchdog);
