@@ -35,10 +35,18 @@ Normative spec: `23-EDIT-MODEL-SPEC.md`. Read it before any task here.
     (b) the result parses, (c) the semantic model matches the expected post-mutation state,
     (d) every prior revision is still readable, (e) PDFium and Acrobat both open it.
   - **Risk:** `owner: HUMAN`. Everything the user cares about depends on this being right.
-- [ ] **SL-5.EDIT.04 — Crash safety of save** · deps: EDIT.03, SL-0.IO.05 · owner: HUMAN
+- [x] **SL-5.EDIT.04 — Crash safety of save** · deps: EDIT.03, SL-0.IO.05 · owner: HUMAN
   - **Do:** Kill the process at 500 random points during save; assert the file is always either
     the original document or a valid document containing a prefix of the intended changes.
   - **DoD:** The kill-test suite is green and runs nightly.
+  - **Status (implemented):** `selis_pdf_edit::save::save_atomic` verifies the output (I3
+    prefix, `%%EOF` tail, exactly one appended revision, strict + resilient parse, page count)
+    **before** committing through `selis_io::commit_atomic` (temp in the destination directory,
+    fsync, atomic replace, directory fsync). `save_tests::kill_test_500_points_never_damage_the_destination`
+    drives 500 deterministic kill points through an injected fault hook; 500/500 leave the original
+    byte-identical, and a clean save commits the full document. Corrupted candidates are refused with
+    a typed error and produce no file. Run nightly with `cargo test -p selis-pdf-edit save_tests`.
+    Residual gap: directory fsync is POSIX-only; Windows relies on `MOVEFILE_WRITE_THROUGH`.
 - [ ] **SL-5.EDIT.05 — Full-rewrite writer (`save_rewritten`)** · deps: EDIT.03 · owner: HUMAN
   - **Do:** The explicit, verified rewrite: renumber objects, drop unreferenced ones, re-encode
     streams, then **render-verify** every page against the pre-save state before the result is

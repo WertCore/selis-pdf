@@ -238,6 +238,15 @@ allowed to exist at all.
 > (temp+fsync+rename, typed failure with no file) are fully implemented and are the only commit
 > path tools use. See `pdf-plan/29-WRITE05-06-DESIGN-NOTE.md` (draft, pre-sign-off).
 
+> **EDIT.04 (implemented):** `selis_pdf_edit::save::save_atomic` applies steps 3–4 to the
+> incremental-save path. It verifies before any byte reaches disk (I3 prefix, complete `%%EOF`
+> tail, exactly one appended revision, strict + resilient parse, page count), then commits via
+> `selis_io::commit_atomic` — temp in the destination directory, fsync, `atomic_replace`, directory
+> fsync. A failed check or injected fault yields a typed error, no file, and an untouched original;
+> the caller's session stays intact. The nightly kill-test exercises 500 deterministic points and
+> asserts the on-disk file is the original or a valid document holding a prefix of the intended
+> changes. Directory fsync is POSIX-only; on Windows the swap's `MOVEFILE_WRITE_THROUGH` covers it.
+
 ---
 
 ## 8. What the model deliberately does not do

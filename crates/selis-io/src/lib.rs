@@ -28,6 +28,7 @@
 mod append_sink;
 mod blob;
 mod cancel_host;
+pub mod commit;
 pub mod conformance;
 mod fault;
 mod file;
@@ -43,6 +44,7 @@ mod sink;
 pub use append_sink::AppendFileSink;
 pub use blob::BlobSource;
 pub use cancel_host::install_ctrl_c_flag;
+pub use commit::{commit_atomic, CommitFault, CommitOptions, CommitReceipt};
 pub use conformance::assert_fully_resident_conformance;
 pub use fault::{FaultConfig, FaultSource};
 pub use file::FileSource;
