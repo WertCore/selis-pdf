@@ -89,13 +89,16 @@ pub(crate) struct Span {
     pub size: Option<f64>,
     /// Text alignment of the containing paragraph/cell, if specified.
     pub align: Option<TextAlign>,
+    /// An inline `background-image: url(data:…)` decoded image, painted behind
+    /// this run's text box. Only JPEG/PNG data URIs are accepted by the parser.
+    pub background: Option<EmbeddedImage>,
 }
 
-/// An embedded JPEG placed as its own block (HTML `<img>` or a standalone
-/// Markdown `![alt](data:image/jpeg;base64,…)` paragraph).
+/// An embedded JPEG/PNG placed as its own block (HTML `<img>` or a standalone
+/// Markdown `![alt](data:image/…;base64,…)` paragraph).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ImageBlock {
-    /// The validated JPEG and its intrinsic geometry.
+    /// The validated JPEG/PNG and its intrinsic geometry.
     pub image: EmbeddedImage,
     /// Explicit placement width in points (HTML `width`), if given. A bare
     /// number is points; `px` is converted at 96 dpi, matching `font-size`.
@@ -127,7 +130,7 @@ pub(crate) enum Block {
     Quote(Vec<Block>),
     /// A horizontal rule.
     Rule,
-    /// An embedded JPEG image (data URI only), placed at its measured box.
+    /// An embedded JPEG/PNG image (data URI only), placed at its measured box.
     Image(ImageBlock),
     /// Force the block that follows onto a new page. Only the OOXML slide
     /// and sheet readers emit this: a deck's slide and a workbook's sheet are

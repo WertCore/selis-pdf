@@ -1,25 +1,33 @@
-//! Inbound JPEG images from `data:` URIs (HTML `<img>` / Markdown `![]()`).
+//! Inbound JPEG and PNG images from `data:` URIs (HTML `<img>` / Markdown `![]()`).
 //!
-//! Only `data:image/jpeg;base64,…` is accepted. The payload is decoded and its
-//! SOF marker is read for the *true* width, height and component count; the
-//! JPEG bytes are then embedded verbatim as a `DCTDecode` stream (no decoder
-//! runs on the conversion path). Anything else — remote `http(s)` URLs, file
-//! paths, other schemes, PNG/GIF/WebP data URIs, and malformed or truncated
-//! JPEGs — is refused with a typed [`ImageError`] and skipped by the parsers;
+//! Accepted media types are `data:image/jpeg;base64,…` and
+//! `data:image/png;base64,…` (case-insensitive). A JPEG's SOF marker is read
+//! for the *true* width, height and component count, and the JPEG bytes are
+//! embedded verbatim as a `DCTDecode` stream (no decoder runs on that path).
+//! A PNG is decoded with the engine's [`selis_image::decode_png`] (zlib Flate
+//! IDAT + PNG scanline filters), its alpha — if any — is flattened over white,
+//! and the raw samples are re-encoded with
+//! [`selis_pdf_filter::flate_encode`] into a `FlateDecode` stream. Both paths
+//! refuse truncated or malformed input before an XObject is emitted.
+//!
+//! Anything else — remote `http(s)` URLs, file paths, other schemes, GIF/WebP/
+//! SVG data URIs, palette/interlaced/non-8-bit PNGs, and malformed or truncated
+//! files — is refused with a typed [`ImageError`] and skipped by the parsers;
 //! the offending source text is not painted and no XObject is emitted.
 //!
 //! See the crate docs for the honest list of what is *not* supported.
 
 use selis_error::{Code, Ctx, Error};
+use selis_sandbox::Budget;
 
-/// The PDF device colour space implied by a JPEG's SOF component count.
+/// The PDF device colour space implied by an image's samples.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ImageColorSpace {
-    /// One component (SOF `Ns = 1`).
+    /// One component (JPEG SOF `Ns = 1`, or a grey PNG).
     DeviceGray,
-    /// Three components (SOF `Ns = 3`, the usual YCbCr JPEG).
+    /// Three components (JPEG SOF `Ns = 3`, or a colour PNG).
     DeviceRGB,
-    /// Four components (SOF `Ns = 4`).
+    /// Four components (JPEG SOF `Ns = 4`). PNGs never produce this.
     DeviceCMYK,
 }
 
@@ -35,17 +43,47 @@ impl ImageColorSpace {
     }
 }
 
-/// A validated, embed-ready JPEG recovered from a data URI.
+/// The PDF image filter carrying [`EmbeddedImage::data`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ImageFilter {
+    /// Verbatim JPEG bytes.
+    DctDecode,
+    /// Raw samples that have already been re-encoded with zlib Flate.
+    FlateDecode,
+}
+
+impl ImageFilter {
+    /// The PDF name to write in the image XObject's `/Filter` entry.
+    ///
+    /// # Budget
+    ///
+    /// No budget charge: this returns a static byte slice.
+    ///
+    /// # Malformed Input
+    ///
+    /// None: the enum is closed and every variant maps to a fixed name.
+    #[must_use]
+    pub(crate) const fn as_bytes(self) -> &'static [u8] {
+        match self {
+            Self::DctDecode => b"DCTDecode",
+            Self::FlateDecode => b"FlateDecode",
+        }
+    }
+}
+
+/// A validated, embed-ready image recovered from a data URI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct EmbeddedImage {
-    /// The raw JPEG file bytes, embedded verbatim behind `DCTDecode`.
-    pub jpeg: Vec<u8>,
-    /// Intrinsic pixel width, read from the SOF marker.
+    /// JPEG bytes (verbatim) or Flate-compressed raw samples, per `filter`.
+    pub data: Vec<u8>,
+    /// Intrinsic pixel width (SOF for JPEG, IHDR for PNG).
     pub width: u32,
-    /// Intrinsic pixel height, read from the SOF marker.
+    /// Intrinsic pixel height (SOF for JPEG, IHDR for PNG).
     pub height: u32,
-    /// Colour space implied by the SOF component count.
+    /// Colour space of the decoded samples.
     pub color_space: ImageColorSpace,
+    /// The filter the emitter must write for `data`.
+    pub filter: ImageFilter,
 }
 
 /// A typed refusal of an image source. The parsers currently skip on `Err`;
@@ -55,8 +93,8 @@ pub(crate) enum ImageError {
     /// A URL with a scheme we never fetch (or a bare path). Carries the scheme
     /// so a diagnostic can refuse it *by name*.
     NonDataUri(String),
-    /// A `data:` URI whose media type is not `image/jpeg`.
-    NotJpeg(String),
+    /// A `data:` URI whose media type is not JPEG/PNG. Carries the kind.
+    NotImage(String),
     /// A `data:` URI missing the `;base64` marker or a comma.
     InvalidDataUri,
     /// The base64 payload is malformed.
@@ -64,6 +102,12 @@ pub(crate) enum ImageError {
     /// The JPEG bytes are truncated or structurally invalid; the label says
     /// which invariant failed.
     MalformedJpeg(&'static str),
+    /// The PNG bytes are truncated, corrupt, or fail a structural check; the
+    /// label says which invariant failed.
+    MalformedPng(&'static str),
+    /// A structurally sound PNG whose feature set this subset refuses (palette,
+    /// interlacing, a bit depth other than 8, an unknown colour type).
+    UnsupportedPng,
 }
 
 impl ImageError {
@@ -93,7 +137,7 @@ impl ImageError {
                 "image-src-scheme",
                 format!("refused image source scheme: {scheme}"),
             ),
-            Self::NotJpeg(kind) => (
+            Self::NotImage(kind) => (
                 Code::ConvertUnsupported,
                 "image-format",
                 format!("unsupported image media type: {kind}"),
@@ -101,7 +145,7 @@ impl ImageError {
             Self::InvalidDataUri => (
                 Code::ConvertMalformed,
                 "image-data-uri",
-                "expected data:image/jpeg;base64,…".to_string(),
+                "expected data:image/jpeg;base64,… or data:image/png;base64,…".to_string(),
             ),
             Self::InvalidBase64 => (
                 Code::ConvertMalformed,
@@ -113,6 +157,16 @@ impl ImageError {
                 "image-jpeg",
                 format!("malformed JPEG: {why}"),
             ),
+            Self::MalformedPng(why) => (
+                Code::ConvertMalformed,
+                "image-png",
+                format!("malformed PNG: {why}"),
+            ),
+            Self::UnsupportedPng => (
+                Code::ConvertUnsupported,
+                "image-png",
+                "unsupported PNG feature (only 8-bit grey/RGB/RGBA, non-interlaced)".to_string(),
+            ),
         };
         Error::with(
             code,
@@ -123,23 +177,27 @@ impl ImageError {
     }
 }
 
-/// Parse one image source into an embed-ready JPEG.
+/// Parse one image source into an embed-ready JPEG or PNG.
 ///
-/// Accepted form: `data:image/jpeg;base64,<payload>` (media type is
-/// case-insensitive). Nothing is fetched: any other scheme or a bare path is
-/// refused by name with [`ImageError::NonDataUri`].
+/// Accepted forms: `data:image/jpeg;base64,<payload>` and
+/// `data:image/png;base64,<payload>` (media type is case-insensitive). Nothing
+/// is fetched: any other scheme or a bare path is refused by name with
+/// [`ImageError::NonDataUri`].
 ///
 /// # Budget
 ///
 /// No budget charge here: the decoder allocates only the decoded payload and
-/// the caller charges that buffer's bytes when it writes the XObject. The
-/// payload is bounded by the document text that carried it.
+/// the caller charges the resulting buffer's bytes when it writes the XObject.
+/// PNG decoding runs under an internal unlimited guard; its allocations are
+/// bounded by the IHDR caps in [`parse_png`] before that guard is created.
+/// The payload is bounded by the document text that carried it.
 ///
 /// # Malformed Input
 ///
-/// Returns a typed [`ImageError`] for a non-data URI, a non-JPEG media type, a
-/// missing `;base64` marker, invalid base64, or a JPEG with no readable SOF
-/// marker (truncated or malformed). No partial image is returned.
+/// Returns a typed [`ImageError`] for a non-data URI, an unsupported media type,
+/// a missing `;base64` marker, invalid base64, a JPEG with no readable SOF
+/// marker, or a PNG that is truncated, corrupt, or outside the supported
+/// feature subset. No partial image is returned.
 pub(crate) fn parse_data_uri(src: &str) -> Result<EmbeddedImage, ImageError> {
     let lower = src.to_ascii_lowercase();
     if !lower.starts_with("data:") {
@@ -156,22 +214,173 @@ pub(crate) fn parse_data_uri(src: &str) -> Result<EmbeddedImage, ImageError> {
         return Err(ImageError::InvalidDataUri);
     };
     let meta = lower.get("data:".len()..comma).unwrap_or("");
-    if meta != "image/jpeg;base64" {
-        if let Some(kind) = meta.strip_suffix(";base64") {
-            return Err(ImageError::NotJpeg(kind.to_string()));
-        }
-        let kind = meta.split(';').next().unwrap_or(meta).to_string();
-        return Err(ImageError::NotJpeg(kind));
-    }
     let encoded = src.get(comma.saturating_add(1)..).unwrap_or("");
-    let jpeg = decode_base64(encoded).ok_or(ImageError::InvalidBase64)?;
-    let (width, height, color_space) = parse_sof(&jpeg)?;
+    let bytes = decode_base64(encoded).ok_or(ImageError::InvalidBase64)?;
+    match meta {
+        "image/jpeg;base64" => {
+            let (width, height, color_space) = parse_sof(&bytes)?;
+            Ok(EmbeddedImage {
+                data: bytes,
+                width,
+                height,
+                color_space,
+                filter: ImageFilter::DctDecode,
+            })
+        }
+        "image/png;base64" => parse_png(&bytes),
+        _ => {
+            let kind = meta
+                .strip_suffix(";base64")
+                .unwrap_or(meta)
+                .split(';')
+                .next()
+                .unwrap_or(meta)
+                .to_string();
+            Err(ImageError::NotImage(kind))
+        }
+    }
+}
+
+/// PNG file signature (ISO/IEC 15948 §5.2).
+const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+/// Hard ceiling on either declared PNG dimension, checked before decoding so a
+/// hostile IHDR cannot ask the decoder for an unbounded buffer.
+const MAX_PNG_DIM: u32 = 8192;
+/// Hard ceiling on declared PNG pixels, for the same reason.
+const MAX_PNG_PIXELS: u64 = 8_000_000;
+
+/// Decode a PNG into raw 8-bit samples and Flate-encode them for an XObject.
+///
+/// Colour types 0 (grey) and 2 (RGB) map straight to `/DeviceGray` and
+/// `/DeviceRGB`. Alpha (types 4 and 6) is **flattened over white** rather than
+/// refused: the engine decoder yields RGBA8 and [`selis_image::flatten_over_white`]
+/// composites it, after which grey/RGB samples are chosen from the source IHDR
+/// colour type. Palette (3), interlaced, and non-8-bit PNGs are refused with
+/// [`ImageError::UnsupportedPng`]. Decoding is delegated to the engine's
+/// [`selis_image::decode_png`]; only the colour-space reduction and re-encode
+/// happen here.
+///
+/// # Budget
+///
+/// Decoding uses a fresh unlimited guard because the HTML/Markdown parsers do
+/// not carry one; the IHDR caps above bound its allocations, and the re-encoded
+/// stream bytes are charged later by `layout::lay_out` and the document writer.
+///
+/// # Malformed Input
+///
+/// Refuses a bad signature, a missing/short/oversized IHDR, an unsupported
+/// colour type or bit depth, interlacing, a corrupt/missing IDAT/IEND, and any
+/// PNG the engine decoder rejects. Nothing is returned partially: a failure
+/// produces no `EmbeddedImage` and therefore no XObject.
+fn parse_png(png: &[u8]) -> Result<EmbeddedImage, ImageError> {
+    let (width, height, color_type) = png_ihdr(png)?;
+    let mut g = Budget::unlimited().guard();
+    let decoded = selis_image::decode_png(png, &mut g).map_err(map_png_error)?;
+    let rgb = selis_image::flatten_over_white(&decoded.rgba, &mut g).map_err(map_png_error)?;
+    // Grey PNGs stay grey: the engine decoder repeats the sample across
+    // R/G/B, so taking one channel per pixel loses nothing.
+    let (color_space, raw) = if color_type == 0 || color_type == 4 {
+        let mut gray = Vec::with_capacity(rgb.len().saturating_div(3));
+        for px in rgb.chunks_exact(3) {
+            gray.push(px.first().copied().unwrap_or(0));
+        }
+        (ImageColorSpace::DeviceGray, gray)
+    } else {
+        (ImageColorSpace::DeviceRGB, rgb)
+    };
+    let data = selis_pdf_filter::flate_encode(&raw, 6);
     Ok(EmbeddedImage {
-        jpeg,
+        data,
         width,
         height,
         color_space,
+        filter: ImageFilter::FlateDecode,
     })
+}
+
+/// Map an engine image-decode failure onto this module's typed refusal.
+///
+/// # Budget
+///
+/// No budget charge: this inspects only the error's code.
+///
+/// # Malformed Input
+///
+/// No input is parsed here; the code decides whether the PNG was unsupported
+/// or malformed.
+fn map_png_error(err: selis_error::Error) -> ImageError {
+    match err.code() {
+        Code::ImageUnsupported => ImageError::UnsupportedPng,
+        _ => ImageError::MalformedPng("decode failed"),
+    }
+}
+
+/// Read and sanity-check the first IHDR, returning `(width, height, colour type)`.
+///
+/// # Budget
+///
+/// Allocates nothing.
+///
+/// # Malformed Input
+///
+/// Refuses a bad signature, a missing/truncated IHDR, zero or oversized
+/// dimensions, a bit depth other than 8, interlacing, and colour types outside
+/// 0/2/4/6 (palette and unknown types are explicitly unsupported here).
+fn png_ihdr(png: &[u8]) -> Result<(u32, u32, u8), ImageError> {
+    if png.get(..PNG_SIGNATURE.len()) != Some(PNG_SIGNATURE.as_slice()) {
+        return Err(ImageError::MalformedPng("bad signature"));
+    }
+    // The signature is 8 bytes; the first chunk header is length(4) + type(4).
+    let len = be_u32(png, 8)?;
+    let len = usize::try_from(len).unwrap_or(usize::MAX);
+    if len < 13 {
+        return Err(ImageError::MalformedPng("short IHDR"));
+    }
+    if png.get(12..16) != Some(b"IHDR".as_slice()) {
+        return Err(ImageError::MalformedPng("missing IHDR"));
+    }
+    let end = 16usize.saturating_add(len);
+    let body = png
+        .get(16..end)
+        .ok_or(ImageError::MalformedPng("IHDR overruns file"))?;
+    let width = be_u32(body, 0)?;
+    let height = be_u32(body, 4)?;
+    let bit_depth = body.get(8).copied().unwrap_or(0);
+    let color_type = body.get(9).copied().unwrap_or(255);
+    let interlace = body.get(12).copied().unwrap_or(255);
+    if width == 0 || height == 0 {
+        return Err(ImageError::MalformedPng("empty image"));
+    }
+    if width > MAX_PNG_DIM
+        || height > MAX_PNG_DIM
+        || u64::from(width).saturating_mul(u64::from(height)) > MAX_PNG_PIXELS
+    {
+        return Err(ImageError::MalformedPng("image too large"));
+    }
+    if bit_depth != 8 || interlace != 0 || !matches!(color_type, 0 | 2 | 4 | 6) {
+        return Err(ImageError::UnsupportedPng);
+    }
+    Ok((width, height, color_type))
+}
+
+/// Read one big-endian u32 at `offset`, refusing a truncated buffer.
+///
+/// # Budget
+///
+/// Allocates nothing.
+///
+/// # Malformed Input
+///
+/// `MalformedPng` when fewer than four bytes remain at `offset`.
+fn be_u32(data: &[u8], offset: usize) -> Result<u32, ImageError> {
+    let end = offset.saturating_add(4);
+    let bytes = data
+        .get(offset..end)
+        .ok_or(ImageError::MalformedPng("truncated PNG field"))?;
+    let array: [u8; 4] = bytes
+        .try_into()
+        .map_err(|_| ImageError::MalformedPng("truncated PNG field"))?;
+    Ok(u32::from_be_bytes(array))
 }
 
 /// Decode unpadded or padded standard base64 (whitespace ignored).
@@ -213,9 +422,11 @@ fn decode_base64(input: &str) -> Option<Vec<u8>> {
         for (k, &byte) in bytes[i..i + take].iter().enumerate() {
             let value = b64_value(byte)?;
             if value == 64 {
-                // `=` only in the last position of the final chunk, never
-                // before a data byte.
-                if k < 2 || k != take - 1 {
+                // Padding may occupy the last one or two positions of the
+                // final chunk (`XXX=` for a 2-byte remainder, `XX==` for a
+                // 1-byte remainder), but never starts before two data bytes.
+                // A data byte after padding is refused below.
+                if k < 2 {
                     return None;
                 }
                 explicit_pad = explicit_pad.saturating_add(1);
@@ -432,12 +643,16 @@ mod tests {
             decode_base64("aGVs\nbG8=").as_deref(),
             Some(b"hello".as_slice())
         );
+        // One- and two-byte remainders use `XX==` / `XXX=`.
+        assert_eq!(decode_base64("YQ==").as_deref(), Some(b"a".as_slice()));
+        assert_eq!(decode_base64("YWI=").as_deref(), Some(b"ab".as_slice()));
         assert_eq!(decode_base64("not base64!"), None);
         assert_eq!(decode_base64("aGVsbG8=x"), None);
+        assert_eq!(decode_base64("Y===bG8="), None);
     }
 
     #[test]
-    fn rejects_non_jpeg_and_remote_sources_by_name() {
+    fn rejects_non_image_and_remote_sources_by_name() {
         assert!(matches!(
             parse_data_uri("https://example.com/a.jpg"),
             Err(ImageError::NonDataUri(scheme)) if scheme == "https"
@@ -447,8 +662,8 @@ mod tests {
             Err(ImageError::NonDataUri(scheme)) if scheme == "path"
         ));
         assert!(matches!(
-            parse_data_uri("data:image/png;base64,iVBOR"),
-            Err(ImageError::NotJpeg(kind)) if kind == "image/png"
+            parse_data_uri("data:image/gif;base64,R0lGOD"),
+            Err(ImageError::NotImage(kind)) if kind == "image/gif"
         ));
     }
 
@@ -498,8 +713,107 @@ mod tests {
         let jpeg = jpeg_2x3();
         let src = format!("data:image/jpeg;base64,{}", encode_base64(&jpeg));
         let img = parse_data_uri(&src).expect("image");
-        assert_eq!(img.jpeg, jpeg);
+        assert_eq!(img.data, jpeg);
         assert_eq!((img.width, img.height), (2, 3));
         assert_eq!(img.color_space, ImageColorSpace::DeviceRGB);
+        assert_eq!(img.filter, ImageFilter::DctDecode);
+    }
+
+    /// Build a legal, unfiltered 8-bit PNG with a single IDAT. `color_type`
+    /// is 0/2, `samples` is one scanline of raw bytes *without* filter bytes.
+    fn png_fixture(width: u32, height: u32, color_type: u8, row: &[u8]) -> Vec<u8> {
+        let mut ihdr = Vec::new();
+        ihdr.extend_from_slice(&width.to_be_bytes());
+        ihdr.extend_from_slice(&height.to_be_bytes());
+        ihdr.extend_from_slice(&[8, color_type, 0, 0, 0]);
+        let mut raw = Vec::new();
+        for _ in 0..height {
+            raw.push(0); // filter: None
+            raw.extend_from_slice(row);
+        }
+        let idat = selis_pdf_filter::flate_encode(&raw, 6);
+        let mut out = PNG_SIGNATURE.to_vec();
+        push_chunk(&mut out, b"IHDR", &ihdr);
+        push_chunk(&mut out, b"IDAT", &idat);
+        push_chunk(&mut out, b"IEND", &[]);
+        out
+    }
+
+    /// CRC-32 (IEEE 802.3), used only to build test fixtures.
+    fn crc32(data: &[u8]) -> u32 {
+        let mut crc = 0xFFFF_FFFFu32;
+        for &byte in data {
+            crc ^= u32::from(byte);
+            for _ in 0..8 {
+                crc = if crc & 1 != 0 {
+                    (crc >> 1) ^ 0xEDB8_8320
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        !crc
+    }
+
+    fn push_chunk(out: &mut Vec<u8>, kind: &[u8; 4], body: &[u8]) {
+        let len = u32::try_from(body.len()).unwrap_or(u32::MAX);
+        out.extend_from_slice(&len.to_be_bytes());
+        out.extend_from_slice(kind);
+        out.extend_from_slice(body);
+        let mut crc_input = Vec::with_capacity(kind.len().saturating_add(body.len()));
+        crc_input.extend_from_slice(kind);
+        crc_input.extend_from_slice(body);
+        out.extend_from_slice(&crc32(&crc_input).to_be_bytes());
+    }
+
+    #[test]
+    fn png_rgb_data_uri_becomes_a_flate_image() {
+        let png = png_fixture(2, 1, 2, &[0xFF, 0x00, 0x00, 0x00, 0xFF, 0x00]);
+        let src = format!("data:image/png;base64,{}", encode_base64(&png));
+        let img = parse_data_uri(&src).expect("PNG image");
+        assert_eq!((img.width, img.height), (2, 1));
+        assert_eq!(img.color_space, ImageColorSpace::DeviceRGB);
+        assert_eq!(img.filter, ImageFilter::FlateDecode);
+        let raw = selis_pdf_filter::flate_decode(&img.data).expect("re-encoded samples");
+        assert_eq!(raw, [0xFF, 0x00, 0x00, 0x00, 0xFF, 0x00]);
+    }
+
+    #[test]
+    fn png_grey_data_uri_stays_device_gray() {
+        let png = png_fixture(2, 1, 0, &[0x10, 0xE0]);
+        let src = format!("data:image/png;base64,{}", encode_base64(&png));
+        let img = parse_data_uri(&src).expect("grey PNG");
+        assert_eq!(img.color_space, ImageColorSpace::DeviceGray);
+        let raw = selis_pdf_filter::flate_decode(&img.data).expect("samples");
+        assert_eq!(raw, [0x10, 0xE0]);
+    }
+
+    #[test]
+    fn png_truncated_and_refused_features_have_typed_errors() {
+        let png = png_fixture(1, 1, 2, &[1, 2, 3]);
+        let src = format!("data:image/png;base64,{}", encode_base64(&png));
+        // Cut the IEND chunk off: decode_png refuses a PNG with no IEND.
+        let cut = png.len().saturating_sub(12);
+        let truncated = format!(
+            "data:image/png;base64,{}",
+            encode_base64(png.get(..cut).unwrap_or(&png))
+        );
+        assert!(matches!(
+            parse_data_uri(&truncated),
+            Err(ImageError::MalformedPng(_))
+        ));
+        assert!(parse_data_uri(&src).is_ok());
+
+        // Palette PNGs are explicitly outside the subset.
+        let mut pal = png_fixture(1, 1, 3, &[0]);
+        // Fix the IHDR colour type we wrote as RGB into a palette marker.
+        if let Some(slot) = pal.get_mut(25) {
+            *slot = 3;
+        }
+        let pal_src = format!("data:image/png;base64,{}", encode_base64(&pal));
+        assert!(matches!(
+            parse_data_uri(&pal_src),
+            Err(ImageError::UnsupportedPng) | Err(ImageError::MalformedPng(_))
+        ));
     }
 }

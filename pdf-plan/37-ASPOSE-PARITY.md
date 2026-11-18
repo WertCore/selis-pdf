@@ -127,8 +127,8 @@ headless Office suite, never a shelled-out TeX distribution (ADR-P0008; `01 §3`
 | DOCX → PDF | High-fidelity Word rendering | 🟡 Partial | `selis-pdf-convert::docx`: headings, bold/italic runs, list levels, real tables. **Not** carried: page setup, alignment, spacing, colour, fonts, images, text boxes, footnotes, fields, tracked changes. Structure, not laid-out Word, and the UI says so. `35` Phase 3. |
 | XLSX → PDF | Spreadsheet rendering | 🟡 Partial | `selis-pdf-convert::xlsx`: one page per sheet, used range as a table, shared/inline strings, formula cached values, booleans. **Not** carried: cell formats (dates print as serials), formula evaluation, merged cells, charts, column widths. `35` Phase 3. |
 | PPTX → PDF | Slide rendering | 🟡 Partial | `selis-pdf-convert::pptx`: one page per slide, title/subtitle placeholders, bold/italic runs, bulleted/numbered bodies, DrawingML tables. **Not** carried: slide size, theme, fonts, images, charts, SmartArt, speaker notes. `35` Phase 3. |
-| HTML → PDF | Full HTML/CSS layout | 🟡 Partial | Owned HTML subset with pagination, GFM/HTML tables, and `page-break-before/after` + `break-before/after` CSS. **New (conv-fidelity):** genuine `/Subtype /Link` URI annotations for `<a href>`; inline `style=` support for `color:` (`#rgb`, `#rrggbb`, `rgb()`, 10 named colours), `font-size:` (`pt`/`px`/bare number, clamped), `text-align:` (left/center/right) and the legacy `align=` on cells; nested-style inheritance. **New (conv-images):** `<img src="data:image/jpeg;base64,…">` embeds a real `/Filter /DCTDecode` JPEG XObject; `/Width`/`/Height`/`/ColorSpace` come from the SOF marker, `width`/`height` attributes set the placement box (clamped to the page width). Remote URLs, non-JPEG data URIs and malformed JPEGs are refused by name and skipped. Read-back verified by re-opening the PDF and asserting annotation URIs/rects, `rg`/`Tf` operators, text x-positions, the image XObject entries/`cm`/`Do` box, and rasterised ink. **Not** carried: `@media print`, external stylesheets, a full CSS cascade/rulesheets, relative units, font embedding/subsetting, PNG/GIF/WebP/remote/CSS-background images, charts/math, real CSS layout. `35` Phase 3 (page-break row implemented+tested; browser-check open). |
-| Markdown → PDF | Supported | ✅ Shipped | Documented subset through the convert chunk. **New (conv-fidelity):** link annotations (`/A << /S /URI … >>`) over link text instead of printing the URL in parentheses; GFM `:---:`/`---:` column alignment now drives cell placement. **New (conv-images):** a paragraph that is exactly `![alt](data:image/jpeg;base64,…)` embeds the same `DCTDecode` XObject as HTML; other URLs/formats are refused by name and skipped. Read-back verified (XObject, placement, raster ink). Font embedding/subsetting, non-JPEG/remote/inline images and full-fidelity rendering remain out of scope. `35` Phase 1A.1. |
+| HTML → PDF | Full HTML/CSS layout | 🟡 Partial | Owned HTML subset with pagination, GFM/HTML tables, and `page-break-before/after` + `break-before/after` CSS. **New (conv-fidelity):** genuine `/Subtype /Link` URI annotations for `<a href>`; inline `style=` support for `color:` (`#rgb`, `#rrggbb`, `rgb()`, 10 named colours), `font-size:` (`pt`/`px`/bare number, clamped), `text-align:` (left/center/right) and the legacy `align=` on cells; nested-style inheritance. **New (conv-images):** `<img src="data:image/jpeg;base64,…">` embeds a real `/Filter /DCTDecode` JPEG XObject; `data:image/png;base64,…` is decoded through `selis-image` (zlib + PNG filters), alpha flattened over white, and re-encoded as a `/FlateDecode` XObject (`/DeviceGray` or `/DeviceRGB`). `/Width`/`/Height`/`/ColorSpace` come from the source, `width`/`height` attributes set the placement box (clamped to the page width). **New (conv-png):** a single inline `style="background-image:url(data:…)"` on a supported block element draws the same JPEG/PNG behind that element's text runs. Remote URLs, GIF/WebP/SVG data URIs, malformed images and unsupported PNG features (palette/interlaced/non-8-bit) are refused by name and skipped. Read-back verified by re-opening the PDF and asserting annotation URIs/rects, `rg`/`Tf` operators, text x-positions, image XObject entries/`cm`/`Do` box (including DCT vs Flate filters and grey/RGB colour spaces), draw-before-text ordering for backgrounds, and rasterised red/known pixels. **Not** carried: `@media print`, external stylesheets, a full CSS cascade/rulesheets, relative units, font embedding/subsetting, GIF/WebP/SVG/remote images, gradients or multi-layer CSS backgrounds, charts/math, real CSS layout. `35` Phase 3 (page-break row implemented+tested; browser-check open). |
+| Markdown → PDF | Supported | ✅ Shipped | Documented subset through the convert chunk. **New (conv-fidelity):** link annotations (`/A << /S /URI … >>`) over link text instead of printing the URL in parentheses; GFM `:---:`/`---:` column alignment now drives cell placement. **New (conv-images/conv-png):** a paragraph that is exactly `![alt](data:image/jpeg;base64,…)` or `![alt](data:image/png;base64,…)` embeds the same `DCTDecode`/`FlateDecode` XObject as HTML; other URLs/formats and malformed images are refused by name and skipped. Read-back verified (XObject filter/colour-space/geometry, placement, raster ink). Font embedding/subsetting, GIF/WebP/SVG/remote/inline images and full-fidelity rendering remain out of scope. `35` Phase 1A.1. |
 | CSV → PDF | Supported | ✅ Shipped | Owned table dump: quoted fields, even columns, repeated header row, page breaks. Not a spreadsheet renderer, and the UI says so. `35` Phase 1A.1. |
 | EPUB → PDF | Supported | 🟡 Partial | `selis-pdf-convert::epub`: spine XHTML through the HTML subset, paginated. No CSS, fonts, images, SVG, math, or ToC. `35` Phase 3. |
 | LaTeX / TeX → PDF | TeX typesetting | 🟡 Partial | `selis-pdf-convert::latex`: sections, lists, verbatim, styled runs; every other command dropped and the docs say so. No math, `tabular`, figures, or package macros. Never shells out to a TeX distribution. `35` Phase 3. |
@@ -161,9 +161,11 @@ headless Office suite, never a shelled-out TeX distribution (ADR-P0008; `01 §3`
 broad and shipped, each with a read-back verifier. Its *inbound* conversion (X → PDF) is a
 collection of honest structural subsets, not fidelity renderers — the deliberate inverse of
 Aspose, which prioritises inbound fidelity. The gap to Aspose here is fidelity, not surface.
-Inbound images are no longer a total gap: JPEG data URIs in HTML/Markdown now embed as real
-`DCTDecode` XObjects (read-back and raster-verified), narrowing one honest fidelity row while
-PNG/GIF/WebP/remote/CSS-background images and true layout remain out of scope.
+Inbound images are no longer a total gap: JPEG and PNG data URIs in HTML/Markdown now embed as
+real `DCTDecode` and `FlateDecode` XObjects respectively, and a narrow inline
+`background-image: url(data:…)` draws JPEG/PNG behind text (all read-back and raster-verified),
+narrowing honest fidelity rows while GIF/WebP/SVG/remote images, arbitrary CSS backgrounds and
+true layout remain out of scope.
 
 ---
 
@@ -477,11 +479,13 @@ Page operations are the single area where Selis is at or beyond full parity.
 
 - **Breadth and maturity of conversion fidelity.** Aspose renders DOCX/XLSX/PPTX/HTML/LaTeX
   with high fidelity (fonts, images, layout, charts, math). Selis converts *structure*, not
-  layout — honest subsets, not renderers. This is the largest real gap. The `conv-images` slice
-  narrows one part of it: HTML/Markdown now embed JPEG data-URI images as `DCTDecode` XObjects
-  (read-back + raster verified), but PNG/GIF/WebP data URIs, remote images, CSS background
-  images, images in the Office/EPUB readers and true CSS layout are still missing — Aspose's
-  image and layout fidelity remains well ahead.
+  layout — honest subsets, not renderers. This is the largest real gap. The `conv-images` and
+  `conv-png` slices narrow one part of it: HTML/Markdown now embed JPEG data-URI images as
+  `DCTDecode` XObjects and PNG data URIs as `FlateDecode` XObjects, with a narrow inline
+  `background-image: url(data:…)` drawing behind text (all read-back + raster verified), but
+  GIF/WebP/SVG data URIs, remote images, arbitrary CSS backgrounds, images in the
+  Office/EPUB readers and true CSS layout are still missing — Aspose's image and layout fidelity
+  remains well ahead.
 - **A shipping, documented SDK today** across five language ecosystems. Selis's SDK is
   Phase 9; the comparison is premature until then.
 - **Full annotation, link, and JavaScript *authoring*** — Aspose creates them

@@ -177,8 +177,9 @@ fn parse_lines(lines: &[&str], base_indent: usize) -> Vec<Block> {
     out
 }
 
-/// Turn a paragraph that is exactly `![alt](data:image/jpeg;base64,…)` into an
-/// image block. A remote URL, other scheme or malformed JPEG is refused by name
+/// Turn a paragraph that is exactly `![alt](data:image/jpeg;base64,…)` or
+/// `![alt](data:image/png;base64,…)` into an image block. A remote URL, other
+/// scheme, or malformed JPEG/PNG is refused by name
 /// with a typed image error and skipped (it falls through to `parse_inline`,
 /// which drops the image markup, so no source text is painted). Images inline
 /// with other text are still skipped — only standalone image paragraphs embed.

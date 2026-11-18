@@ -3,8 +3,8 @@
 //! Every page carries a proper `/Resources` dictionary referencing five
 //! standard-14 Type 1 font objects with `/Encoding /WinAnsiEncoding`; the
 //! content stream shows WinAnsi byte strings produced by the layout encoder.
-//! Pages with images also carry an `/XObject` dict of `DCTDecode` JPEG streams,
-//! drawn at their measured rectangles with `cm` + `Do`.
+//! Pages with images also carry an `/XObject` dict of `DCTDecode` JPEG or
+//! `FlateDecode` PNG streams, drawn at their measured rectangles with `cm` + `Do`.
 
 use selis_bytes::Bytes;
 use selis_error::Result;
@@ -41,7 +41,7 @@ const FONTS: [&str; 5] = [
 ///
 /// A complete single-revision PDF 1.4 document: header, catalog, page tree,
 /// one content stream and shared font resources per page (plus an `/XObject`
-/// dict of JPEG image streams when images were embedded), classic xref and
+/// dict of JPEG/PNG image streams when images were embedded), classic xref and
 /// trailer. The output opens in this engine and conforming readers.
 pub(crate) fn build(
     blocks: &[Block],
@@ -85,8 +85,8 @@ pub(crate) fn build(
 
     let mut object_count = 6u64;
     for page in &pages {
-        // Allocate one DCTDecode XObject per image on this page and remember
-        // the content-stream placement (resource name + measured rectangle).
+        // Allocate one image XObject per image on this page and remember the
+        // content-stream placement (resource name + measured rectangle).
         let mut xobjects: Vec<(Bytes, Obj)> = Vec::new();
         let mut placements: Vec<(String, f64, f64, f64, f64)> = Vec::new();
         for line in &page.lines {
@@ -263,11 +263,13 @@ pub(crate) fn build(
     b.write(budget, g)
 }
 
-/// Build a `DCTDecode` image XObject from a validated JPEG.
+/// Build an image XObject from a validated JPEG or PNG.
 ///
-/// The JPEG bytes are embedded verbatim: no decoder runs on the conversion
-/// path. `/Width`, `/Height` and `/ColorSpace` come from the SOF marker, so a
-/// reader can render the stream without guessing its geometry.
+/// JPEG bytes are embedded verbatim behind `/Filter /DCTDecode`; a PNG's
+/// `image.data` is already Flate-encoded raw samples behind
+/// `/Filter /FlateDecode`. `/Width`, `/Height` and `/ColorSpace` come from the
+/// parsed source (SOF for JPEG, IHDR for PNG), so a reader can render the stream
+/// without guessing its geometry.
 ///
 /// # Budget
 ///
@@ -277,7 +279,7 @@ pub(crate) fn build(
 /// # Malformed Input
 ///
 /// None: `image` is validated by `image::parse_data_uri` before it reaches
-/// here; a malformed JPEG never produces an XObject.
+/// here; a malformed JPEG or PNG never produces an XObject.
 fn image_xobject(image: &EmbeddedImage) -> Obj {
     Obj::Stream {
         dict: vec![
@@ -290,13 +292,13 @@ fn image_xobject(image: &EmbeddedImage) -> Obj {
                 Obj::Name(bytes(image.color_space.as_bytes())),
             ),
             (bytes(b"BitsPerComponent"), Obj::Int(8)),
-            (bytes(b"Filter"), Obj::Name(bytes(b"DCTDecode"))),
+            (bytes(b"Filter"), Obj::Name(bytes(image.filter.as_bytes()))),
             (
                 bytes(b"Length"),
-                Obj::Int(i64::try_from(image.jpeg.len()).unwrap_or(i64::MAX)),
+                Obj::Int(i64::try_from(image.data.len()).unwrap_or(i64::MAX)),
             ),
         ],
-        data: Bytes::copy_from_slice(&image.jpeg),
+        data: Bytes::copy_from_slice(&image.data),
     }
 }
 

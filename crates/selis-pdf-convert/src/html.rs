@@ -1,7 +1,7 @@
 //! The HTML subset parser (see the crate docs for the supported subset).
 
 use crate::blocks::{Block, ImageBlock, Span, Style, TextAlign};
-use crate::image::parse_data_uri;
+use crate::image::{parse_data_uri, EmbeddedImage};
 
 /// An open-list context.
 #[derive(Debug)]
@@ -13,20 +13,25 @@ struct ListCtx {
 /// The narrow set of inline properties this converter understands. Each field
 /// is optional so nested elements can override only what they declare; unknown
 /// declarations are dropped and never guessed at.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone)]
 struct InlineProps {
     color: Option<[f64; 3]>,
     size: Option<f64>,
     align: Option<TextAlign>,
+    /// `background-image: url(data:image/…)` decoded through the same image
+    /// path as `<img src>`; painted behind the runs of this element.
+    background: Option<EmbeddedImage>,
 }
 
 impl InlineProps {
-    /// Read `color:`, `font-size:` and `text-align:` from a `style=` attribute,
-    /// plus the legacy `align=` attribute for block alignment.
+    /// Read `color:`, `font-size:`, `text-align:` and `background-image:` from a
+    /// `style=` attribute, plus the legacy `align=` attribute for block
+    /// alignment. Unknown declarations are ignored; remote URLs in
+    /// `background-image` are refused by name and dropped by the image parser.
     fn from_attrs(style: Option<&str>, align: Option<&str>) -> Self {
         let mut out = Self::default();
         if let Some(style) = style {
-            for declaration in style.split(';') {
+            for declaration in split_declarations(style) {
                 let mut parts = declaration.splitn(2, ':');
                 let property = parts.next().unwrap_or("").trim().to_ascii_lowercase();
                 let value = parts.next().unwrap_or("").trim();
@@ -44,6 +49,11 @@ impl InlineProps {
                     "text-align" => {
                         if let Some(align) = css_align(value) {
                             out.align = Some(align);
+                        }
+                    }
+                    "background-image" => {
+                        if let Some(image) = css_background_image(value) {
+                            out.background = Some(image);
                         }
                     }
                     _ => {}
@@ -257,6 +267,9 @@ impl<'a> Parser<'a> {
             if out.align.is_none() {
                 out.align = frame.props.align;
             }
+            if out.background.is_none() {
+                out.background = frame.props.background.clone();
+            }
         }
         out
     }
@@ -298,6 +311,7 @@ impl<'a> Parser<'a> {
                 && last.color == props.color
                 && last.size == props.size
                 && last.align == props.align
+                && last.background == props.background
             {
                 last.text.push_str(&collapsed);
                 return;
@@ -310,6 +324,7 @@ impl<'a> Parser<'a> {
             color: props.color,
             size: props.size,
             align: props.align,
+            background: props.background,
         });
     }
 
@@ -317,8 +332,8 @@ impl<'a> Parser<'a> {
         self.spans.iter().all(|s| s.text.trim().is_empty())
     }
 
-    /// Embed an `<img>` whose `src` is a base64 JPEG data URI. Anything else
-    /// (remote URL, file path, PNG/GIF/WebP data URI, malformed JPEG) is
+    /// Embed an `<img>` whose `src` is a base64 JPEG/PNG data URI. Anything else
+    /// (remote URL, file path, GIF/WebP/SVG data URI, malformed image) is
     /// refused with a typed image error and skipped: no text is painted and no
     /// XObject is emitted. Explicit
     /// `width`/`height` attributes override the intrinsic geometry in layout.
@@ -1113,6 +1128,84 @@ fn css_align(value: &str) -> Option<TextAlign> {
     }
 }
 
+/// Split an inline `style=` value on top-level semicolons only.
+///
+/// Semicolons inside a quoted string or a `url(...)` token are data (a data URI
+/// carries `image/png;base64,…`), not declaration separators. Everything else
+/// is left verbatim; a stray quote/paren simply keeps the rest of the value in
+/// the current declaration rather than failing the whole attribute.
+///
+/// # Budget
+///
+/// Allocates one slice list proportional to the number of declarations; the
+/// source attribute is bounded by the document text.
+///
+/// # Malformed Input
+///
+/// Never fails: unbalanced quotes or parentheses are tolerated and yield one
+/// declaration covering the remainder of the string.
+fn split_declarations(style: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    let mut depth = 0u32;
+    let mut quote: Option<char> = None;
+    for (i, ch) in style.char_indices() {
+        if let Some(q) = quote {
+            if ch == q {
+                quote = None;
+            }
+        } else {
+            match ch {
+                '\'' | '"' => quote = Some(ch),
+                '(' => depth = depth.saturating_add(1),
+                ')' => depth = depth.saturating_sub(1),
+                ';' if depth == 0 => {
+                    out.push(style.get(start..i).unwrap_or(""));
+                    start = i.saturating_add(1);
+                }
+                _ => {}
+            }
+        }
+    }
+    out.push(style.get(start..).unwrap_or(""));
+    out
+}
+
+/// Parse the narrow `background-image: url("data:image/…")` subset.
+///
+/// Exactly one `url(...)` token is accepted, quoted (`"` or `'`) or bare. Its
+/// payload goes through the same [`parse_data_uri`] as `<img src>`, so only
+/// base64 JPEG/PNG data URIs decode; remote URLs are refused *by name* and
+/// dropped. Gradients, multiple images and other values return `None` and are
+/// ignored by the caller — this is not a general CSS engine.
+///
+/// # Budget
+///
+/// No charge at this boundary: the decoded image's bytes are charged when the
+/// converter writes its XObject and lays out the runs.
+///
+/// # Malformed Input
+///
+/// `None` for anything that is not a single `url(...)` data URI, and for any
+/// image the parser refuses (bad base64, malformed JPEG/PNG, unsupported PNG
+/// feature, remote scheme). No partial image is returned.
+fn css_background_image(value: &str) -> Option<EmbeddedImage> {
+    let v = value.trim();
+    if v.len() < 5 || !v.get(..4)?.eq_ignore_ascii_case("url(") || !v.ends_with(')') {
+        return None;
+    }
+    let inner = v.get(4..v.len().saturating_sub(1))?.trim();
+    let uri = if inner.len() >= 2
+        && ((inner.starts_with('"') && inner.ends_with('"'))
+            || (inner.starts_with('\'') && inner.ends_with('\'')))
+    {
+        inner.get(1..inner.len().saturating_sub(1))?
+    } else {
+        inner
+    };
+    parse_data_uri(uri).ok()
+}
+
 /// Store a recognised attribute into the tag scanner's scratch slots. Shared
 /// by the quoted and unquoted value paths so the match is compiled once.
 fn keep_attribute(
@@ -1534,6 +1627,29 @@ mod tests {
             .expect("the plain run");
         assert_eq!(before.color, Some([1.0, 0.0, 0.0]));
         assert_eq!(before.size, None);
+    }
+
+    #[test]
+    fn css_declarations_keep_semicolons_inside_urls() {
+        let parts = split_declarations(
+            "color:red; background-image:url(data:image/png;base64,AAA); font-size:9pt",
+        );
+        assert_eq!(parts.len(), 3);
+        assert!(parts[1].contains("image/png;base64,AAA"));
+        assert!(parts[2].contains("font-size"));
+    }
+
+    #[test]
+    fn background_image_refuses_remote_urls_and_non_urls() {
+        assert!(css_background_image("url(https://example.com/a.png)").is_none());
+        assert!(css_background_image("linear-gradient(red, blue)").is_none());
+        assert!(css_background_image("none").is_none());
+        assert!(css_background_image("url(data:image/gif;base64,R0lGOD)").is_none());
+        let blocks = parse("<p style=\"background-image:url(https://example.com/a.png)\">x</p>");
+        let Block::Paragraph(spans) = &blocks[0] else {
+            panic!("expected a paragraph");
+        };
+        assert!(spans.iter().all(|span| span.background.is_none()));
     }
 
     #[test]

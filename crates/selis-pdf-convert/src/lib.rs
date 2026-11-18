@@ -23,6 +23,7 @@
 //! whole paragraph is `![alt](data:image/jpeg;base64,…)`** is embedded as a
 //! real JPEG XObject (see below); inline images inside other text, reference
 //! links, and raw HTML inside Markdown are ignored or rendered as plain text.
+//! A whole-paragraph `![alt](data:image/png;base64,…)` embeds a PNG the same way.
 //!
 //! # Supported HTML subset
 //!
@@ -33,29 +34,36 @@
 //! `<th>` in the first row makes a header row; nested tables and lists inside
 //! cells are not supported), and block containers (`<div>`, `<section>`,
 //! `<article>`, `<main>`, `<table>` cells). `<img src="…">` embeds an image
-//! when `src` is a **base64 JPEG data URI**; `width`/`height` attributes
-//! override its intrinsic size (see below). `<script>` and `<style>` content
+//! when `src` is a **base64 JPEG or PNG data URI**; `width`/`height` attributes
+//! override its intrinsic size (see below). An inline
+//! `style="background-image: url(data:image/…;base64,…)"` paints the same image
+//! behind that element's text runs (see below). `<script>` and `<style>` content
 //! is dropped; unknown tags unwrap to their text. Named (`&amp;`, `&eacute;`,
 //! …) and numeric (`&#8212;`, `&#x2014;`) entities are decoded.
 //!
-//! # Supported images (JPEG data URIs only)
+//! # Supported images (JPEG and PNG data URIs)
 //!
-//! HTML `<img src="data:image/jpeg;base64,…">` and a Markdown paragraph that
-//! is exactly `![alt](data:image/jpeg;base64,…)` are decoded and embedded as a
-//! real image XObject: the JPEG bytes are written verbatim behind
-//! `/Filter /DCTDecode`; true `/Width`, `/Height` and `/ColorSpace`
-//! (`/DeviceGray`, `/DeviceRGB` or `/DeviceCMYK`) come from the JPEG SOF
-//! marker. Intrinsic pixels map to points at 96 dpi (0.75 pt/px). HTML
-//! `width`/`height` attributes override the intrinsic size (bare number = pt,
-//! `px` at 96 dpi, `pt` = pt); when only one is given the other follows the
-//! intrinsic aspect ratio, and the placement rectangle is clamped to the
-//! page's text width. Read-back tests re-open the PDF and assert the XObject
-//! entries, the `cm`/`Do` placement and the rasterised ink.
+//! HTML `<img src="data:image/jpeg;base64,…">` (or `data:image/png;base64,…`)
+//! and a Markdown paragraph that is exactly the same data URI inside `![alt]()`
+//! are decoded and embedded as a real image XObject. JPEG bytes are written
+//! verbatim behind `/Filter /DCTDecode`; a PNG's IDAT is decoded and its raw
+//! samples re-encoded behind `/Filter /FlateDecode`. `/Width`, `/Height` and
+//! `/ColorSpace` come from the source (JPEG SOF: `/DeviceGray`, `/DeviceRGB` or
+//! `/DeviceCMYK`; PNG IHDR: `/DeviceGray` or `/DeviceRGB`). Intrinsic pixels map
+//! to points at 96 dpi (0.75 pt/px). HTML `width`/`height` attributes override
+//! the intrinsic size (bare number = pt, `px` at 96 dpi, `pt` = pt); when only
+//! one is given the other follows the intrinsic aspect ratio, and the placement
+//! rectangle is clamped to the page's text width. Read-back tests re-open the
+//! PDF and assert the XObject entries, the `cm`/`Do` placement and the
+//! rasterised ink.
 //!
-//! Everything else is **refused by name and skipped** (no text painted, no
-//! XObject emitted): remote `http(s)` URLs, `file:` paths, any other scheme,
-//! non-JPEG data URIs (PNG/GIF/WebP/SVG), malformed or truncated JPEGs, inline
-//! images mixed with other text, and CSS `background-image`. There is no
+//! PNG support is deliberately narrow: 8-bit non-interlaced colour types 0
+//! (grey), 2 (RGB), 4 (grey+alpha) and 6 (RGBA). Alpha is **flattened over
+//! white**. Palette (3), interlaced, other bit depths and other media types are
+//! refused with a typed error. Everything else is **refused by name and
+//! skipped** (no text painted, no XObject emitted): remote `http(s)` URLs,
+//! `file:` paths, any other scheme, GIF/WebP/SVG data URIs, malformed or
+//! truncated files, and inline images mixed with other text. There is no
 //! network access anywhere on the conversion path.
 //!
 //! # Supported inline styling
@@ -72,6 +80,11 @@
 //! - `text-align:` — `left`, `center`, `right`, applied to paragraphs and
 //!   table cells by shifting the laid-out text runs. `align="left|center|right"`
 //!   on `<td>`/`<th>` is honoured too.
+//! - `background-image:` — only a single `url("data:image/…;base64,…")` token
+//!   (quoted or bare) is understood; the JPEG/PNG is painted behind that
+//!   element's text runs. Remote URLs, gradients, multiple images and unknown
+//!   declarations are ignored or refused by name. This is a narrow subset, not
+//!   a CSS engine.
 //! - Column alignment from GFM `:---` / `---:` / `:---:` delimiter markers is
 //!   applied to the whole column.
 //!
@@ -92,14 +105,15 @@
 //! # Still out of scope (honest gaps)
 //!
 //! No font embedding or subsetting (only the standard-14 base fonts). Image
-//! embedding is limited to the JPEG data URIs described above: PNG/GIF/WebP
-//! data URIs, remote images, CSS background images, images embedded in DOCX /
-//! XLSX / PPTX / EPUB, and inline images inside a Markdown paragraph are still
-//! not embedded. There is no real CSS layout (floats, positioning, flexible
-//! boxes, real table layout, page margins from CSS), no charts, math or
-//! SVG-in-HTML, and no fidelity renderer. This subset produces honest,
-//! structurally useful PDFs with clickable links, a little inline styling and
-//! embedded JPEGs — not an Aspose-equivalent conversion.
+//! embedding is limited to the JPEG/PNG data URIs and the single `url(...)`
+//! `background-image` described above; GIF/WebP/SVG data URIs, remote images,
+//! arbitrary CSS backgrounds, images embedded in DOCX / XLSX / PPTX / EPUB,
+//! and inline images inside a Markdown paragraph are still not embedded. There
+//! is no real CSS layout (floats, positioning, flexible boxes, real table
+//! layout, page margins from CSS), no charts, math or SVG-in-HTML, and no
+//! fidelity renderer. This subset produces honest, structurally useful PDFs
+//! with clickable links, a little inline styling and embedded JPEG/PNG images —
+//! not an Aspose-equivalent conversion.
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 #![forbid(unsafe_code)]
@@ -185,9 +199,9 @@ pub fn csv_to_pdf(
 /// # Malformed Input
 ///
 /// Markdown never fails to parse — every input produces a document. Images
-/// whose source is not a base64 JPEG data URI (remote URLs, other schemes,
-/// other media types, malformed JPEGs) are refused with a typed image error
-/// and skipped. Returns `BUDGET_*` on budget exhaustion.
+/// whose source is not a base64 JPEG/PNG data URI (remote URLs, other schemes,
+/// other media types, malformed images, unsupported PNG features) are refused
+/// with a typed image error and skipped. Returns `BUDGET_*` on budget exhaustion.
 ///
 /// # Output Guarantees
 ///
@@ -213,9 +227,10 @@ pub fn markdown_to_pdf(
 /// # Malformed Input
 ///
 /// HTML never fails to parse — unclosed tags, stray `<`, and unknown entities
-/// degrade to text. Images whose `src` is not a base64 JPEG data URI (remote
-/// URLs, other schemes, other media types, malformed JPEGs) are refused with a
-/// typed image error and skipped. Returns `BUDGET_*` on budget exhaustion.
+/// degrade to text. Images whose `src` (or inline `background-image` URL) is
+/// not a base64 JPEG/PNG data URI (remote URLs, other schemes, other media
+/// types, malformed images, unsupported PNG features) are refused with a typed
+/// image error and skipped. Returns `BUDGET_*` on budget exhaustion.
 ///
 /// # Output Guarantees
 ///
@@ -969,7 +984,7 @@ mod fidelity {
         assert!(right_x > plain_x + 5.0, "plain={plain_x} right={right_x}");
     }
 
-    // ---- Embedded JPEG images ---------------------------------------------
+    // ---- Embedded JPEG/PNG images -----------------------------------------
 
     /// A real, decodable 32×32 solid-red baseline JPEG with an SOF0 marker.
     fn red_jpeg() -> Vec<u8> {
@@ -1125,10 +1140,11 @@ mod fidelity {
     }
 
     #[test]
-    fn remote_and_non_jpeg_images_are_skipped_not_fetched() {
+    fn remote_and_malformed_images_are_skipped_not_fetched() {
         let bytes = from_html(
             "<img src=\"https://example.com/a.jpg\">\
              <img src=\"file:///etc/passwd\">\
+             <img src=\"data:image/gif;base64,R0lGOD\">\
              <img src=\"data:image/png;base64,iVBORw0KGgo=\">",
         );
         assert!(
@@ -1171,5 +1187,260 @@ mod fidelity {
             }
         }
         assert!(red, "page did not render red ink inside the image box");
+    }
+
+    // ---- Embedded PNG images and inline backgrounds ------------------------
+
+    /// CRC-32 (IEEE 802.3), used to build PNG fixtures with valid chunks.
+    fn crc32(data: &[u8]) -> u32 {
+        let mut crc = 0xFFFF_FFFFu32;
+        for &byte in data {
+            crc ^= u32::from(byte);
+            for _ in 0..8 {
+                crc = if crc & 1 != 0 {
+                    (crc >> 1) ^ 0xEDB8_8320
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        !crc
+    }
+
+    fn push_chunk(out: &mut Vec<u8>, kind: &[u8; 4], body: &[u8]) {
+        let len = u32::try_from(body.len()).unwrap_or(u32::MAX);
+        out.extend_from_slice(&len.to_be_bytes());
+        out.extend_from_slice(kind);
+        out.extend_from_slice(body);
+        let mut crc_input = Vec::with_capacity(kind.len().saturating_add(body.len()));
+        crc_input.extend_from_slice(kind);
+        crc_input.extend_from_slice(body);
+        out.extend_from_slice(&crc32(&crc_input).to_be_bytes());
+    }
+
+    /// An unfiltered, single-IDAT 8-bit PNG. `color_type` is 0/2/6 and `row`
+    /// holds one scanline of raw samples (no filter byte).
+    fn png_fixture(width: u32, height: u32, color_type: u8, row: &[u8]) -> Vec<u8> {
+        let mut ihdr = Vec::new();
+        ihdr.extend_from_slice(&width.to_be_bytes());
+        ihdr.extend_from_slice(&height.to_be_bytes());
+        ihdr.extend_from_slice(&[8, color_type, 0, 0, 0]);
+        let mut raw = Vec::new();
+        for _ in 0..height {
+            raw.push(0); // filter: None
+            raw.extend_from_slice(row);
+        }
+        let idat = selis_pdf_filter::flate_encode(&raw, 6);
+        let mut out = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        push_chunk(&mut out, b"IHDR", &ihdr);
+        push_chunk(&mut out, b"IDAT", &idat);
+        push_chunk(&mut out, b"IEND", &[]);
+        out
+    }
+
+    fn red_png() -> Vec<u8> {
+        png_fixture(32, 32, 2, &[0xFF, 0x00, 0x00].repeat(32))
+    }
+
+    #[test]
+    fn html_png_data_uri_becomes_a_flate_image_xobject() {
+        let png = red_png();
+        let src = format!("data:image/png;base64,{}", b64(&png));
+        let bytes = from_html(&format!("<img src=\"{src}\">"));
+        crate::testkit::opens_with_page_count(&bytes, 1);
+
+        let (dict, data) = image_stream(&bytes).expect("image XObject in re-opened PDF");
+        assert_eq!(dict_name(&dict, b"Type").as_deref(), Some(&b"XObject"[..]));
+        assert_eq!(dict_name(&dict, b"Subtype").as_deref(), Some(&b"Image"[..]));
+        assert_eq!(dict_int(&dict, b"Width"), Some(32));
+        assert_eq!(dict_int(&dict, b"Height"), Some(32));
+        assert_eq!(dict_int(&dict, b"BitsPerComponent"), Some(8));
+        assert_eq!(
+            dict_name(&dict, b"Filter").as_deref(),
+            Some(&b"FlateDecode"[..])
+        );
+        assert_eq!(
+            dict_name(&dict, b"ColorSpace").as_deref(),
+            Some(&b"DeviceRGB"[..])
+        );
+        // The stream is Flate-compressed, *unfiltered* RGB samples — three
+        // colour bytes per pixel, not the original PNG file.
+        let raw = selis_pdf_filter::flate_decode(&data).expect("raw samples");
+        assert_eq!(raw.len(), 32 * 32 * 3);
+        assert!(raw.chunks_exact(3).all(|px| px == [0xFF, 0x00, 0x00]));
+        assert_ne!(data, png, "PNG file bytes must not be embedded verbatim");
+
+        let xobj = crate::testkit::resolved_objects(&bytes)
+            .into_iter()
+            .any(|(_, obj)| {
+                if let Obj::Dict(pairs) = obj {
+                    pairs.iter().any(|(k, v)| {
+                        k.as_slice() == b"XObject"
+                            && matches!(v, Obj::Dict(x) if x.iter().any(|(nk, _)| nk.as_slice() == b"Im1"))
+                    })
+                } else {
+                    false
+                }
+            });
+        assert!(xobj, "page resources must carry /XObject /Im1");
+        let content = stream(&bytes);
+        assert!(content.contains("/Im1 Do"), "no image draw: {content}");
+        assert!(
+            content.contains("24 0 0 24 54 714 cm"),
+            "unexpected placement rect: {content}"
+        );
+    }
+
+    #[test]
+    fn png_grey_is_device_gray_and_alpha_is_flattened_over_white() {
+        let grey = png_fixture(2, 1, 0, &[0x20, 0xE0]);
+        let src = format!("data:image/png;base64,{}", b64(&grey));
+        let bytes = from_html(&format!("<img src=\"{src}\">"));
+        let (dict, data) = image_stream(&bytes).expect("grey image");
+        assert_eq!(
+            dict_name(&dict, b"ColorSpace").as_deref(),
+            Some(&b"DeviceGray"[..])
+        );
+        assert_eq!(
+            selis_pdf_filter::flate_decode(&data).expect("grey samples"),
+            [0x20, 0xE0]
+        );
+
+        // Colour type 6: opaque red next to a fully transparent pixel. The
+        // transparent pixel must read back as white, not black or green.
+        let rgba = png_fixture(2, 1, 6, &[0xFF, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x00]);
+        let src = format!("data:image/png;base64,{}", b64(&rgba));
+        let bytes = from_html(&format!("<img src=\"{src}\">"));
+        let (dict, data) = image_stream(&bytes).expect("RGBA image");
+        assert_eq!(
+            dict_name(&dict, b"ColorSpace").as_deref(),
+            Some(&b"DeviceRGB"[..])
+        );
+        assert_eq!(
+            selis_pdf_filter::flate_decode(&data).expect("flattened samples"),
+            [0xFF, 0x00, 0x00, 0xFF, 0xFF, 0xFF]
+        );
+    }
+
+    #[test]
+    fn markdown_png_data_uri_and_explicit_size_read_back() {
+        let png = red_png();
+        let src = format!("data:image/png;base64,{}", b64(&png));
+        let bytes = from_md(&format!("![a red square]({src})"));
+        let (dict, data) = image_stream(&bytes).expect("image from Markdown PNG");
+        assert_eq!(dict_int(&dict, b"Width"), Some(32));
+        assert_eq!(dict_int(&dict, b"Height"), Some(32));
+        assert_eq!(
+            dict_name(&dict, b"Filter").as_deref(),
+            Some(&b"FlateDecode"[..])
+        );
+        assert!(!data.is_empty());
+
+        let exact = from_html(&format!("<img src=\"{src}\" width=\"100\" height=\"50\">"));
+        assert!(
+            stream(&exact).contains("100 0 0 50 54 688 cm"),
+            "explicit PNG box: {}",
+            stream(&exact)
+        );
+        let clamped = from_html(&format!("<img src=\"{src}\" width=\"1000\">"));
+        assert!(
+            stream(&clamped).contains("504 0 0 504 54 234 cm"),
+            "clamped PNG box: {}",
+            stream(&clamped)
+        );
+    }
+
+    #[test]
+    fn inline_background_image_data_uri_paints_behind_text() {
+        let png = red_png();
+        let src = format!("data:image/png;base64,{}", b64(&png));
+        let bytes = from_html(&format!(
+            "<p style=\"background-image: url('{src}')\">Hello background</p>"
+        ));
+        crate::testkit::opens_with_page_count(&bytes, 1);
+        let (dict, _) = image_stream(&bytes).expect("background image XObject");
+        assert_eq!(
+            dict_name(&dict, b"Filter").as_deref(),
+            Some(&b"FlateDecode"[..])
+        );
+        assert_eq!(dict_int(&dict, b"Width"), Some(32));
+
+        let content = stream(&bytes);
+        assert!(
+            content.contains("/Im1 Do"),
+            "background not drawn: {content}"
+        );
+        let draw = content.find("/Im1 Do").unwrap_or(usize::MAX);
+        let text = content.find("Hello background").unwrap_or(usize::MAX);
+        assert!(
+            draw < text,
+            "background must be drawn before the text: {content}"
+        );
+
+        // JPEG backgrounds travel the same path and keep their DCTDecode.
+        let jpeg = red_jpeg();
+        let src = format!("data:image/jpeg;base64,{}", b64(&jpeg));
+        let bytes = from_html(&format!(
+            "<div style=\"background-image:url({src})\">Text</div>"
+        ));
+        let (dict, data) = image_stream(&bytes).expect("JPEG background XObject");
+        assert_eq!(
+            dict_name(&dict, b"Filter").as_deref(),
+            Some(&b"DCTDecode"[..])
+        );
+        assert_eq!(data, jpeg);
+    }
+
+    #[test]
+    fn remote_and_malformed_background_and_image_sources_are_refused() {
+        // A remote URL is refused by name; a truncated PNG is refused with a
+        // typed malformed-image error. Neither produces an XObject or a draw.
+        let truncated = b64(png_fixture(1, 1, 2, &[1, 2, 3]).get(..30).unwrap_or(&[]));
+        let bytes = from_html(&format!(
+            "<img src=\"https://example.com/x.png\">\
+             <p style=\"background-image:url(https://example.com/y.png)\">Remote</p>\
+             <img src=\"data:image/png;base64,{truncated}\">\
+             <p style=\"background-image:url(data:image/png;base64,{truncated})\">Broken</p>"
+        ));
+        assert!(
+            image_stream(&bytes).is_none(),
+            "no image XObject for refused sources"
+        );
+        let content = stream(&bytes);
+        assert!(!content.contains(" Do\n"), "no stray image draw: {content}");
+
+        // The text of the styled elements still renders.
+        assert!(content.contains("Remote"));
+        assert!(content.contains("Broken"));
+    }
+
+    #[test]
+    fn embedded_png_renders_known_pixels_at_its_measured_box() {
+        let png = red_png();
+        let src = format!("data:image/png;base64,{}", b64(&png));
+        let bytes = from_html(&format!("<img src=\"{src}\" width=\"100\" height=\"100\">"));
+        let budget = Budget::unlimited();
+        let session = selis_pdf_engine::Session::open(bytes, &budget, &FixedClock(0))
+            .expect("engine re-open");
+        let mut g = guard();
+        let page = session
+            .render_page_rgba(0, 72.0, &budget, &mut g)
+            .expect("rasterize");
+        assert_eq!((page.width, page.height), (612, 792));
+        let mut red = false;
+        for y in 60usize..150 {
+            for x in 60usize..150 {
+                let idx = (y * page.width as usize + x) * 4;
+                let (r, g, b) = (page.rgba[idx], page.rgba[idx + 1], page.rgba[idx + 2]);
+                if r > 150 && g < 100 && b < 100 {
+                    red = true;
+                    break;
+                }
+            }
+            if red {
+                break;
+            }
+        }
+        assert!(red, "PNG did not render red ink inside the image box");
     }
 }

@@ -97,8 +97,8 @@ pub(crate) enum Item {
         h: f64,
         uri: String,
     },
-    /// A JPEG drawn as an `XObject` at a measured rectangle. The emitter writes
-    /// the image stream and assigns the `/ImN` resource name.
+    /// A JPEG/PNG drawn as an `XObject` at a measured rectangle. The emitter
+    /// writes the image stream and assigns the `/ImN` resource name.
     Image {
         x: f64,
         /// Distance from the page top to the box's top edge.
@@ -193,6 +193,18 @@ impl Layout {
             }
             let font = run.style.font();
             let w = measure(font, &run.text, size);
+            // An inline `background-image` data URI paints the run's own text
+            // box. The emitter draws images before text, so the image sits
+            // behind the glyphs rather than over them.
+            if let Some(background) = &run.background {
+                items.push(Item::Image {
+                    x,
+                    top,
+                    w,
+                    h: height,
+                    image: background.clone(),
+                });
+            }
             items.push(Item::Text {
                 x,
                 font,
@@ -263,7 +275,7 @@ pub(crate) fn lay_out(
                     }
                     Item::Image { image, .. } => {
                         bytes = bytes
-                            .saturating_add(u64::try_from(image.jpeg.len()).unwrap_or(u64::MAX));
+                            .saturating_add(u64::try_from(image.data.len()).unwrap_or(u64::MAX));
                     }
                     Item::Rect { .. } | Item::LinkBox { .. } => {}
                 }
@@ -518,7 +530,7 @@ const IMAGE_PX_TO_PT: f64 = 0.75;
 
 /// Compute an image's placement `(width, height)` in points.
 ///
-/// Intrinsic JPEG pixels are converted at 96 dpi. Explicit `width`/`height`
+/// Intrinsic image pixels are converted at 96 dpi. Explicit `width`/`height`
 /// override them; when only one is given the other follows the intrinsic
 /// aspect ratio. The box is clamped to the available column (and the page
 /// height), preserving aspect ratio. Non-finite inputs fall back to intrinsic.
@@ -917,6 +929,7 @@ fn push_run(cur: &mut Vec<Span>, style: Style, text: String, source: &Span) {
             && last.color == source.color
             && last.size == source.size
             && last.align == source.align
+            && last.background == source.background
         {
             last.text.push_str(&text);
             return;
@@ -929,6 +942,7 @@ fn push_run(cur: &mut Vec<Span>, style: Style, text: String, source: &Span) {
         color: source.color,
         size: source.size,
         align: source.align,
+        background: source.background.clone(),
     });
 }
 

@@ -21,9 +21,14 @@ selis-sandbox = { workspace = true }
 # into the convert chunk, which then cannot instantiate in a browser.
 selis-pdf-cos = { workspace = true, default-features = false }
 selis-font = { workspace = true }
+# PNG data URIs: decode the IDAT (zlib + PNG filters) with the engine's image
+# reader, then Flate-encode the raw samples for the image XObject. Flate is
+# already linked here through selis-pdf-cos -> selis-pdf-filter; selis-image is
+# the only new dependency on the conversion path.
+selis-image = { workspace = true }
+selis-pdf-filter = { workspace = true }
 
 [dev-dependencies]
 # Read-back/render verification: generate a real JPEG fixture, re-open the
 # converted bytes in the engine and rasterize the page to check image ink.
-selis-pdf-filter = { workspace = true }
 selis-pdf-engine = { workspace = true }
