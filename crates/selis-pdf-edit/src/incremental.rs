@@ -28,7 +28,7 @@ use std::collections::BTreeMap;
 
 use selis_bytes::Bytes;
 use selis_error::{err, Code, Result};
-use selis_pdf_cos::doc_writer::write_incremental_update;
+use selis_pdf_cos::doc_writer::write_incremental_update_full;
 use selis_pdf_cos::{Obj, Ref};
 use selis_sandbox::{Budget, BudgetGuard};
 
@@ -180,7 +180,10 @@ fn changes(
 /// regenerate the second from the appended revision so readers can tell
 /// revisions apart. Returns a fresh `ID` pair (or `None` if the source had no
 /// `/ID`).
-fn updated_id(rev: &selis_pdf_cos::revision::Revision, objects: &[(u32, Obj)]) -> Option<Obj> {
+fn updated_id(
+    rev: &selis_pdf_cos::revision::Revision,
+    objects: &[(u32, Option<Obj>)],
+) -> Option<Obj> {
     let first = rev
         .trailer
         .iter()
@@ -279,24 +282,9 @@ pub fn save_incremental(
         trailer.push((b"Info".to_vec(), info.clone()));
     }
 
-    // Deletions need a free xref entry with a generation bump; the classic
-    // low-level writer currently emits only in-use entries. For I7 correctness
-    // we refuse deletions at this layer until free-entry emission lands
-    // (EDIT.03b) rather than silently leaving a deleted object live.
-    let mut objects: Vec<(u32, Obj)> = Vec::new();
-    for (num, value) in &changed {
-        match value {
-            Some(v) => objects.push((*num, v.clone())),
-            None => {
-                return Err(err!(
-                    Code::MutationInvalid,
-                    during = "incremental",
-                    object = *num,
-                    detail = "object deletion needs free-entry emission (EDIT.03b)"
-                ));
-            }
-        }
-    }
+    // Deletions become free xref entries with a generation bump; the full
+    // low-level writer handles both redefinitions and frees.
+    let objects: Vec<(u32, Option<Obj>)> = changed.clone();
 
     // Update /ID per ISO 32000-2 §14.4: preserve the first element, regenerate
     // the second from the changed objects (deterministic, no circularity with
@@ -305,7 +293,7 @@ pub fn save_incremental(
         trailer.push((b"ID".to_vec(), id));
     }
 
-    let out = write_incremental_update(src, &objects, &trailer, budget, g)?;
+    let out = write_incremental_update_full(src, &objects, &trailer, budget, g)?;
 
     let bytes_in = u64::try_from(src.len()).unwrap_or(u64::MAX);
     let bytes_out = u64::try_from(out.len()).unwrap_or(u64::MAX);

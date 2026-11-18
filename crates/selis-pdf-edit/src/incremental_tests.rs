@@ -124,17 +124,23 @@ fn new_object_allocation_is_appended() {
 }
 
 #[test]
-fn delete_object_is_refused_until_free_entries_land() {
+fn delete_object_emits_a_free_entry_and_removes_it_from_the_model() {
     let src = base_pdf();
     let budget = budget();
     let mut g = budget.guard();
     let model = materialise(&src, &budget, &mut g).expect("materialise");
     let mutations = vec![ObjectMutation::DeleteObject { num: 5 }];
-    let err = save_incremental(&src, &model, &mutations, &budget, &mut g).unwrap_err();
+    let (out, report) = save_incremental(&src, &model, &mutations, &budget, &mut g).expect("save");
+    assert!(report.prefix_preserved);
+    assert_eq!(report.objects_changed, 1);
+    let mut g2 = budget.guard();
+    let reopened = materialise(&out, &budget, &mut g2).expect("reopen");
     assert!(
-        format!("{err}").contains("free-entry"),
-        "loud typed refusal: {err}"
+        !reopened.contains_key(&5),
+        "the freed object no longer resolves"
     );
+    let appended = String::from_utf8_lossy(&out[src.len()..]);
+    assert!(appended.contains("f \n"), "a free xref entry was emitted");
 }
 
 #[test]

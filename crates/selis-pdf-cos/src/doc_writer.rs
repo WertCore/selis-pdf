@@ -1041,6 +1041,155 @@ pub fn write_incremental_update(
     Ok(out)
 }
 
+/// The full incremental-update writer (SL-5.EDIT.03), accepting deleted
+/// objects as free entries. `changes` redefines objects (`Some`) or frees them
+/// (`None`). The original bytes stay a verbatim prefix; only changed objects,
+/// a new classic xref section with free entries and generation bumps, and a
+/// trailer are appended. Freed objects get a generation bump and a linked-list
+/// `next_free`; redefined objects are emitted at generation 0.
+///
+/// # Budget / Malformed Input
+///
+/// As [`write_incremental_update`]: charges original + output + per-object
+/// writes; `OBJ_UNEXPECTED` on duplicates or a missing `startxref`.
+pub fn write_incremental_update_full(
+    original: &[u8],
+    changes: &[(u32, Option<Obj>)],
+    trailer: &[(Vec<u8>, Obj)],
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Vec<u8>> {
+    let startxref_kw = crate::xref::find_startxref(original, 4096).ok_or_else(|| {
+        err!(
+            Code::ObjUnexpected,
+            during = "incr-write",
+            detail = "original has no startxref"
+        )
+    })?;
+    let kw = usize::try_from(startxref_kw).unwrap_or(usize::MAX);
+    let (prev, _) =
+        crate::xref::read_startxref_value(original, kw.saturating_add("startxref".len()))?;
+
+    let (original_size, generations) = {
+        let doc = crate::parse_revisions(original, startxref_kw, budget, g)?;
+        let size = doc
+            .revisions()
+            .last()
+            .and_then(|r| {
+                r.trailer
+                    .iter()
+                    .find(|(k, _)| k.as_slice() == b"Size")
+                    .and_then(|(_, v)| match v {
+                        Obj::Int(n) => Some(u64::try_from(*n).unwrap_or(u64::MAX)),
+                        _ => None,
+                    })
+            })
+            .unwrap_or(0);
+        let gens: std::collections::BTreeMap<u32, u16> = doc
+            .at_revision(doc.len().saturating_sub(1))
+            .map(|v| v.xref.iter().map(|(n, e)| (*n, e.gen())).collect())
+            .unwrap_or_default();
+        (size, gens)
+    };
+
+    let mut sorted: Vec<(u32, &Option<Obj>)> = changes.iter().map(|(n, o)| (*n, o)).collect();
+    sorted.sort_by_key(|(n, _)| *n);
+    for pair in sorted.windows(2) {
+        let a = pair.first().map(|(n, _)| *n).unwrap_or(0);
+        let b = pair.get(1).map(|(n, _)| *n).unwrap_or(0);
+        if a == b {
+            return Err(err!(
+                Code::ObjUnexpected,
+                during = "incr-write",
+                detail = "duplicate object number"
+            ));
+        }
+    }
+    let max_new = sorted.last().map(|(n, _)| u64::from(*n)).unwrap_or(0);
+    let size = original_size.max(max_new.saturating_add(1));
+
+    let mut out = Vec::new();
+    out.extend_from_slice(original);
+    g.charge(
+        selis_sandbox::Resource::Bytes,
+        u64::try_from(out.len()).unwrap_or(u64::MAX),
+    )?;
+
+    let mut entries: Vec<(u32, Option<u64>)> = Vec::with_capacity(sorted.len());
+    for (num, value) in &sorted {
+        match value {
+            Some(obj) => {
+                let off = u64::try_from(out.len()).unwrap_or(u64::MAX);
+                out.extend_from_slice(format!("{num} 0 obj\n").as_bytes());
+                let mut w = Writer::new(budget);
+                out.extend_from_slice(&w.to_bytes(obj, g)?);
+                out.push(b'\n');
+                out.extend_from_slice(b"endobj\n");
+                entries.push((*num, Some(off)));
+            }
+            None => entries.push((*num, None)),
+        }
+    }
+
+    let startxref = u64::try_from(out.len()).unwrap_or(u64::MAX);
+    out.extend_from_slice(b"xref\n");
+    let mut i = 0usize;
+    while i < entries.len() {
+        let run_start = i;
+        let mut num = entries.get(i).map(|(n, _)| *n).unwrap_or(0);
+        while i < entries.len() && entries.get(i).map(|(n, _)| *n) == Some(num) {
+            i = i.saturating_add(1);
+            num = num.saturating_add(1);
+        }
+        let run = entries.get(run_start..i).unwrap_or(&[]);
+        let first = run.first().map(|(n, _)| *n).unwrap_or(0);
+        out.extend_from_slice(format!("{first} {}\n", run.len()).as_bytes());
+        let free_nums: Vec<u32> = run
+            .iter()
+            .filter(|(_, o)| o.is_none())
+            .map(|(n, _)| *n)
+            .collect();
+        let mut fi = 0usize;
+        for (entry_num, offset) in run {
+            match offset {
+                Some(off) => out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes()),
+                None => {
+                    let next = free_nums.get(fi.saturating_add(1)).copied().unwrap_or(0);
+                    fi = fi.saturating_add(1);
+                    let gen = generations
+                        .get(entry_num)
+                        .copied()
+                        .unwrap_or(0)
+                        .saturating_add(1);
+                    out.extend_from_slice(format!("{next:010} {gen:05} f \n").as_bytes());
+                }
+            }
+        }
+    }
+
+    out.extend_from_slice(b"trailer\n");
+    let mut pairs: Vec<(selis_bytes::Bytes, Obj)> =
+        trailer.iter().map(|(k, v)| (bytes(k), v.clone())).collect();
+    pairs.push((
+        bytes(b"Size"),
+        Obj::Int(i64::try_from(size).unwrap_or(i64::MAX)),
+    ));
+    pairs.push((
+        bytes(b"Prev"),
+        Obj::Int(i64::try_from(prev).unwrap_or(i64::MAX)),
+    ));
+    let mut tw = Writer::new(budget);
+    out.extend_from_slice(&tw.to_bytes(&Obj::Dict(pairs), g)?);
+    out.push(b'\n');
+    out.extend_from_slice(format!("startxref\n{startxref}\n%%EOF\n").as_bytes());
+
+    g.charge(
+        selis_sandbox::Resource::Bytes,
+        u64::try_from(out.len()).unwrap_or(u64::MAX),
+    )?;
+    Ok(out)
+}
+
 /// Write a complete single-revision PDF from pre-built objects (the output
 /// path for optimisation/rewriting tools such as SL-1A.TOOL.07, where the
 /// object graph already exists and only needs serialising with a valid xref).

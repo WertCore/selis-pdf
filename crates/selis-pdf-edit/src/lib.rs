@@ -51,6 +51,8 @@ pub mod journal;
 mod incremental_tests;
 #[cfg(test)]
 mod journal_tests;
+#[cfg(test)]
+mod property_tests;
 mod reflow;
 
 use std::collections::BTreeMap;
