@@ -91,6 +91,7 @@ fn from_walk(message: String) -> Error {
 
 use crate::blocks::{encode_text, measure};
 use crate::emit::{bytes, take_num};
+use crate::image::EmbeddedSvg;
 use crate::xmlmini::{self, Element};
 use crate::Options;
 
@@ -1036,37 +1037,38 @@ fn count_elements(element: &Element) -> usize {
     count
 }
 
-/// Convert SVG text into a one-page PDF.
+/// The resolved canvas of a parsed SVG document: its natural PDF size plus the
+/// transform that maps the viewBox into it.
+struct SvgCanvas {
+    page_w: f64,
+    page_h: f64,
+    scale_x: f64,
+    scale_y: f64,
+    view_origin: Option<(f64, f64)>,
+}
+
+/// Validate an SVG root and resolve its canvas geometry.
+///
+/// Shared by the standalone [`svg_to_pdf`] converter and the embedded-SVG path
+/// so both use exactly the same subset rules for canvas sizing and element
+/// bounds.
+///
+/// # Budget
+///
+/// Walks the element tree once to count nodes (bounded by [`MAX_ELEMENTS`]);
+/// no heap growth beyond that count's stack.
 ///
 /// # Malformed Input
 ///
-/// Malformed XML, an unsupported `A` arc command, an unsupported transform or
-/// a too-large document are refusals with a message; they never produce a
-/// partial file.
-///
-/// # Output Guarantees
-///
-/// A complete single-revision PDF 1.4 document with one page sized to the
-/// canvas and font resources for the faces referenced.
-///
-/// # Errors
-///
-/// `BUDGET_*` on budget exhaustion, plus the refusals above.
-pub(crate) fn svg_to_pdf(
-    input: &str,
-    opts: &Options,
-    budget: &Budget,
-    g: &mut BudgetGuard<'_>,
-) -> Result<Vec<u8>> {
-    let root = xmlmini::parse(input).map_err(|message| malformed("svg", message))?;
+/// Refuses a non-`<svg>` root, an unusable canvas size, and a document with more
+/// than [`MAX_ELEMENTS`] elements.
+fn canvas_of(root: &Element) -> Result<SvgCanvas> {
     if !root.tag.eq_ignore_ascii_case("svg") {
         return Err(malformed(
             "svg",
             format!("expected an <svg> root, got <{}>", root.tag),
         ));
     }
-
-    // Canvas: px-based lengths.
     let view_box: Option<[f64; 4]> =
         root.attr("viewBox")
             .map(parse_number_list)
@@ -1094,31 +1096,174 @@ pub(crate) fn svg_to_pdf(
             "the SVG canvas has no usable size".to_string(),
         ));
     }
-    if count_elements(&root) > MAX_ELEMENTS {
+    if count_elements(root) > MAX_ELEMENTS {
         return Err(malformed(
             "svg",
             format!("the SVG has more than {MAX_ELEMENTS} elements"),
         ));
     }
+    Ok(SvgCanvas {
+        page_w,
+        page_h,
+        scale_x: canvas_w / user_w,
+        scale_y: canvas_h / user_h,
+        view_origin: view_box.and_then(|[vx, vy, _, _]| {
+            if vx != 0.0 || vy != 0.0 {
+                Some((vx, vy))
+            } else {
+                None
+            }
+        }),
+    })
+}
 
-    let scale_x = canvas_w / user_w;
-    let scale_y = canvas_h / user_h;
-
+/// Lower a parsed SVG root to PDF content operators for its canvas.
+///
+/// This is the single emission path for both the standalone converter and the
+/// embedded-SVG Form XObject. The content spans `0..page_w` × `0..page_h` in
+/// PDF coordinates (y-up: the y-flip is the first operator).
+///
+/// # Budget
+///
+/// The emitted operator bytes are bounded by the element count checked in
+/// [`canvas_of`] and charged by the caller when the stream is written.
+///
+/// # Malformed Input
+///
+/// Refuses the `A` arc command and unsupported transforms with a typed error;
+/// either refusal prevents any content from reaching the document writer.
+fn build_content(root: &Element, canvas: &SvgCanvas) -> Result<Vec<u8>> {
     let mut cb = ContentBuilder::new();
     // Flip y once: SVG is y-down, PDF is y-up.
     cb.save_state();
-    cb.concat(1.0, 0.0, 0.0, -1.0, 0.0, page_h);
-    if (scale_x - 1.0).abs() > f64::EPSILON || (scale_y - 1.0).abs() > f64::EPSILON {
-        cb.concat(scale_x, 0.0, 0.0, scale_y, 0.0, 0.0);
+    cb.concat(1.0, 0.0, 0.0, -1.0, 0.0, canvas.page_h);
+    if (canvas.scale_x - 1.0).abs() > f64::EPSILON || (canvas.scale_y - 1.0).abs() > f64::EPSILON {
+        cb.concat(canvas.scale_x, 0.0, 0.0, canvas.scale_y, 0.0, 0.0);
     }
-    if let Some([vx, vy, _, _]) = view_box {
-        if vx != 0.0 || vy != 0.0 {
-            cb.concat(1.0, 0.0, 0.0, 1.0, -vx, -vy);
+    if let Some((vx, vy)) = canvas.view_origin {
+        cb.concat(1.0, 0.0, 0.0, 1.0, -vx, -vy);
+    }
+    emit_element(&mut cb, root, State::default()).map_err(from_walk)?;
+    cb.restore_state();
+    Ok(cb.to_bytes())
+}
+
+/// SVG elements that are never allowed inside an embedded data URI. Scripts
+/// execute, `<use>`/`<image>`/`<foreignObject>` can reach external resources —
+/// all are refused by name rather than silently dropped.
+const FORBIDDEN_SVG_TAGS: &[&str] = &["script", "foreignobject", "image", "use"];
+
+/// Refuse unsafe constructs in an SVG destined for embedding.
+///
+/// Only same-document `#fragment` links survive: any other `href` (remote URL,
+/// `data:` payload, relative path) is an "external reference" and is refused by
+/// name. Event-handler attributes (`onload`, `onclick`, …) are refused too.
+/// This scan is deliberately small and explicit — it does not try to be an SVG
+/// sanitiser for the general web.
+///
+/// # Budget
+///
+/// Iterative walk of the already-parsed tree; no allocation beyond one stack.
+///
+/// # Malformed Input
+///
+/// A forbidden tag, an event-handler attribute or a non-local `href` returns a
+/// typed `ConvertUnsupported` error naming the construct.
+fn refuse_hazardous(root: &Element) -> Result<()> {
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        let tag = node.tag.to_ascii_lowercase();
+        if FORBIDDEN_SVG_TAGS.contains(&tag.as_str()) {
+            return Err(unsupported(
+                "svg-embed",
+                format!("<{tag}> is not allowed in an embedded SVG"),
+            ));
+        }
+        for (key, value) in &node.attrs {
+            let lower = key.to_ascii_lowercase();
+            if lower.starts_with("on") {
+                return Err(unsupported(
+                    "svg-embed",
+                    format!("event-handler attribute `{lower}` is not allowed"),
+                ));
+            }
+            if (lower == "href" || lower == "xlink:href") && !value.trim().starts_with('#') {
+                return Err(unsupported(
+                    "svg-embed",
+                    "non-local href in an embedded SVG is not allowed".to_string(),
+                ));
+            }
+        }
+        for child in &node.children {
+            stack.push(child);
         }
     }
+    Ok(())
+}
 
-    emit_element(&mut cb, &root, State::default()).map_err(from_walk)?;
-    cb.restore_state();
+/// Parse an `image/svg+xml` data-URI payload into an embed-ready drawing.
+///
+/// Reuses the standalone converter's parser, canvas rules and emitter; the
+/// extra safety scan refuses scripts, external references and remote URLs by
+/// name so an embedded SVG can never be a fetch or script vector. Input text is
+/// bounded by [`crate::image::MAX_SVG_BYTES`] and the element count by
+/// [`MAX_ELEMENTS`].
+///
+/// # Budget
+///
+/// The emitted content bytes are bounded by the element count and charged when
+/// the Form XObject is written by the document emitter.
+///
+/// # Malformed Input
+///
+/// Refuses oversized input, malformed XML, a non-`<svg>` root, hazardous
+/// constructs and any parse/emit failure from the SVG subset. No drawing is
+/// returned on refusal.
+pub(crate) fn parse_embedded_svg(input: &str) -> Result<EmbeddedSvg> {
+    if input.len() > crate::image::MAX_SVG_BYTES {
+        return Err(malformed(
+            "svg-embed",
+            format!("SVG text exceeds {} bytes", crate::image::MAX_SVG_BYTES),
+        ));
+    }
+    let root = xmlmini::parse(input).map_err(|message| malformed("svg-embed", message))?;
+    refuse_hazardous(&root)?;
+    let canvas = canvas_of(&root)?;
+    let content = build_content(&root, &canvas)?;
+    Ok(EmbeddedSvg {
+        content,
+        width_pt: canvas.page_w,
+        height_pt: canvas.page_h,
+    })
+}
+
+/// Convert SVG text into a one-page PDF.
+///
+/// # Malformed Input
+///
+/// Malformed XML, an unsupported `A` arc command, an unsupported transform or
+/// a too-large document are refusals with a message; they never produce a
+/// partial file.
+///
+/// # Output Guarantees
+///
+/// A complete single-revision PDF 1.4 document with one page sized to the
+/// canvas and font resources for the faces referenced.
+///
+/// # Errors
+///
+/// `BUDGET_*` on budget exhaustion, plus the refusals above.
+pub(crate) fn svg_to_pdf(
+    input: &str,
+    opts: &Options,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Vec<u8>> {
+    let root = xmlmini::parse(input).map_err(|message| malformed("svg", message))?;
+    let canvas = canvas_of(&root)?;
+    let data = build_content(&root, &canvas)?;
+    let page_w = canvas.page_w;
+    let page_h = canvas.page_h;
 
     const FONTS: [&str; 5] = [
         "Helvetica",
@@ -1156,7 +1301,6 @@ pub(crate) fn svg_to_pdf(
     );
     let res_ref = Ref::new(res_num, 0);
 
-    let data = cb.to_bytes();
     let content_num = take_num(&mut b);
     b.add_object(
         content_num,
@@ -1329,5 +1473,37 @@ mod tests {
             }
         }
         assert_eq!(pages, expected_pages, "page count mismatch");
+    }
+
+    #[test]
+    fn embedded_svg_reuses_the_standalone_parser_and_emitter() {
+        let svg = r##"<svg width="40" height="20" viewBox="0 0 40 20"><rect width="40" height="20" fill="red"/></svg>"##;
+        let embedded = parse_embedded_svg(svg).expect("embedded SVG");
+        assert_eq!((embedded.width_pt, embedded.height_pt), (30.0, 15.0));
+        let content = String::from_utf8_lossy(&embedded.content);
+        assert!(content.contains("1 0 0 -1 0 15 cm"), "{content}");
+        assert!(content.contains("1 0 0 rg"), "{content}");
+        assert!(content.lines().any(|line| line == "f"), "{content}");
+    }
+
+    #[test]
+    fn embedded_svg_refuses_hazardous_constructs_by_name() {
+        for bad in [
+            r##"<svg width="10" height="10"><script>alert(1)</script></svg>"##,
+            r##"<svg width="10" height="10"><foreignObject/></svg>"##,
+            r##"<svg width="10" height="10"><image href="https://evil/x.png"/></svg>"##,
+            r##"<svg width="10" height="10"><use href="#a"/></svg>"##,
+            r##"<svg width="10" height="10" onload="alert(1)"/>"##,
+            r##"<svg width="10" height="10"><a href="https://evil/x"><text>x</text></a></svg>"##,
+            r##"<svg width="10" height="10"><a href="#local"><text>x</text></a></svg>"##,
+        ] {
+            // Same-document fragments are the one href form that survives.
+            if bad.contains("href=\"#local\"") {
+                assert!(parse_embedded_svg(bad).is_ok(), "{bad}");
+            } else {
+                let err = parse_embedded_svg(bad).expect_err("hazard must be refused");
+                assert_eq!(err.code(), selis_error::Code::ConvertUnsupported, "{bad}");
+            }
+        }
     }
 }

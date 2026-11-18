@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::image::EmbeddedImage;
+use crate::image::{EmbeddedImage, ImageSource};
 
 /// The inline font style of a text span.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -70,6 +70,27 @@ pub(crate) enum TextAlign {
     Right,
 }
 
+/// How a `background-image` is sized inside its element box.
+///
+/// This is the narrow CSS `background-size` subset: `auto`, `contain`, `cover`
+/// and one or two absolute lengths. `None` on a span means the legacy behaviour
+/// (stretch the image to the run's text box) is kept.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum BackgroundSize {
+    /// Intrinsic image size.
+    Auto,
+    /// Scale down to fit entirely inside the box, preserving aspect ratio.
+    Contain,
+    /// Scale up to cover the box, preserving aspect ratio.
+    Cover,
+    /// Explicit absolute lengths in points. A missing axis follows the image's
+    /// intrinsic aspect ratio from the other one.
+    Length {
+        width: Option<f64>,
+        height: Option<f64>,
+    },
+}
+
 /// A run of styled text inside a block.
 ///
 /// Besides the base [`Style`], a span may carry a small set of inline
@@ -92,14 +113,17 @@ pub(crate) struct Span {
     /// An inline `background-image: url(data:…)` decoded image, painted behind
     /// this run's text box. Only JPEG/PNG data URIs are accepted by the parser.
     pub background: Option<EmbeddedImage>,
+    /// `background-size` for that image; `None` keeps the legacy stretch-to-box
+    /// behaviour.
+    pub background_size: Option<BackgroundSize>,
 }
 
-/// An embedded JPEG/PNG placed as its own block (HTML `<img>` or a standalone
-/// Markdown `![alt](data:image/…;base64,…)` paragraph).
+/// An embedded JPEG/PNG/SVG placed as its own block (HTML `<img>` or a
+/// standalone Markdown `![alt](data:image/…)` paragraph).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ImageBlock {
-    /// The validated JPEG/PNG and its intrinsic geometry.
-    pub image: EmbeddedImage,
+    /// The validated raster or vector source and its intrinsic geometry.
+    pub image: ImageSource,
     /// Explicit placement width in points (HTML `width`), if given. A bare
     /// number is points; `px` is converted at 96 dpi, matching `font-size`.
     pub width: Option<f64>,
@@ -130,7 +154,8 @@ pub(crate) enum Block {
     Quote(Vec<Block>),
     /// A horizontal rule.
     Rule,
-    /// An embedded JPEG/PNG image (data URI only), placed at its measured box.
+    /// An embedded JPEG/PNG/SVG image (data URI only), placed at its measured
+    /// box. SVG sources become a `Form` XObject, rasters an `Image` XObject.
     Image(ImageBlock),
     /// Force the block that follows onto a new page. Only the OOXML slide
     /// and sheet readers emit this: a deck's slide and a workbook's sheet are

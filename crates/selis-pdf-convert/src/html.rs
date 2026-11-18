@@ -1,7 +1,9 @@
 //! The HTML subset parser (see the crate docs for the supported subset).
 
-use crate::blocks::{Block, ImageBlock, Span, Style, TextAlign};
-use crate::image::{parse_data_uri, EmbeddedImage};
+use std::collections::BTreeMap;
+
+use crate::blocks::{BackgroundSize, Block, ImageBlock, Span, Style, TextAlign};
+use crate::image::{parse_data_uri, parse_image_source, EmbeddedImage};
 
 /// An open-list context.
 #[derive(Debug)]
@@ -21,51 +23,81 @@ struct InlineProps {
     /// `background-image: url(data:image/…)` decoded through the same image
     /// path as `<img src>`; painted behind the runs of this element.
     background: Option<EmbeddedImage>,
+    /// `background-size` for that image, when declared.
+    background_size: Option<BackgroundSize>,
 }
 
 impl InlineProps {
-    /// Read `color:`, `font-size:`, `text-align:` and `background-image:` from a
-    /// `style=` attribute, plus the legacy `align=` attribute for block
-    /// alignment. Unknown declarations are ignored; remote URLs in
-    /// `background-image` are refused by name and dropped by the image parser.
-    fn from_attrs(style: Option<&str>, align: Option<&str>) -> Self {
+    /// Read the five supported declarations from a CSS declaration list. This
+    /// is shared by inline `style=` attributes and the narrow `<style>`
+    /// rulesheet; unknown declarations are ignored, never guessed.
+    fn from_css(style: &str) -> Self {
         let mut out = Self::default();
-        if let Some(style) = style {
-            for declaration in split_declarations(style) {
-                let mut parts = declaration.splitn(2, ':');
-                let property = parts.next().unwrap_or("").trim().to_ascii_lowercase();
-                let value = parts.next().unwrap_or("").trim();
-                match property.as_str() {
-                    "color" => {
-                        if let Some(color) = css_color(value) {
-                            out.color = Some(color);
-                        }
+        for declaration in split_declarations(style) {
+            let mut parts = declaration.splitn(2, ':');
+            let property = parts.next().unwrap_or("").trim().to_ascii_lowercase();
+            let value = parts.next().unwrap_or("").trim();
+            match property.as_str() {
+                "color" => {
+                    if let Some(color) = css_color(value) {
+                        out.color = Some(color);
                     }
-                    "font-size" => {
-                        if let Some(size) = css_font_size(value) {
-                            out.size = Some(size);
-                        }
-                    }
-                    "text-align" => {
-                        if let Some(align) = css_align(value) {
-                            out.align = Some(align);
-                        }
-                    }
-                    "background-image" => {
-                        if let Some(image) = css_background_image(value) {
-                            out.background = Some(image);
-                        }
-                    }
-                    _ => {}
                 }
+                "font-size" => {
+                    if let Some(size) = css_font_size(value) {
+                        out.size = Some(size);
+                    }
+                }
+                "text-align" => {
+                    if let Some(align) = css_align(value) {
+                        out.align = Some(align);
+                    }
+                }
+                "background-image" => {
+                    if let Some(image) = css_background_image(value) {
+                        out.background = Some(image);
+                    }
+                }
+                "background-size" => {
+                    if let Some(size) = css_background_size(value) {
+                        out.background_size = Some(size);
+                    }
+                }
+                _ => {}
             }
         }
+        out
+    }
+
+    /// Read declarations from an inline `style=` attribute plus the legacy
+    /// `align=` attribute for block alignment. Remote URLs in
+    /// `background-image` are refused by name and dropped by the image parser.
+    fn from_attrs(style: Option<&str>, align: Option<&str>) -> Self {
+        let mut out = Self::from_css(style.unwrap_or(""));
         if out.align.is_none() {
             out.align = align.and_then(css_align);
         }
         out
     }
+
+    /// Cascade two levels: each property declared on `over` wins over `self`.
+    /// This is the entire cascade this converter implements — rulesheet value
+    /// first, inline `style=` value second; unknown/absent properties fall
+    /// through to the rulesheet (and ultimately to layout defaults).
+    fn overridden_by(self, over: Self) -> Self {
+        Self {
+            color: over.color.or(self.color),
+            size: over.size.or(self.size),
+            align: over.align.or(self.align),
+            background: over.background.or(self.background),
+            background_size: over.background_size.or(self.background_size),
+        }
+    }
 }
+
+/// The first `<style>` block's rules, keyed by element-type selector. Only the
+/// supported element names appear as keys; every other selector is ignored.
+type Rulesheet = BTreeMap<String, InlineProps>;
 
 /// A styled open element: its tag name (for matching the close tag), the
 /// inline properties it declared and, for `<a>`, its link target.
@@ -117,6 +149,9 @@ struct Parser<'a> {
     /// Inline-style / link frames for currently open styled elements. The
     /// innermost declaration of each property wins (see `current_props`).
     styles: Vec<StyleFrame>,
+    /// The single `<style>` rulesheet, cascaded under every element's own
+    /// inline `style=` attribute.
+    rules: Rulesheet,
 }
 
 /// Parse an HTML subset into layout blocks.
@@ -125,6 +160,7 @@ struct Parser<'a> {
 /// degrade to text.
 pub(crate) fn parse(input: &str) -> Vec<Block> {
     let text = input.replace('\r', "");
+    let rules = parse_rulesheet(&text);
     let chars: Vec<char> = text.chars().collect();
     let mut p = Parser {
         chars: &chars,
@@ -143,6 +179,7 @@ pub(crate) fn parse(input: &str) -> Vec<Block> {
         table: None,
         break_after_stack: Vec::new(),
         styles: Vec::new(),
+        rules,
     };
     p.run();
     p.finish();
@@ -270,6 +307,9 @@ impl<'a> Parser<'a> {
             if out.background.is_none() {
                 out.background = frame.props.background.clone();
             }
+            if out.background_size.is_none() {
+                out.background_size = frame.props.background_size;
+            }
         }
         out
     }
@@ -312,6 +352,7 @@ impl<'a> Parser<'a> {
                 && last.size == props.size
                 && last.align == props.align
                 && last.background == props.background
+                && last.background_size == props.background_size
             {
                 last.text.push_str(&collapsed);
                 return;
@@ -325,6 +366,7 @@ impl<'a> Parser<'a> {
             size: props.size,
             align: props.align,
             background: props.background,
+            background_size: props.background_size,
         });
     }
 
@@ -332,15 +374,15 @@ impl<'a> Parser<'a> {
         self.spans.iter().all(|s| s.text.trim().is_empty())
     }
 
-    /// Embed an `<img>` whose `src` is a base64 JPEG/PNG data URI. Anything else
-    /// (remote URL, file path, GIF/WebP/SVG data URI, malformed image) is
-    /// refused with a typed image error and skipped: no text is painted and no
-    /// XObject is emitted. Explicit
-    /// `width`/`height` attributes override the intrinsic geometry in layout.
+    /// Embed an `<img>` whose `src` is a JPEG, PNG or SVG data URI. Anything
+    /// else (remote URL, file path, GIF/WebP data URI, malformed image, unsafe
+    /// SVG) is refused with a typed image error and skipped: no text is painted
+    /// and no XObject is emitted. Explicit `width`/`height` attributes override
+    /// the intrinsic geometry in layout.
     fn push_image(&mut self, src: Option<&str>, width: Option<&str>, height: Option<&str>) {
         self.flush_text();
         let Some(src) = src else { return };
-        let Ok(image) = parse_data_uri(src) else {
+        let Ok(image) = parse_image_source(src) else {
             return;
         };
         let width = width.and_then(image_dimension);
@@ -609,9 +651,14 @@ impl<'a> Parser<'a> {
             }
             self.open_tag(&name, href.as_deref(), self_closing);
             if !self_closing && is_styled_container(&name) {
+                // Two-level cascade: the rulesheet value is the base, and the
+                // element's own inline declarations override it property by
+                // property. Nested frames then apply innermost-wins as before.
+                let from_sheet = self.rules.get(&name).cloned().unwrap_or_default();
+                let inline = InlineProps::from_attrs(style.as_deref(), align.as_deref());
                 self.styles.push(StyleFrame {
                     tag: name.clone(),
-                    props: InlineProps::from_attrs(style.as_deref(), align.as_deref()),
+                    props: from_sheet.overridden_by(inline),
                     href: if name == "a" { href } else { None },
                 });
             }
@@ -1206,6 +1253,173 @@ fn css_background_image(value: &str) -> Option<EmbeddedImage> {
     parse_data_uri(uri).ok()
 }
 
+/// Parse the narrow CSS `background-size` subset: `auto`, `contain`, `cover`,
+/// and one or two absolute lengths (`pt`, `px` at 96 dpi, or a bare number in
+/// points). Percentages, keywords other than the four above and relative units
+/// are ignored. A single length sets the width; the height follows the image's
+/// intrinsic aspect ratio in layout.
+///
+/// # Budget
+///
+/// Allocates at most a couple of small string slices from the declaration;
+/// the attribute is bounded by the document text.
+///
+/// # Malformed Input
+///
+/// `None` for any unsupported value, an empty value, or a non-finite/non-positive
+/// length — the caller leaves the legacy stretch-to-box behaviour in place.
+fn css_background_size(value: &str) -> Option<BackgroundSize> {
+    let v = value.trim().to_ascii_lowercase();
+    match v.as_str() {
+        "auto" => return Some(BackgroundSize::Auto),
+        "contain" => return Some(BackgroundSize::Contain),
+        "cover" => return Some(BackgroundSize::Cover),
+        _ => {}
+    }
+    let mut tokens = v.split_ascii_whitespace();
+    let first = image_dimension(tokens.next()?)?;
+    let second = match tokens.next() {
+        Some(token) if token != "auto" => Some(image_dimension(token)?),
+        _ => None,
+    };
+    if tokens.next().is_some() {
+        return None;
+    }
+    Some(BackgroundSize::Length {
+        width: Some(first),
+        height: second,
+    })
+}
+
+/// The inner text of the first `<style>` element, if any.
+///
+/// # Budget
+///
+/// One lowercase copy of the input for the ASCII-only tag search.
+///
+/// # Malformed Input
+///
+/// Never fails: an unterminated or self-closing `<style>` contributes no rules.
+fn first_style_block(input: &str) -> Option<&str> {
+    let lower = input.to_ascii_lowercase();
+    let start = lower.find("<style")?;
+    let after_open = lower
+        .get(start..)?
+        .find('>')?
+        .saturating_add(start)
+        .saturating_add(1);
+    let close = lower
+        .get(after_open..)?
+        .find("</style")?
+        .saturating_add(after_open);
+    input.get(after_open..close)
+}
+
+/// Remove `/* … */` comments from a CSS text (unterminated comments run to EOF).
+///
+/// # Budget
+///
+/// Allocates one string bounded by the rulesheet text.
+///
+/// # Malformed Input
+///
+/// Never fails; an unterminated comment is simply dropped with the rest.
+fn strip_css_comments(css: &str) -> String {
+    let mut out = String::with_capacity(css.len());
+    let mut rest = css;
+    while let Some(at) = rest.find("/*") {
+        out.push_str(rest.get(..at).unwrap_or(""));
+        let from = at.saturating_add(2);
+        let Some(end) = rest.get(from..).and_then(|tail| tail.find("*/")) else {
+            return out;
+        };
+        rest = rest
+            .get(from.saturating_add(end).saturating_add(2)..)
+            .unwrap_or("");
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Parse the single inline `<style>` rulesheet into element-type rules.
+///
+/// Supported: one `<style>` block, bare element-type selectors from
+/// `p`, `h1`–`h6`, `li`, `td`, and only the five declarations already supported
+/// inline (`color`, `font-size`, `text-align`, `background-image`,
+/// `background-size`). Ignored: classes/IDs/compound/descendant/universal
+/// selectors, at-rules (including `@media` and everything nested in them),
+/// unknown element names, unknown declarations and a second `<style>` block.
+/// Nothing here is guessed at and no external stylesheet is fetched.
+///
+/// # Budget
+///
+/// The CSS text is bounded by the document; rule storage is bounded by the
+/// small, fixed set of supported selectors (one entry per element name).
+///
+/// # Malformed Input
+///
+/// Never fails: unbalanced braces, stray text and unsupported selectors simply
+/// produce no rule.
+fn parse_rulesheet(input: &str) -> Rulesheet {
+    let Some(css) = first_style_block(input) else {
+        return BTreeMap::new();
+    };
+    let css = strip_css_comments(css);
+    let mut rules: Rulesheet = BTreeMap::new();
+    let mut selector = String::new();
+    let mut body = String::new();
+    let mut depth = 0usize;
+    for ch in css.chars() {
+        match ch {
+            '{' if depth == 0 => {
+                depth = 1;
+                body.clear();
+            }
+            '{' => {
+                depth = depth.saturating_add(1);
+                body.push(ch);
+            }
+            '}' => {
+                if depth == 1 {
+                    add_rulesheet_rule(&selector, &body, &mut rules);
+                    selector.clear();
+                    body.clear();
+                    depth = 0;
+                } else {
+                    depth = depth.saturating_sub(1);
+                    body.push(ch);
+                }
+            }
+            _ if depth == 0 => selector.push(ch),
+            _ => body.push(ch),
+        }
+    }
+    rules
+}
+
+/// Add one `{ selector { declarations } }` rule if its selector is supported.
+/// A selector is accepted only when it is a single ASCII alphanumeric token
+/// equal to one of the supported element names; that rejects class/ID,
+/// compound, descendant and universal selectors and at-rules in one stroke.
+fn add_rulesheet_rule(selector: &str, body: &str, rules: &mut Rulesheet) {
+    let selector = selector.trim();
+    if selector.is_empty() || !selector.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return;
+    }
+    let tag = selector.to_ascii_lowercase();
+    let supported = matches!(
+        tag.as_str(),
+        "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "li" | "td"
+    );
+    if supported {
+        // Repeated rules for one selector cascade in source order, later
+        // declarations winning property by property.
+        let props = InlineProps::from_css(body);
+        let merged = rules.remove(&tag).unwrap_or_default().overridden_by(props);
+        rules.insert(tag, merged);
+    }
+}
+
 /// Store a recognised attribute into the tag scanner's scratch slots. Shared
 /// by the quoted and unquoted value paths so the match is compiled once.
 fn keep_attribute(
@@ -1687,5 +1901,77 @@ mod tests {
         assert_eq!(css_font_size("12pt"), Some(12.0));
         assert_eq!(css_font_size("12px"), Some(9.0));
         assert_eq!(css_align("justify"), None);
+    }
+
+    #[test]
+    fn background_size_parses_only_the_documented_subset() {
+        assert_eq!(css_background_size("auto"), Some(BackgroundSize::Auto));
+        assert_eq!(
+            css_background_size("CONTAIN"),
+            Some(BackgroundSize::Contain)
+        );
+        assert_eq!(css_background_size("cover"), Some(BackgroundSize::Cover));
+        assert_eq!(
+            css_background_size("10pt 5px"),
+            Some(BackgroundSize::Length {
+                width: Some(10.0),
+                height: Some(3.75),
+            })
+        );
+        assert_eq!(
+            css_background_size("12px"),
+            Some(BackgroundSize::Length {
+                width: Some(9.0),
+                height: None,
+            })
+        );
+        assert_eq!(css_background_size("50%"), None);
+        assert_eq!(css_background_size("repeat"), None);
+        assert_eq!(css_background_size("auto auto auto"), None);
+    }
+
+    #[test]
+    fn rulesheet_keeps_only_supported_element_selectors() {
+        let rules = parse_rulesheet(
+            "<style>/* c */ p{color:red;font-size:14pt} h2{color:blue}\
+             li{text-align:right} td{background-size:cover}\
+             .c{color:green}#i{color:green}p.x{color:green}div p{color:green}\
+             @media print{p{color:green}}unknown{color:green}</style>\
+             <style>p{color:purple}</style>",
+        );
+        assert_eq!(rules.len(), 4, "rules: {rules:?}");
+        assert_eq!(rules.get("p").and_then(|p| p.color), Some([1.0, 0.0, 0.0]));
+        assert_eq!(rules.get("p").and_then(|p| p.size), Some(14.0));
+        assert_eq!(rules.get("h2").and_then(|p| p.color), Some([0.0, 0.0, 1.0]));
+        assert_eq!(
+            rules.get("li").and_then(|p| p.align),
+            Some(TextAlign::Right)
+        );
+        assert_eq!(
+            rules.get("td").and_then(|p| p.background_size),
+            Some(BackgroundSize::Cover)
+        );
+        assert!(!rules.contains_key("unknown"));
+    }
+
+    #[test]
+    fn inline_style_overrides_the_rulesheet_property_by_property() {
+        let blocks = parse(
+            "<style>p{color:red;font-size:14pt;text-align:center}</style>\
+             <p style=\"color:blue\">one</p><p>two</p>",
+        );
+        let Block::Paragraph(one) = &blocks[0] else {
+            panic!("first paragraph");
+        };
+        let Block::Paragraph(two) = &blocks[1] else {
+            panic!("second paragraph");
+        };
+        // Inline colour wins; size and alignment fall through to the sheet.
+        assert_eq!(one[0].color, Some([0.0, 0.0, 1.0]));
+        assert_eq!(one[0].size, Some(14.0));
+        assert_eq!(one[0].align, Some(TextAlign::Center));
+        // The unstyled paragraph takes the sheet's colour unchanged.
+        assert_eq!(two[0].color, Some([1.0, 0.0, 0.0]));
+        assert_eq!(two[0].size, Some(14.0));
     }
 }

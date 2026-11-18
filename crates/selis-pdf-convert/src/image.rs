@@ -1,17 +1,26 @@
-//! Inbound JPEG and PNG images from `data:` URIs (HTML `<img>` / Markdown `![]()`).
+//! Inbound JPEG, PNG and SVG images from `data:` URIs (HTML `<img>` / Markdown
+//! `![]()`).
 //!
-//! Accepted media types are `data:image/jpeg;base64,…` and
-//! `data:image/png;base64,…` (case-insensitive). A JPEG's SOF marker is read
-//! for the *true* width, height and component count, and the JPEG bytes are
-//! embedded verbatim as a `DCTDecode` stream (no decoder runs on that path).
-//! A PNG is decoded with the engine's [`selis_image::decode_png`] (zlib Flate
-//! IDAT + PNG scanline filters), its alpha — if any — is flattened over white,
-//! and the raw samples are re-encoded with
-//! [`selis_pdf_filter::flate_encode`] into a `FlateDecode` stream. Both paths
-//! refuse truncated or malformed input before an XObject is emitted.
+//! Accepted media types are `data:image/jpeg;base64,…`,
+//! `data:image/png;base64,…` and `data:image/svg+xml[,base64],…`
+//! (case-insensitive media type). A JPEG's SOF marker is read for the *true*
+//! width, height and component count, and the JPEG bytes are embedded verbatim
+//! as a `DCTDecode` stream (no decoder runs on that path). A PNG is decoded with
+//! the engine's [`selis_image::decode_png`] (zlib Flate IDAT + PNG scanline
+//! filters), its alpha — if any — is flattened over white, and the raw samples
+//! are re-encoded with [`selis_pdf_filter::flate_encode`] into a `FlateDecode`
+//! stream. An SVG is *not* rasterised: its text is handed to the existing
+//! [`crate::svg`] subset parser, which produces a ready-to-embed PDF content
+//! stream plus a natural canvas size; the emitter wraps that in a `Form`
+//! XObject placed at the image box.
 //!
-//! Anything else — remote `http(s)` URLs, file paths, other schemes, GIF/WebP/
-//! SVG data URIs, palette/interlaced/non-8-bit PNGs, and malformed or truncated
+//! SVG payloads may be base64 (`;base64,`) or percent-encoded (bare `,`);
+//! decoded text is bounded to [`MAX_SVG_BYTES`]. The SVG subset refuses scripts,
+//! external references and non-local `href` targets *by name* — see
+//! [`crate::svg::parse_embedded_svg`]. Nothing is ever fetched.
+//!
+//! Anything else — remote `http(s)` URLs, file paths, other schemes, GIF/WebP
+//! data URIs, palette/interlaced/non-8-bit PNGs, and malformed or truncated
 //! files — is refused with a typed [`ImageError`] and skipped by the parsers;
 //! the offending source text is not painted and no XObject is emitted.
 //!
@@ -86,6 +95,48 @@ pub(crate) struct EmbeddedImage {
     pub filter: ImageFilter,
 }
 
+/// A validated SVG whose drawing has already been lowered to PDF operators.
+///
+/// Produced by [`crate::svg::parse_embedded_svg`] from an `image/svg+xml` data
+/// URI. The emitter does **not** interpret SVG: it wraps `content` in a `Form`
+/// XObject with a `/BBox` of the natural canvas and draws it at the image box.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct EmbeddedSvg {
+    /// A complete SVG content stream (y-flip, viewBox scale, shapes). In form
+    /// space it spans `0..width_pt` × `0..height_pt`, y-up.
+    pub content: Vec<u8>,
+    /// Natural canvas width in PDF points.
+    pub width_pt: f64,
+    /// Natural canvas height in PDF points.
+    pub height_pt: f64,
+}
+
+/// Either kind of source an `<img src>` / Markdown `![alt](…)` may carry.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum ImageSource {
+    /// A JPEG or PNG, embedded as an `Image` XObject.
+    Raster(EmbeddedImage),
+    /// An SVG, embedded as a `Form` XObject.
+    Svg(EmbeddedSvg),
+}
+
+impl ImageSource {
+    /// The intrinsic size in PDF points (image pixels at 96 dpi, SVG canvas as
+    /// computed by the SVG subset parser). Used by layout to size the box.
+    pub(crate) fn intrinsic_pt(&self) -> (f64, f64) {
+        match self {
+            Self::Raster(image) => (
+                f64::from(image.width) * IMAGE_PX_TO_PT,
+                f64::from(image.height) * IMAGE_PX_TO_PT,
+            ),
+            Self::Svg(svg) => (svg.width_pt, svg.height_pt),
+        }
+    }
+}
+
+/// Pixels-to-points for an image with no explicit size (96 dpi convention).
+const IMAGE_PX_TO_PT: f64 = 0.75;
+
 /// A typed refusal of an image source. The parsers currently skip on `Err`;
 /// the enum is kept typed so a stricter caller can choose to fail instead.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,6 +159,12 @@ pub(crate) enum ImageError {
     /// A structurally sound PNG whose feature set this subset refuses (palette,
     /// interlacing, a bit depth other than 8, an unknown colour type).
     UnsupportedPng,
+    /// The SVG text (after data-URI decoding) is malformed or unsafe. The label
+    /// says which invariant failed; it is sanitised before it reaches a log.
+    MalformedSvg(String),
+    /// The SVG parsed but uses a construct the embedded subset refuses (a
+    /// script, an external reference, a remote `href`, …).
+    UnsupportedSvg(String),
 }
 
 impl ImageError {
@@ -167,6 +224,16 @@ impl ImageError {
                 "image-png",
                 "unsupported PNG feature (only 8-bit grey/RGB/RGBA, non-interlaced)".to_string(),
             ),
+            Self::MalformedSvg(why) => (
+                Code::ConvertMalformed,
+                "image-svg",
+                format!("malformed SVG: {why}"),
+            ),
+            Self::UnsupportedSvg(why) => (
+                Code::ConvertUnsupported,
+                "image-svg",
+                format!("unsupported SVG construct: {why}"),
+            ),
         };
         Error::with(
             code,
@@ -199,24 +266,10 @@ impl ImageError {
 /// marker, or a PNG that is truncated, corrupt, or outside the supported
 /// feature subset. No partial image is returned.
 pub(crate) fn parse_data_uri(src: &str) -> Result<EmbeddedImage, ImageError> {
-    let lower = src.to_ascii_lowercase();
-    if !lower.starts_with("data:") {
-        let scheme = src
-            .split_once(':')
-            .map_or("path", |(scheme, _)| scheme)
-            .to_string();
-        return Err(ImageError::NonDataUri(scheme));
-    }
-    // `to_ascii_lowercase` preserves byte length, so indices from the original
-    // string are valid on `lower` too. Only the media type is compared
-    // case-insensitively; the payload keeps base64's case-sensitive alphabet.
-    let Some(comma) = src.find(',') else {
-        return Err(ImageError::InvalidDataUri);
-    };
-    let meta = lower.get("data:".len()..comma).unwrap_or("");
-    let encoded = src.get(comma.saturating_add(1)..).unwrap_or("");
+    let (meta, encoded) = data_uri_meta(src)?;
     let bytes = decode_base64(encoded).ok_or(ImageError::InvalidBase64)?;
-    match meta {
+    let meta_lower = meta.to_ascii_lowercase();
+    match meta_lower.as_str() {
         "image/jpeg;base64" => {
             let (width, height, color_space) = parse_sof(&bytes)?;
             Ok(EmbeddedImage {
@@ -229,15 +282,172 @@ pub(crate) fn parse_data_uri(src: &str) -> Result<EmbeddedImage, ImageError> {
         }
         "image/png;base64" => parse_png(&bytes),
         _ => {
-            let kind = meta
+            let kind = meta_lower
                 .strip_suffix(";base64")
-                .unwrap_or(meta)
+                .unwrap_or(&meta_lower)
                 .split(';')
                 .next()
-                .unwrap_or(meta)
+                .unwrap_or(&meta_lower)
                 .to_string();
             Err(ImageError::NotImage(kind))
         }
+    }
+}
+
+/// Split a `data:` URI into `(metadata, verbatim payload)`, both borrowed from
+/// the source. The caller lowercases the metadata for case-insensitive media
+/// type comparisons; the payload keeps its case-sensitive base64 alphabet.
+///
+/// # Budget
+///
+/// Allocates nothing: the source text is bounded by the document that carried it.
+///
+/// # Malformed Input
+///
+/// `NonDataUri` (naming the scheme) when the URI is not `data:`, and
+/// `InvalidDataUri` when there is no comma separating metadata and payload.
+fn data_uri_meta(src: &str) -> Result<(&str, &str), ImageError> {
+    if !src
+        .get(.."data:".len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("data:"))
+    {
+        let scheme = src
+            .split_once(':')
+            .map_or("path", |(scheme, _)| scheme)
+            .to_string();
+        return Err(ImageError::NonDataUri(scheme));
+    }
+    let Some(comma) = src.find(',') else {
+        return Err(ImageError::InvalidDataUri);
+    };
+    let meta = src.get("data:".len()..comma).unwrap_or("");
+    let payload = src.get(comma.saturating_add(1)..).unwrap_or("");
+    Ok((meta, payload))
+}
+
+/// Hard ceiling on decoded SVG text (256 KiB). Bounds both the parser's work
+/// and the number of PDF operators a single data URI can inject.
+pub(crate) const MAX_SVG_BYTES: usize = 256 * 1024;
+
+/// Decode an SVG data URI and lower it through the existing SVG subset parser.
+///
+/// Both `data:image/svg+xml;base64,…` and the percent-encoded form
+/// `data:image/svg+xml,…` are accepted; a `charset` parameter is tolerated.
+/// The decoded text is bounded by [`MAX_SVG_BYTES`] *before* parsing. The SVG
+/// parser refuses scripts, external references and non-local `href` targets by
+/// name (see [`crate::svg::parse_embedded_svg`]); nothing is fetched here.
+///
+/// # Budget
+///
+/// The base64/percent decode allocates at most twice [`MAX_SVG_BYTES`]; the SVG
+/// parser bounds the element count and the emitter's content bytes are charged
+/// by `layout::lay_out` and the document writer when the Form XObject is built.
+///
+/// # Malformed Input
+///
+/// Returns a typed [`ImageError`] for a non-data URI, a non-SVG media type, a
+/// malformed base64 payload, decoded text that is not UTF-8, an oversized SVG,
+/// or any SVG the subset parser refuses. No partial drawing is returned.
+pub(crate) fn parse_svg_data_uri(src: &str) -> Result<EmbeddedSvg, ImageError> {
+    let (meta, payload) = data_uri_meta(src)?;
+    let media = meta.split(';').next().unwrap_or("");
+    if !media.eq_ignore_ascii_case("image/svg+xml") {
+        return Err(ImageError::NotImage(media.to_string()));
+    }
+    // Bound the encoded payload too, so a hostile base64/percent string cannot
+    // make the decoder allocate an unbounded buffer before we check its length.
+    if payload.len() > MAX_SVG_BYTES.saturating_mul(2) {
+        return Err(ImageError::InvalidDataUri);
+    }
+    let bytes = if meta.to_ascii_lowercase().contains(";base64") {
+        decode_base64(payload).ok_or(ImageError::InvalidBase64)?
+    } else {
+        percent_decode(payload)
+    };
+    if bytes.len() > MAX_SVG_BYTES {
+        return Err(ImageError::InvalidDataUri);
+    }
+    let text = String::from_utf8(bytes)
+        .map_err(|_| ImageError::MalformedSvg("payload is not UTF-8".to_string()))?;
+    crate::svg::parse_embedded_svg(&text).map_err(|err| {
+        let detail = err
+            .ctx()
+            .detail
+            .clone()
+            .unwrap_or_else(|| "SVG refused".to_string());
+        if err.code() == Code::ConvertUnsupported {
+            ImageError::UnsupportedSvg(detail)
+        } else {
+            ImageError::MalformedSvg(detail)
+        }
+    })
+}
+
+/// Decode one `<img src>` / Markdown image target into either raster or vector
+/// form. SVG media types go through [`parse_svg_data_uri`]; everything else is
+/// left to the existing JPEG/PNG parser so its typed refusals are unchanged.
+///
+/// # Budget
+///
+/// See [`parse_data_uri`] and [`parse_svg_data_uri`]; no additional charge.
+///
+/// # Malformed Input
+///
+/// The typed [`ImageError`] of the selected parser. Remote URLs and any other
+/// scheme are refused by name before a decoder runs.
+pub(crate) fn parse_image_source(src: &str) -> Result<ImageSource, ImageError> {
+    let (meta, _) = data_uri_meta(src)?;
+    if meta
+        .split(';')
+        .next()
+        .is_some_and(|media| media.eq_ignore_ascii_case("image/svg+xml"))
+    {
+        parse_svg_data_uri(src).map(ImageSource::Svg)
+    } else {
+        parse_data_uri(src).map(ImageSource::Raster)
+    }
+}
+
+/// Percent-decode a data-URI payload. `%XX` becomes the byte `XX`; every other
+/// byte (including a bare `+`, which is *not* a space in a data URI) is copied.
+/// A `%` not followed by two hex digits is kept literally rather than failing —
+/// SVG attribute values such as `50%` are common and browsers accept them.
+///
+/// # Budget
+///
+/// Allocates one buffer the size of the input; callers bound the source length.
+///
+/// # Malformed Input
+///
+/// Never fails; malformed escapes are preserved verbatim for the SVG parser to
+/// reject if they matter.
+fn percent_decode(input: &str) -> Vec<u8> {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes.get(i) == Some(&b'%') {
+            let hi = bytes.get(i.saturating_add(1)).copied().and_then(hex_val);
+            let lo = bytes.get(i.saturating_add(2)).copied().and_then(hex_val);
+            if let (Some(hi), Some(lo)) = (hi, lo) {
+                out.push((hi << 4) | lo);
+                i = i.saturating_add(3);
+                continue;
+            }
+        }
+        out.push(bytes.get(i).copied().unwrap_or(0));
+        i = i.saturating_add(1);
+    }
+    out
+}
+
+/// One hex digit, or `None` for any other byte.
+fn hex_val(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte.wrapping_sub(b'0')),
+        b'a'..=b'f' => Some(byte.wrapping_sub(b'a').wrapping_add(10)),
+        b'A'..=b'F' => Some(byte.wrapping_sub(b'A').wrapping_add(10)),
+        _ => None,
     }
 }
 
@@ -814,6 +1024,74 @@ mod tests {
         assert!(matches!(
             parse_data_uri(&pal_src),
             Err(ImageError::UnsupportedPng) | Err(ImageError::MalformedPng(_))
+        ));
+    }
+
+    const RED_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20" viewBox="0 0 40 20"><rect width="40" height="20" fill="#ff0000"/></svg>"##;
+
+    #[test]
+    fn svg_data_uri_decodes_base64_and_percent_forms() {
+        let b64_src = format!(
+            "data:image/svg+xml;base64,{}",
+            encode_base64(RED_SVG.as_bytes())
+        );
+        let from_b64 = parse_svg_data_uri(&b64_src).expect("base64 SVG");
+        assert_eq!((from_b64.width_pt, from_b64.height_pt), (30.0, 15.0));
+        assert!(String::from_utf8_lossy(&from_b64.content).contains("1 0 0 -1 0 15 cm"));
+
+        // A percent-encoded payload with a charset parameter is accepted too.
+        let encoded = RED_SVG
+            .bytes()
+            .map(|b| {
+                if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+                    (b as char).to_string()
+                } else {
+                    format!("%{b:02X}")
+                }
+            })
+            .collect::<String>();
+        let pct_src = format!("data:image/svg+xml;charset=utf-8,{encoded}");
+        let from_pct = parse_svg_data_uri(&pct_src).expect("percent-encoded SVG");
+        assert_eq!(from_pct, from_b64);
+
+        // The unified source parser routes SVG to this path.
+        assert!(matches!(
+            parse_image_source(&b64_src),
+            Ok(ImageSource::Svg(_))
+        ));
+    }
+
+    #[test]
+    fn svg_data_uri_refuses_scripts_remote_hrefs_and_oversized_input() {
+        let scripted = RED_SVG.replace("<rect", "<script>alert(1)</script><rect");
+        let scripted_src = format!(
+            "data:image/svg+xml;base64,{}",
+            encode_base64(scripted.as_bytes())
+        );
+        assert!(matches!(
+            parse_svg_data_uri(&scripted_src),
+            Err(ImageError::UnsupportedSvg(_))
+        ));
+        let linked = RED_SVG.replace(
+            "</svg>",
+            "<a href=\"https://evil.example/\"><text>x</text></a></svg>",
+        );
+        let linked_src = format!(
+            "data:image/svg+xml;base64,{}",
+            encode_base64(linked.as_bytes())
+        );
+        assert!(matches!(
+            parse_svg_data_uri(&linked_src),
+            Err(ImageError::UnsupportedSvg(_))
+        ));
+        let oversized = format!("data:image/svg+xml,{}", "x".repeat(MAX_SVG_BYTES + 1));
+        assert!(matches!(
+            parse_svg_data_uri(&oversized),
+            Err(ImageError::InvalidDataUri)
+        ));
+        assert!(matches!(
+            parse_svg_data_uri("https://example.com/a.svg"),
+            Err(ImageError::NonDataUri(scheme)) if scheme == "https"
         ));
     }
 }

@@ -3,8 +3,10 @@
 use selis_error::Result;
 use selis_sandbox::{Budget, BudgetGuard, Resource};
 
-use crate::blocks::{encode_text, measure, split_words, Block, ImageBlock, Span, Style, TextAlign};
-use crate::image::EmbeddedImage;
+use crate::blocks::{
+    encode_text, measure, split_words, BackgroundSize, Block, Span, Style, TextAlign,
+};
+use crate::image::ImageSource;
 use crate::PageSize;
 
 /// The page margin in points.
@@ -97,15 +99,15 @@ pub(crate) enum Item {
         h: f64,
         uri: String,
     },
-    /// A JPEG/PNG drawn as an `XObject` at a measured rectangle. The emitter
-    /// writes the image stream and assigns the `/ImN` resource name.
+    /// A JPEG/PNG (`Image`) or SVG (`Form`) drawn as an `XObject` at a measured
+    /// rectangle. The emitter writes the stream and assigns the `/ImN` name.
     Image {
         x: f64,
         /// Distance from the page top to the box's top edge.
         top: f64,
         w: f64,
         h: f64,
-        image: EmbeddedImage,
+        image: ImageSource,
     },
 }
 
@@ -195,14 +197,28 @@ impl Layout {
             let w = measure(font, &run.text, size);
             // An inline `background-image` data URI paints the run's own text
             // box. The emitter draws images before text, so the image sits
-            // behind the glyphs rather than over them.
+            // behind the glyphs rather than over them. `background-size`, when
+            // present, resizes that image inside the box (see `background_box`);
+            // without it the legacy stretch-to-box behaviour is kept.
             if let Some(background) = &run.background {
+                let (bw, bh) = match run.background_size {
+                    Some(mode) => background_box(
+                        (
+                            f64::from(background.width) * IMAGE_PX_TO_PT,
+                            f64::from(background.height) * IMAGE_PX_TO_PT,
+                        ),
+                        (w, height),
+                        mode,
+                        (self.max_x() - x, self.page_h - 2.0 * MARGIN),
+                    ),
+                    None => (w, height),
+                };
                 items.push(Item::Image {
                     x,
                     top,
-                    w,
-                    h: height,
-                    image: background.clone(),
+                    w: bw,
+                    h: bh,
+                    image: ImageSource::Raster(background.clone()),
                 });
             }
             items.push(Item::Text {
@@ -274,8 +290,11 @@ pub(crate) fn lay_out(
                         bytes = bytes.saturating_add(u64::try_from(b.len()).unwrap_or(u64::MAX));
                     }
                     Item::Image { image, .. } => {
-                        bytes = bytes
-                            .saturating_add(u64::try_from(image.data.len()).unwrap_or(u64::MAX));
+                        let len = match image {
+                            ImageSource::Raster(img) => img.data.len(),
+                            ImageSource::Svg(svg) => svg.content.len(),
+                        };
+                        bytes = bytes.saturating_add(u64::try_from(len).unwrap_or(u64::MAX));
                     }
                     Item::Rect { .. } | Item::LinkBox { .. } => {}
                 }
@@ -528,17 +547,23 @@ fn render_table(layout: &mut Layout, head: &[Vec<Span>], rows: &[Vec<Vec<Span>>]
 /// 96-dpi convention used for `font-size: …px`.
 const IMAGE_PX_TO_PT: f64 = 0.75;
 
-/// Compute an image's placement `(width, height)` in points.
+/// Compute an image source's placement `(width, height)` in points.
 ///
-/// Intrinsic image pixels are converted at 96 dpi. Explicit `width`/`height`
-/// override them; when only one is given the other follows the intrinsic
-/// aspect ratio. The box is clamped to the available column (and the page
-/// height), preserving aspect ratio. Non-finite inputs fall back to intrinsic.
-fn image_box(block: &ImageBlock, avail_w: f64, avail_h: f64) -> (f64, f64) {
-    let intrinsic_w = f64::from(block.image.width) * IMAGE_PX_TO_PT;
-    let intrinsic_h = f64::from(block.image.height) * IMAGE_PX_TO_PT;
-    let explicit_w = block.width.filter(|v| v.is_finite() && *v > 0.0);
-    let explicit_h = block.height.filter(|v| v.is_finite() && *v > 0.0);
+/// Intrinsic image pixels are converted at 96 dpi; an SVG's canvas is already
+/// in points. Explicit `width`/`height` override them; when only one is given
+/// the other follows the intrinsic aspect ratio. The box is clamped to the
+/// available column (and the page height), preserving aspect ratio. Non-finite
+/// inputs fall back to intrinsic.
+fn image_box(
+    intrinsic: (f64, f64),
+    width: Option<f64>,
+    height: Option<f64>,
+    avail_w: f64,
+    avail_h: f64,
+) -> (f64, f64) {
+    let (intrinsic_w, intrinsic_h) = intrinsic;
+    let explicit_w = width.filter(|v| v.is_finite() && *v > 0.0);
+    let explicit_h = height.filter(|v| v.is_finite() && *v > 0.0);
     let mut w = explicit_w.unwrap_or(intrinsic_w);
     let mut h = explicit_h.unwrap_or(intrinsic_h);
     if explicit_w.is_some() && explicit_h.is_none() && intrinsic_w > 0.0 {
@@ -555,6 +580,87 @@ fn image_box(block: &ImageBlock, avail_w: f64, avail_h: f64) -> (f64, f64) {
         let scale = avail_h / h;
         w *= scale;
         h *= scale;
+    }
+    (w.max(0.0), h.max(0.0))
+}
+
+/// Resolve a `background-size` declaration against an element box.
+///
+/// `auto` uses the image's intrinsic size; `contain`/`cover` scale it to fit or
+/// fill the box while preserving aspect; absolute lengths use the declared
+/// values (a single length derives the other axis from the intrinsic ratio).
+/// The result is clamped to the page's available width/height, and to the
+/// element box for every mode except `cover` (which deliberately overflows
+/// when necessary). There is no `background-position` or clipping: the image is
+/// always painted from the box's top-left corner.
+fn background_box(
+    intrinsic: (f64, f64),
+    element: (f64, f64),
+    mode: BackgroundSize,
+    avail: (f64, f64),
+) -> (f64, f64) {
+    let (iw, ih) = intrinsic;
+    let (ew, eh) = element;
+    let (avail_w, avail_h) = avail;
+    if !(iw > 0.0 && ih > 0.0 && ew > 0.0 && eh > 0.0) {
+        return (ew.max(0.0), eh.max(0.0));
+    }
+    let mut w = iw;
+    let mut h = ih;
+    match mode {
+        BackgroundSize::Auto => {}
+        BackgroundSize::Contain => {
+            let scale = (ew / iw).min(eh / ih);
+            w = iw * scale;
+            h = ih * scale;
+        }
+        BackgroundSize::Cover => {
+            let scale = (ew / iw).max(eh / ih);
+            w = iw * scale;
+            h = ih * scale;
+        }
+        BackgroundSize::Length { width, height } => {
+            let declared_w = width.filter(|v| v.is_finite() && *v > 0.0);
+            let declared_h = height.filter(|v| v.is_finite() && *v > 0.0);
+            match (declared_w, declared_h) {
+                (Some(pw), Some(ph)) => {
+                    w = pw;
+                    h = ph;
+                }
+                (Some(pw), None) => {
+                    w = pw;
+                    h = pw * ih / iw;
+                }
+                (None, Some(ph)) => {
+                    h = ph;
+                    w = ph * iw / ih;
+                }
+                (None, None) => {}
+            }
+        }
+    }
+    // Clamp to the page column first, then (except for `cover`) to the box.
+    if w > avail_w && w > 0.0 {
+        let scale = avail_w / w;
+        w *= scale;
+        h *= scale;
+    }
+    if h > avail_h && h > 0.0 {
+        let scale = avail_h / h;
+        w *= scale;
+        h *= scale;
+    }
+    if mode != BackgroundSize::Cover {
+        if w > ew && w > 0.0 {
+            let scale = ew / w;
+            w *= scale;
+            h *= scale;
+        }
+        if h > eh && h > 0.0 {
+            let scale = eh / h;
+            w *= scale;
+            h *= scale;
+        }
     }
     (w.max(0.0), h.max(0.0))
 }
@@ -798,7 +904,13 @@ fn render_block(
         Block::Image(img) => {
             let avail_w = layout.max_x() - (MARGIN + indent);
             let avail_h = layout.page_h - 2.0 * MARGIN;
-            let (w, h) = image_box(img, avail_w, avail_h);
+            let (w, h) = image_box(
+                img.image.intrinsic_pt(),
+                img.width,
+                img.height,
+                avail_w,
+                avail_h,
+            );
             if w > 0.0 && h > 0.0 {
                 // Break before the image if it would not fit on this page.
                 layout.ensure_room(h);
@@ -930,6 +1042,7 @@ fn push_run(cur: &mut Vec<Span>, style: Style, text: String, source: &Span) {
             && last.size == source.size
             && last.align == source.align
             && last.background == source.background
+            && last.background_size == source.background_size
         {
             last.text.push_str(&text);
             return;
@@ -943,6 +1056,7 @@ fn push_run(cur: &mut Vec<Span>, style: Style, text: String, source: &Span) {
         size: source.size,
         align: source.align,
         background: source.background.clone(),
+        background_size: source.background_size,
     });
 }
 

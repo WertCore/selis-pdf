@@ -1,7 +1,7 @@
 //! The Markdown subset parser (see the crate docs for the supported subset).
 
 use crate::blocks::{Block, ImageBlock, Span, Style, TextAlign};
-use crate::image::parse_data_uri;
+use crate::image::parse_image_source;
 
 /// Parse Markdown (the documented subset) into layout blocks.
 ///
@@ -177,12 +177,12 @@ fn parse_lines(lines: &[&str], base_indent: usize) -> Vec<Block> {
     out
 }
 
-/// Turn a paragraph that is exactly `![alt](data:image/jpeg;base64,…)` or
-/// `![alt](data:image/png;base64,…)` into an image block. A remote URL, other
-/// scheme, or malformed JPEG/PNG is refused by name
-/// with a typed image error and skipped (it falls through to `parse_inline`,
-/// which drops the image markup, so no source text is painted). Images inline
-/// with other text are still skipped — only standalone image paragraphs embed.
+/// Turn a paragraph that is exactly `![alt](data:image/…)` into an image block.
+/// JPEG, PNG and SVG data URIs are accepted; a remote URL, other scheme,
+/// malformed image or unsafe SVG is refused by name with a typed image error
+/// and skipped (it falls through to `parse_inline`, which drops the image
+/// markup, so no source text is painted). Images inline with other text are
+/// still skipped — only standalone image paragraphs embed.
 fn standalone_image(para: &str) -> Option<Block> {
     let text = para.trim();
     let chars: Vec<char> = text.chars().collect();
@@ -193,7 +193,7 @@ fn standalone_image(para: &str) -> Option<Block> {
     if end != chars.len() {
         return None;
     }
-    let image = parse_data_uri(&url).ok()?;
+    let image = parse_image_source(&url).ok()?;
     Some(Block::Image(ImageBlock {
         image,
         width: None,

@@ -3,8 +3,10 @@
 //! Every page carries a proper `/Resources` dictionary referencing five
 //! standard-14 Type 1 font objects with `/Encoding /WinAnsiEncoding`; the
 //! content stream shows WinAnsi byte strings produced by the layout encoder.
-//! Pages with images also carry an `/XObject` dict of `DCTDecode` JPEG or
-//! `FlateDecode` PNG streams, drawn at their measured rectangles with `cm` + `Do`.
+//! Pages with images also carry an `/XObject` dict: JPEGs (`/DCTDecode`) and
+//! PNGs (`/FlateDecode`) become `Image` streams, while SVG data URIs lowered by
+//! the `svg` subset become `Form` streams with their own `/BBox` and font
+//! resources. Each is drawn at its measured rectangle with `cm` + `Do`.
 
 use selis_bytes::Bytes;
 use selis_error::Result;
@@ -13,7 +15,7 @@ use selis_pdf_cos::{Obj, Ref};
 use selis_sandbox::{Budget, BudgetGuard, Resource};
 
 use crate::blocks::Block;
-use crate::image::EmbeddedImage;
+use crate::image::{EmbeddedImage, EmbeddedSvg, ImageSource};
 use crate::layout::{self, Item};
 use crate::Options;
 
@@ -85,10 +87,11 @@ pub(crate) fn build(
 
     let mut object_count = 6u64;
     for page in &pages {
-        // Allocate one image XObject per image on this page and remember the
-        // content-stream placement (resource name + measured rectangle).
+        // Allocate one XObject per image on this page and remember the
+        // content-stream placement (resource name, rectangle and the scale
+        // from the XObject's own space to that rectangle).
         let mut xobjects: Vec<(Bytes, Obj)> = Vec::new();
-        let mut placements: Vec<(String, f64, f64, f64, f64)> = Vec::new();
+        let mut placements: Vec<(String, f64, f64, f64, f64, f64)> = Vec::new();
         for line in &page.lines {
             for item in &line.items {
                 if let Item::Image {
@@ -101,21 +104,30 @@ pub(crate) fn build(
                 {
                     let name = format!("Im{}", placements.len().saturating_add(1));
                     let num = take_num(&mut b);
-                    b.add_object(num, image_xobject(image));
+                    let (object, scale_x, scale_y) = match image {
+                        ImageSource::Raster(raster) => (image_xobject(raster), *w, *h),
+                        ImageSource::Svg(svg) => (
+                            form_xobject(svg, &font_dict),
+                            *w / svg.width_pt,
+                            *h / svg.height_pt,
+                        ),
+                    };
+                    b.add_object(num, object);
                     object_count = object_count.saturating_add(1);
                     xobjects.push((bytes(name.as_bytes()), Obj::Ref(Ref::new(num, 0))));
-                    placements.push((name, *x, *top, *w, *h));
+                    placements.push((name, *x, *top, *h, scale_x, scale_y));
                 }
             }
         }
 
         let mut cb = ContentBuilder::new();
-        // Images first, under text and backgrounds. The CTM maps the unit
-        // square of the image XObject onto the measured rectangle; PDF places
-        // images with their bottom-left at the current origin.
-        for (name, x, top, w, h) in &placements {
+        // Images/forms first, under text. An image XObject is a unit square, so
+        // the CTM scales it straight to the measured rectangle; a form XObject
+        // already has a natural size (its /BBox), so the CTM scales from that
+        // size to the rectangle. Both place their bottom-left at the origin.
+        for (name, x, top, h, scale_x, scale_y) in &placements {
             cb.save_state()
-                .concat(*w, 0.0, 0.0, *h, *x, page_h - top - h)
+                .concat(*scale_x, 0.0, 0.0, *scale_y, *x, page_h - top - h)
                 .draw_image(name)
                 .restore_state();
         }
@@ -299,6 +311,50 @@ fn image_xobject(image: &EmbeddedImage) -> Obj {
             ),
         ],
         data: Bytes::copy_from_slice(&image.data),
+    }
+}
+
+/// Build a Form XObject from an SVG lowered by the SVG subset parser.
+///
+/// The form's `/BBox` is the SVG's natural canvas in points; its content stream
+/// already contains the y-flip and every shape operator. The form carries its
+/// own `/Resources /Font` (the page's standard-14 map) because the SVG content
+/// uses the same `F1`–`F4` keys as page text. The emitter places it at the image
+/// box with a `cm` that divides by the natural canvas size.
+///
+/// # Budget
+///
+/// The caller charges the written stream bytes through `DocumentBuilder::write`
+/// and one object-resolution unit for the XObject via `object_count`.
+///
+/// # Malformed Input
+///
+/// None: `svg` is validated and lowered by `svg::parse_embedded_svg` before it
+/// reaches here; a refused SVG never produces a Form XObject.
+fn form_xobject(svg: &EmbeddedSvg, font_dict: &Obj) -> Obj {
+    Obj::Stream {
+        dict: vec![
+            (bytes(b"Type"), Obj::Name(bytes(b"XObject"))),
+            (bytes(b"Subtype"), Obj::Name(bytes(b"Form"))),
+            (
+                bytes(b"BBox"),
+                Obj::Array(vec![
+                    real(0.0),
+                    real(0.0),
+                    real(svg.width_pt),
+                    real(svg.height_pt),
+                ]),
+            ),
+            (
+                bytes(b"Resources"),
+                Obj::Dict(vec![(bytes(b"Font"), font_dict.clone())]),
+            ),
+            (
+                bytes(b"Length"),
+                Obj::Int(i64::try_from(svg.content.len()).unwrap_or(i64::MAX)),
+            ),
+        ],
+        data: Bytes::copy_from_slice(&svg.content),
     }
 }
 

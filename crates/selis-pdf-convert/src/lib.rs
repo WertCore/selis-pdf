@@ -20,10 +20,10 @@
 //! laid over it; the URL is no longer printed in parentheses. The annotation
 //! has a zero-width border and no appearance stream — it is clickable, but
 //! the label is not automatically underlined or recoloured. An **image whose
-//! whole paragraph is `![alt](data:image/jpeg;base64,…)`** is embedded as a
-//! real JPEG XObject (see below); inline images inside other text, reference
-//! links, and raw HTML inside Markdown are ignored or rendered as plain text.
-//! A whole-paragraph `![alt](data:image/png;base64,…)` embeds a PNG the same way.
+//! whole paragraph is `![alt](data:image/…,…)`** is embedded as a real PDF
+//! XObject (see below): JPEG, PNG and SVG data URIs are accepted; inline images
+//! inside other text, reference links, and raw HTML inside Markdown are ignored
+//! or rendered as plain text.
 //!
 //! # Supported HTML subset
 //!
@@ -34,37 +34,53 @@
 //! `<th>` in the first row makes a header row; nested tables and lists inside
 //! cells are not supported), and block containers (`<div>`, `<section>`,
 //! `<article>`, `<main>`, `<table>` cells). `<img src="…">` embeds an image
-//! when `src` is a **base64 JPEG or PNG data URI**; `width`/`height` attributes
-//! override its intrinsic size (see below). An inline
-//! `style="background-image: url(data:image/…;base64,…)"` paints the same image
-//! behind that element's text runs (see below). `<script>` and `<style>` content
-//! is dropped; unknown tags unwrap to their text. Named (`&amp;`, `&eacute;`,
-//! …) and numeric (`&#8212;`, `&#x2014;`) entities are decoded.
+//! when `src` is a **JPEG, PNG or SVG data URI** (SVG either `;base64,` or
+//! percent-encoded); `width`/`height` attributes override its intrinsic size
+//! (see below). An inline `style="background-image: url(data:image/…;base64,…)"`
+//! paints a JPEG/PNG behind that element's text runs (see below). A **single
+//! inline `<style>` block** contributes an element-type rulesheet (see below);
+//! `<script>` content is always dropped. Unknown tags unwrap to their text.
+//! Named (`&amp;`, `&eacute;`, …) and numeric (`&#8212;`, `&#x2014;`) entities
+//! are decoded.
 //!
-//! # Supported images (JPEG and PNG data URIs)
+//! # Supported images (JPEG, PNG and SVG data URIs)
 //!
-//! HTML `<img src="data:image/jpeg;base64,…">` (or `data:image/png;base64,…`)
-//! and a Markdown paragraph that is exactly the same data URI inside `![alt]()`
-//! are decoded and embedded as a real image XObject. JPEG bytes are written
-//! verbatim behind `/Filter /DCTDecode`; a PNG's IDAT is decoded and its raw
-//! samples re-encoded behind `/Filter /FlateDecode`. `/Width`, `/Height` and
-//! `/ColorSpace` come from the source (JPEG SOF: `/DeviceGray`, `/DeviceRGB` or
-//! `/DeviceCMYK`; PNG IHDR: `/DeviceGray` or `/DeviceRGB`). Intrinsic pixels map
-//! to points at 96 dpi (0.75 pt/px). HTML `width`/`height` attributes override
-//! the intrinsic size (bare number = pt, `px` at 96 dpi, `pt` = pt); when only
-//! one is given the other follows the intrinsic aspect ratio, and the placement
-//! rectangle is clamped to the page's text width. Read-back tests re-open the
-//! PDF and assert the XObject entries, the `cm`/`Do` placement and the
-//! rasterised ink.
+//! HTML `<img src="data:image/…">` and a Markdown paragraph that is exactly the
+//! same data URI inside `![alt]()` are decoded and embedded as a real XObject:
 //!
-//! PNG support is deliberately narrow: 8-bit non-interlaced colour types 0
-//! (grey), 2 (RGB), 4 (grey+alpha) and 6 (RGBA). Alpha is **flattened over
-//! white**. Palette (3), interlaced, other bit depths and other media types are
-//! refused with a typed error. Everything else is **refused by name and
-//! skipped** (no text painted, no XObject emitted): remote `http(s)` URLs,
-//! `file:` paths, any other scheme, GIF/WebP/SVG data URIs, malformed or
-//! truncated files, and inline images mixed with other text. There is no
-//! network access anywhere on the conversion path.
+//! - **JPEG** (`data:image/jpeg;base64,…`) — bytes written verbatim behind
+//!   `/Filter /DCTDecode`; `/Width`, `/Height`, `/ColorSpace` come from the SOF
+//!   (`/DeviceGray`, `/DeviceRGB` or `/DeviceCMYK`).
+//! - **PNG** (`data:image/png;base64,…`) — IHDR supplies the geometry, the IDAT
+//!   is decoded with `selis-image` (zlib + scanline filters), alpha is
+//!   **flattened over white**, and the raw samples are re-encoded behind
+//!   `/Filter /FlateDecode` (`/DeviceGray` or `/DeviceRGB`). Only 8-bit
+//!   non-interlaced colour types 0 (grey), 2 (RGB), 4 (grey+alpha) and 6
+//!   (RGBA) are accepted; palette (3), interlaced and other bit depths are
+//!   refused.
+//! - **SVG** (`data:image/svg+xml;base64,…` or percent-encoded
+//!   `data:image/svg+xml,…`) — the text is fed through the **existing** `svg`
+//!   subset parser/emitter (the same one behind `svg_to_pdf`). The resulting
+//!   drawing becomes a `/Subtype /Form` XObject with a `/BBox` of its natural
+//!   canvas and font resources for SVG `<text>`; no rasterisation, no new SVG
+//!   engine. SVG text is bounded to 256 KiB and the element count to 20 000.
+//!   `<script>`, `<foreignObject>`, `<use>`, `<image>`, event-handler
+//!   attributes and any non-`#fragment` `href` are **refused by name** — no
+//!   fetch, no upload, no execution.
+//!
+//! Raster pixels map to points at 96 dpi (0.75 pt/px); an SVG's canvas is
+//! already in points and is placed at the same intrinsic box. HTML
+//! `width`/`height` attributes override the intrinsic size (bare number = pt,
+//! `px` at 96 dpi, `pt` = pt); when only one is given the other follows the
+//! aspect ratio, and the placement rectangle is clamped to the page's text
+//! width. Read-back tests re-open the PDF and assert the XObject entries, the
+//! `cm`/`Do` placement and the rasterised ink.
+//!
+//! Everything else is **refused by name and skipped** (no text painted, no
+//! XObject emitted): remote `http(s)` URLs, `file:` paths, any other scheme,
+//! GIF/WebP data URIs, malformed or truncated files, unsafe SVGs, and inline
+//! images mixed with other text. There is no network access anywhere on the
+//! conversion path.
 //!
 //! # Supported inline styling
 //!
@@ -83,15 +99,35 @@
 //! - `background-image:` — only a single `url("data:image/…;base64,…")` token
 //!   (quoted or bare) is understood; the JPEG/PNG is painted behind that
 //!   element's text runs. Remote URLs, gradients, multiple images and unknown
-//!   declarations are ignored or refused by name. This is a narrow subset, not
-//!   a CSS engine.
+//!   declarations are ignored or refused by name.
+//! - `background-size:` — `auto`, `contain`, `cover`, or one/two absolute
+//!   lengths (`pt`, `px` at 96 dpi, bare number = pt) resize that background
+//!   inside the element box. `auto`/`contain` fit the image inside the box,
+//!   `cover` fills it (without clipping), a single length derives the other
+//!   axis from the intrinsic ratio. There is no `background-position` or
+//!   `background-repeat`; the image is painted from the box's top-left corner.
+//!   With no `background-size`, the legacy stretch-to-box behaviour is kept.
 //! - Column alignment from GFM `:---` / `---:` / `:---:` delimiter markers is
 //!   applied to the whole column.
 //!
 //! Any other declaration is ignored, never guessed. Styles are inherited by
-//! nested elements with the innermost declaration winning. CSS rulesheets
-//! (`<style>` blocks), selectors, the cascade, `@media`, external stylesheets
-//! and shorthand properties are **not** supported.
+//! nested elements with the innermost declaration winning.
+//!
+//! # Narrow `<style>` rulesheet (two-level cascade)
+//!
+//! A **single** inline `<style>` block is read as a rulesheet. Supported
+//! selectors are bare element-type names only: `p`, `h1`–`h6`, `li`, `td`.
+//! Supported declarations are exactly the five above (`color`, `font-size`,
+//! `text-align`, `background-image`, `background-size`); repeated rules for one
+//! selector cascade in source order. The cascade has **two levels**: an
+//! element's own inline `style=` overrides the rulesheet value property by
+//! property, and nested elements inherit with the innermost declaration winning.
+//!
+//! Everything else is **ignored, never guessed**: classes (`.x`), IDs (`#x`),
+//! compound/descendant/universal selectors (`p.x`, `div p`, `*`), unknown
+//! element names, `@media` and every other at-rule (with their nested rules),
+//! unknown declarations, CSS comments, a second `<style>` block, and external
+//! stylesheets. This is not a general CSS engine or layout system.
 //!
 //! # Typography
 //!
@@ -105,15 +141,19 @@
 //! # Still out of scope (honest gaps)
 //!
 //! No font embedding or subsetting (only the standard-14 base fonts). Image
-//! embedding is limited to the JPEG/PNG data URIs and the single `url(...)`
-//! `background-image` described above; GIF/WebP/SVG data URIs, remote images,
-//! arbitrary CSS backgrounds, images embedded in DOCX / XLSX / PPTX / EPUB,
-//! and inline images inside a Markdown paragraph are still not embedded. There
-//! is no real CSS layout (floats, positioning, flexible boxes, real table
-//! layout, page margins from CSS), no charts, math or SVG-in-HTML, and no
-//! fidelity renderer. This subset produces honest, structurally useful PDFs
-//! with clickable links, a little inline styling and embedded JPEG/PNG images —
-//! not an Aspose-equivalent conversion.
+//! embedding is limited to the JPEG/PNG/SVG data URIs and the single `url(...)`
+//! `background-image` described above; GIF/WebP data URIs, remote images,
+//! arbitrary CSS backgrounds, images embedded in DOCX / XLSX / PPTX / EPUB, and
+//! inline images inside a Markdown paragraph are still not embedded. The SVG
+//! subset is the same one the standalone converter uses (no gradients, arcs,
+//! `use`, external references or scripting). CSS support is the small inline +
+//! rulesheet subset above: no selectors beyond bare element names, no real
+//! cascade beyond inline-over-rulesheet, no `@media`, relative units, floats,
+//! positioning, flex/grid or CSS-driven page margins. There are no charts, math
+//! or general HTML/SVG rendering, and no fidelity renderer. This subset
+//! produces honest, structurally useful PDFs with clickable links, a little
+//! inline/rulesheet styling and embedded JPEG/PNG/SVG images — not an
+//! Aspose-equivalent conversion.
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 #![forbid(unsafe_code)]
@@ -199,9 +239,10 @@ pub fn csv_to_pdf(
 /// # Malformed Input
 ///
 /// Markdown never fails to parse — every input produces a document. Images
-/// whose source is not a base64 JPEG/PNG data URI (remote URLs, other schemes,
-/// other media types, malformed images, unsupported PNG features) are refused
-/// with a typed image error and skipped. Returns `BUDGET_*` on budget exhaustion.
+/// whose source is not a JPEG/PNG/SVG data URI (remote URLs, other schemes,
+/// other media types, malformed images, unsupported PNG features, unsafe SVG)
+/// are refused with a typed image error and skipped. Returns `BUDGET_*` on
+/// budget exhaustion.
 ///
 /// # Output Guarantees
 ///
@@ -227,10 +268,12 @@ pub fn markdown_to_pdf(
 /// # Malformed Input
 ///
 /// HTML never fails to parse — unclosed tags, stray `<`, and unknown entities
-/// degrade to text. Images whose `src` (or inline `background-image` URL) is
-/// not a base64 JPEG/PNG data URI (remote URLs, other schemes, other media
-/// types, malformed images, unsupported PNG features) are refused with a typed
-/// image error and skipped. Returns `BUDGET_*` on budget exhaustion.
+/// degrade to text. Images whose `src` is not a JPEG/PNG/SVG data URI (remote
+/// URLs, other schemes, other media types, malformed images, unsupported PNG
+/// features, unsafe SVG) are refused with a typed image error and skipped; an
+/// inline `background-image` accepts JPEG/PNG under the same rules. Unsupported
+/// `<style>` selectors and declarations are ignored. Returns `BUDGET_*` on
+/// budget exhaustion.
 ///
 /// # Output Guarantees
 ///
@@ -1061,6 +1104,78 @@ mod fidelity {
             })
     }
 
+    /// A re-opened Form XObject: its dictionary entries and content bytes.
+    type FormObj = (Vec<(Vec<u8>, Obj)>, Vec<u8>);
+
+    /// The first `/Subtype /Form` stream in the re-opened object graph.
+    fn form_stream(bytes: &[u8]) -> Option<FormObj> {
+        for (_, obj) in crate::testkit::resolved_objects(bytes) {
+            if let Obj::Stream { dict, data } = obj {
+                let is_form = dict.iter().any(|(k, v)| {
+                    k.as_slice() == b"Subtype"
+                        && matches!(v, Obj::Name(n) if n.as_slice() == b"Form")
+                });
+                if is_form {
+                    let pairs = dict
+                        .iter()
+                        .map(|(k, v)| (k.as_slice().to_vec(), v.clone()))
+                        .collect();
+                    return Some((pairs, data.as_slice().to_vec()));
+                }
+            }
+        }
+        None
+    }
+
+    /// The numeric entries of a four-element `/BBox` array.
+    fn bbox(pairs: &[(Vec<u8>, Obj)]) -> Option<[f64; 4]> {
+        let (_, obj) = pairs.iter().find(|(k, _)| k.as_slice() == b"BBox")?;
+        let Obj::Array(values) = obj else {
+            return None;
+        };
+        let nums: Vec<f64> = values.iter().filter_map(as_f64).collect();
+        let [a, b, c, d] = nums.as_slice() else {
+            return None;
+        };
+        Some([*a, *b, *c, *d])
+    }
+
+    /// The `(width, height)` of the first image/form `cm` before `/Im1 Do`.
+    fn first_image_rect(content: &str) -> (f64, f64) {
+        let at = content.find("/Im1 Do").expect("image draw");
+        let line = content
+            .get(..at)
+            .and_then(|before| before.lines().rev().find(|l| l.trim_end().ends_with(" cm")))
+            .unwrap_or_else(|| panic!("no cm before draw: {content}"));
+        let nums: Vec<f64> = line
+            .split_whitespace()
+            .filter_map(|token| token.parse().ok())
+            .collect();
+        (
+            nums.first().copied().unwrap_or(-1.0),
+            nums.get(3).copied().unwrap_or(-1.0),
+        )
+    }
+
+    /// A minimal 40×20 red SVG with an explicit canvas and viewBox.
+    fn red_svg() -> String {
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20" viewBox="0 0 40 20"><rect x="0" y="0" width="40" height="20" fill="#ff0000"/></svg>"##
+            .to_string()
+    }
+
+    /// Percent-encode every non-unreserved byte (SVG data-URI fixture helper).
+    fn pct(s: &str) -> String {
+        let mut out = String::new();
+        for &byte in s.as_bytes() {
+            if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+                out.push(byte as char);
+            } else {
+                out.push_str(&format!("%{byte:02X}"));
+            }
+        }
+        out
+    }
+
     #[test]
     fn html_jpeg_data_uri_becomes_a_dctdecode_image_xobject() {
         let jpeg = red_jpeg();
@@ -1442,5 +1557,248 @@ mod fidelity {
             }
         }
         assert!(red, "PNG did not render red ink inside the image box");
+    }
+
+    // ---- Embedded SVG data URIs (Form XObjects) ----------------------------
+
+    #[test]
+    fn html_svg_data_uri_becomes_a_form_xobject_at_the_image_box() {
+        let src = format!("data:image/svg+xml;base64,{}", b64(red_svg().as_bytes()));
+        let bytes = from_html(&format!("<img src=\"{src}\">"));
+        crate::testkit::opens_with_page_count(&bytes, 1);
+
+        let (dict, data) = form_stream(&bytes).expect("Form XObject in re-opened PDF");
+        assert_eq!(dict_name(&dict, b"Type").as_deref(), Some(&b"XObject"[..]));
+        assert_eq!(dict_name(&dict, b"Subtype").as_deref(), Some(&b"Form"[..]));
+        // 40×20 px canvas → 30×15 pt at 96 dpi.
+        assert_eq!(bbox(&dict), Some([0.0, 0.0, 30.0, 15.0]));
+        assert!(
+            dict.iter().any(|(k, v)| k.as_slice() == b"Resources"
+                && matches!(v, Obj::Dict(pairs) if pairs.iter().any(|(fk, _)| fk.as_slice() == b"Font"))),
+            "the form must carry font resources for SVG <text>: {dict:?}"
+        );
+        let content = String::from_utf8_lossy(&data);
+        assert!(content.contains("1 0 0 -1 0 15 cm"), "no y-flip: {content}");
+        assert!(
+            content.contains("1 0 0 rg"),
+            "SVG red fill missing: {content}"
+        );
+
+        let page = stream(&bytes);
+        assert!(page.contains("/Im1 Do"), "form not drawn: {page}");
+        // The box is exactly the form's natural 30×15 pt canvas, so the
+        // placement matrix is the identity scale translated to the margin.
+        assert!(
+            page.contains("1 0 0 1 54 723 cm"),
+            "unexpected form placement: {page}"
+        );
+        assert!(
+            form_stream(&bytes).is_some(),
+            "the Form XObject must survive a second read-back"
+        );
+    }
+
+    #[test]
+    fn percent_encoded_svg_in_markdown_uses_the_same_form_path() {
+        let src = format!("data:image/svg+xml,{}", pct(&red_svg()));
+        let bytes = from_md(&format!("![a red square]({src})"));
+        crate::testkit::opens_with_page_count(&bytes, 1);
+        let (dict, _) = form_stream(&bytes).expect("SVG Form XObject from Markdown");
+        assert_eq!(bbox(&dict), Some([0.0, 0.0, 30.0, 15.0]));
+        assert!(stream(&bytes).contains("/Im1 Do"));
+    }
+
+    #[test]
+    fn an_embedded_svg_form_renders_its_fill_inside_the_box() {
+        let src = format!("data:image/svg+xml;base64,{}", b64(red_svg().as_bytes()));
+        let bytes = from_html(&format!("<img src=\"{src}\" width=\"100\" height=\"50\">"));
+        // The 30×15 pt form is scaled into the 100×50 pt box (3.333× in both
+        // axes) — a non-identity placement matrix proves the box is honoured.
+        assert!(
+            stream(&bytes).contains("3.333 0 0 3.333 54 688 cm"),
+            "unexpected scaled form placement: {}",
+            stream(&bytes)
+        );
+        let budget = Budget::unlimited();
+        let session = selis_pdf_engine::Session::open(bytes, &budget, &FixedClock(0))
+            .expect("engine re-open");
+        let mut g = guard();
+        let page = session
+            .render_page_rgba(0, 72.0, &budget, &mut g)
+            .expect("rasterize");
+        assert_eq!((page.width, page.height), (612, 792));
+        let mut red = false;
+        for y in 60usize..100 {
+            for x in 60usize..150 {
+                let idx = (y * page.width as usize + x) * 4;
+                let (r, g, b) = (page.rgba[idx], page.rgba[idx + 1], page.rgba[idx + 2]);
+                if r > 150 && g < 100 && b < 100 {
+                    red = true;
+                }
+            }
+        }
+        assert!(red, "the SVG form did not render red ink inside its box");
+    }
+
+    #[test]
+    fn unsafe_remote_and_malformed_svg_sources_produce_no_form() {
+        let scripted = red_svg().replace("<rect", "<script>alert(1)</script><rect");
+        let used = red_svg().replace(
+            "</svg>",
+            "<use href=\"https://evil.example/x.svg#a\"/></svg>",
+        );
+        let imaged = red_svg().replace(
+            "</svg>",
+            "<image href=\"https://evil.example/x.png\"/></svg>",
+        );
+        let linked = red_svg().replace(
+            "</svg>",
+            "<a xlink:href=\"https://evil.example/\"><text>x</text></a></svg>",
+        );
+        let handler = red_svg().replace("<svg ", "<svg onload=\"alert(1)\" ");
+        let sources: Vec<String> = vec![
+            "https://example.com/a.svg".to_string(),
+            "file:///etc/passwd".to_string(),
+            format!("data:image/svg+xml;base64,{}", b64(scripted.as_bytes())),
+            format!("data:image/svg+xml;base64,{}", b64(used.as_bytes())),
+            format!("data:image/svg+xml;base64,{}", b64(imaged.as_bytes())),
+            format!("data:image/svg+xml;base64,{}", b64(linked.as_bytes())),
+            format!("data:image/svg+xml;base64,{}", b64(handler.as_bytes())),
+            format!("data:image/svg+xml,{}", pct("<html/>")),
+            format!("data:image/svg+xml,{}", pct("<svg><g></svg></g>")),
+            format!(
+                "data:image/svg+xml;base64,{}",
+                b64(br#"<svg width="10" height="10"><path d="M 0 0 A 5 5 0 0 1 9 9"/></svg>"#)
+            ),
+        ];
+        for src in sources {
+            let bytes = from_html(&format!("<img src=\"{src}\">"));
+            assert!(
+                form_stream(&bytes).is_none(),
+                "refused SVG still produced a Form XObject: {src}"
+            );
+            assert!(
+                !stream(&bytes).contains(" Do\n"),
+                "refused SVG still emitted a draw: {src}"
+            );
+        }
+        // Markdown refuses remote and unsafe SVGs through the same source path.
+        let md = from_md("![no](https://example.com/a.svg)");
+        assert!(form_stream(&md).is_none());
+        assert!(!stream(&md).contains(" Do\n"));
+    }
+
+    // ---- CSS background-size ----------------------------------------------
+
+    #[test]
+    fn background_size_explicit_lengths_reach_the_content_stream() {
+        let png = red_png();
+        let src = format!("data:image/png;base64,{}", b64(&png));
+        let bytes = from_html(&format!(
+            "<p style=\"background-image:url({src});background-size:8pt 4pt\">Hello</p>"
+        ));
+        let (dict, _) = image_stream(&bytes).expect("background image XObject");
+        assert_eq!(
+            dict_name(&dict, b"Filter").as_deref(),
+            Some(&b"FlateDecode"[..])
+        );
+        assert_eq!(first_image_rect(&stream(&bytes)), (8.0, 4.0));
+    }
+
+    #[test]
+    fn background_size_auto_contain_and_cover_scale_differently() {
+        let png = red_png();
+        let src = format!("data:image/png;base64,{}", b64(&png));
+        let sized = |mode: &str| {
+            let bytes = from_html(&format!(
+                "<p style=\"background-image:url({src});background-size:{mode}\">Hello</p>"
+            ));
+            first_image_rect(&stream(&bytes))
+        };
+        let auto = sized("auto");
+        let contain = sized("contain");
+        let cover = sized("cover");
+        // "Hello" is a narrow, short box; `cover` must scale up relative to the
+        // fit-to-box modes while `auto`/`contain` keep the image inside it.
+        assert!(
+            cover.0 > contain.0 + 1.0,
+            "auto={auto:?} contain={contain:?} cover={cover:?}"
+        );
+        assert!(
+            auto.0 <= contain.0 + 0.5,
+            "auto={auto:?} contain={contain:?}"
+        );
+    }
+
+    // ---- Narrow <style> rulesheet and two-level cascade --------------------
+
+    #[test]
+    fn a_rulesheet_colours_and_sizes_elements_and_inline_overrides_win() {
+        let bytes = from_html(
+            "<style>p{color:#ff0000;font-size:20pt;text-align:center}\
+             h1{color:blue;font-size:20pt}</style>\
+             <p>RED</p><h1>HEAD</h1>\
+             <p style=\"color:#00ff00;text-align:left\">GREEN</p>",
+        );
+        crate::testkit::opens_with_page_count(&bytes, 1);
+        let content = stream(&bytes);
+        assert!(
+            content.contains("1 0 0 rg"),
+            "rulesheet red p missing: {content}"
+        );
+        assert!(
+            content.contains("0 0 1 rg"),
+            "rulesheet blue h1 missing: {content}"
+        );
+        assert!(
+            content.contains("0 1 0 rg"),
+            "inline green override missing: {content}"
+        );
+        assert!(
+            content.contains("/F1 20 Tf"),
+            "p size from rulesheet missing: {content}"
+        );
+        assert!(
+            content.contains("/F2 20 Tf"),
+            "h1 size from rulesheet missing: {content}"
+        );
+        let pairs = tm_text_pairs(&content);
+        let (centered, overridden) = (x_of(&pairs, "RED"), x_of(&pairs, "GREEN"));
+        assert!(
+            centered > overridden + 10.0,
+            "rulesheet center / inline left: centered={centered} overridden={overridden}"
+        );
+    }
+
+    #[test]
+    fn unsupported_selectors_at_rules_and_a_second_style_block_are_ignored() {
+        let bytes = from_html(
+            "<style>.cls{color:#ff0000}#id{color:#00ff00}p.special{color:#0000ff}\
+             div p{color:#ffff00}@media print{p{color:#ff00ff}}unknown{color:#ff0000}\
+             p{bogus:1}</style><style>p{color:#123456}</style><p>Plain</p>",
+        );
+        let content = stream(&bytes);
+        assert_eq!(
+            content.matches(" rg\n").count(),
+            1,
+            "no colour operator from ignored rules: {content}"
+        );
+        assert!(content.contains("0 0 0 rg"), "body stays black: {content}");
+        assert!(content.contains("Plain"));
+    }
+
+    #[test]
+    fn rulesheet_background_size_is_overridden_by_inline_style() {
+        let png = red_png();
+        let src = format!("data:image/png;base64,{}", b64(&png));
+        let sheet =
+            format!("<style>p{{background-image:url({src});background-size:8pt 4pt}}</style>");
+        let sheet_bytes = from_html(&format!("{sheet}<p>bg</p>"));
+        assert_eq!(first_image_rect(&stream(&sheet_bytes)), (8.0, 4.0));
+
+        let override_bytes = from_html(&format!(
+            "{sheet}<p style=\"background-size:6pt 3pt\">bg</p>"
+        ));
+        assert_eq!(first_image_rect(&stream(&override_bytes)), (6.0, 3.0));
     }
 }
