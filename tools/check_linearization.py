@@ -16,7 +16,11 @@ claims, including a full parse of the hint tables it emits:
     values agree with the real object layout (first-page offset, per-page
     object counts/lengths, cumulative page offsets, shared-object indices);
   * the SHARED OBJECT HINT TABLE (F.5) parses and its group lengths/offsets
-    agree with the actual objects, as qpdf --check-linearization verifies.
+    agree with the actual objects, as qpdf --check-linearization verifies;
+  * every OPTIONAL hint table present in the hint-stream dictionary parses and
+    agrees with the real structures: outline (F.6, /O), thumbnail (F.7, /T),
+    named destination (F.8, /A) and page label (F.9, /E). Tables are emitted
+    only when the corresponding structure exists in the document.
 
 A pass here is a strong *self-consistency* result, not proof of qpdf
 conformance: no external linearisation checker is installed in this build
@@ -236,6 +240,77 @@ def page_objects(data: bytes, root_num: int) -> list[int]:
     return leaves
 
 
+def outline_item_objects(data: bytes, root_num: int) -> list[int]:
+    """Object numbers of all outline items (walk /First and /Next chains)."""
+    catalog = obj_dict(data, root_num)
+    m = re.search(rb"/Outlines\s+(\d+)\s+\d+\s+R", catalog)
+    if not m:
+        return []
+    root = int(m.group(1))
+    result: list[int] = []
+    seen: set[int] = set()
+
+    def walk(num: int) -> None:
+        cur = num
+        while cur and cur not in seen:
+            seen.add(cur)
+            body = obj_dict(data, cur)
+            result.append(cur)
+            fm = re.search(rb"/First\s+(\d+)\s+\d+\s+R", body)
+            if fm:
+                walk(int(fm.group(1)))
+            nm = re.search(rb"/Next\s+(\d+)\s+\d+\s+R", body)
+            cur = int(nm.group(1)) if nm else 0
+
+    fm = re.search(rb"/First\s+(\d+)\s+\d+\s+R", obj_dict(data, root))
+    if fm:
+        walk(int(fm.group(1)))
+    return result
+
+
+def named_dest_names(data: bytes, root_num: int) -> list[bytes]:
+    """Destination names from /Dests or /Names /Dests (simple (name) form)."""
+    catalog = obj_dict(data, root_num)
+    dests = b""
+    m = re.search(rb"/Dests\s+(\d+)\s+\d+\s+R", catalog)
+    if m:
+        dests = obj_dict(data, int(m.group(1)))
+    if not dests:
+        n = re.search(rb"/Names\s+(\d+)\s+\d+\s+R", catalog)
+        if n:
+            names = obj_dict(data, int(n.group(1)))
+            d = re.search(rb"/Dests\s+(\d+)\s+\d+\s+R", names)
+            if d:
+                dests = obj_dict(data, int(d.group(1)))
+    if not dests:
+        return []
+    # Scan the whole name-tree object: a /Names array holds nested [dest]
+    # arrays, so a non-greedy bracket match would stop at the first destination.
+    return [s.group(1) for s in re.finditer(rb"\(([^()]*)\)\s*\[", dests)]
+
+
+def page_label_starts(data: bytes, root_num: int) -> list[int]:
+    """Sorted /Nums start indices of the /PageLabels number tree."""
+    catalog = obj_dict(data, root_num)
+    m = re.search(rb"/PageLabels\s+(\d+)\s+\d+\s+R", catalog)
+    if not m:
+        return []
+    body = obj_dict(data, int(m.group(1)))
+    nm = re.search(rb"/Nums\s*\[(.*?)\]", body, re.S)
+    if not nm:
+        return []
+    return [int(x) for x in re.findall(rb"(\d+)\s+<<", nm.group(1))]
+
+
+def thumbnail_pages(data: bytes, pages: list[int]) -> list[int | None]:
+    """Thumbnail object number per page (None when the page has no /Thumb)."""
+    out: list[int | None] = []
+    for num in pages:
+        m = re.search(rb"/Thumb\s+(\d+)\s+\d+\s+R", obj_dict(data, num))
+        out.append(int(m.group(1)) if m else None)
+    return out
+
+
 def object_lengths(
     data: bytes, offsets: dict[int, int], end_of_objects: int
 ) -> dict[int, int]:
@@ -360,6 +435,111 @@ def parse_tables(buf: bytes, s: int, npages: int):
                 sr.get(32)
     shared.nobjects_minus_one = sr.row(n, shared.nbits_nobjects)
     return page, shared
+
+
+def parse_offset_table(
+    buf: bytes, off: int, header_bits: list[int], nrows: int, extra_bits: int
+):
+    """Parse a table whose rows are a 32-bit inline-record offset + extra field.
+
+    Returns (header_values, offsets, extras, inline_base) where inline_base is
+    the byte position at which a non-zero offset's record lives.
+    """
+    r = BitReader(buf, off * 8)
+    headers = [r.get(b) for b in header_bits]
+    r.align()
+    header_bytes = (sum(header_bits) + 7) // 8
+    row_bytes = (32 + extra_bits + 7) // 8
+    inline_base = off + header_bytes + nrows * row_bytes
+    offsets: list[int] = []
+    extras: list[int] = []
+    for _ in range(nrows):
+        offsets.append(r.get(32))
+        extras.append(r.get(extra_bits) if extra_bits else 0)
+        r.align()
+    return headers, offsets, extras, inline_base
+
+
+def check_optional_tables(
+    r: Result, dict_bytes: bytes, payload: bytes, data: bytes, root_num: int, pages: list[int]
+) -> None:
+    """Parse and cross-check every optional Annex F table present in /H."""
+    npages = len(pages)
+    opt: dict[str, int] = {}
+    for key in (b"O", b"T", b"A", b"E"):
+        m = re.search(rb"/" + key + rb"\s+(\d+)", dict_bytes)
+        if m:
+            opt[key.decode()] = int(m.group(1))
+            r.check(
+                0 <= opt[key.decode()] < len(payload),
+                f"/{key.decode()} optional-table offset ({opt[key.decode()]}) within hint buffer",
+            )
+
+    # §F.7 thumbnail hint table: header count, one (offset, 16-bit length) row
+    # per page, inline thumbnail bytes.
+    if "T" in opt and 0 <= opt["T"] < len(payload):
+        headers, offs, lens, base = parse_offset_table(payload, opt["T"], [32], npages, 16)
+        r.check(headers[0] == npages, f"thumbnail table count == {npages}")
+        real = thumbnail_pages(data, pages)
+        present = sum(1 for o in offs if o)
+        r.check(present == sum(1 for x in real if x is not None),
+                f"thumbnail rows with data ({present}) == pages with /Thumb")
+        for i, o in enumerate(offs):
+            if o:
+                rec = payload[o : o + lens[i]]
+                r.check(len(rec) == lens[i] and lens[i] > 0,
+                        f"thumbnail page {i} record length ({lens[i]}) readable")
+
+    # §F.9 page-label hint table: header (min_length, nbits_delta_length), one
+    # (offset, delta) row per page, inline serialized label dictionaries.
+    if "E" in opt and 0 <= opt["E"] < len(payload):
+        hr = BitReader(payload, opt["E"] * 8)
+        min_len, nb = hr.get(32), hr.get(16)
+        _h, offs, deltas, base = parse_offset_table(payload, opt["E"], [32, 16], npages, nb)
+        starts = page_label_starts(data, root_num)
+        labelled = sum(1 for i in range(npages) if any(s <= i for s in starts))
+        present = sum(1 for o in offs if o)
+        r.check(present == labelled,
+                f"page-label rows with data ({present}) == labelled pages ({labelled})")
+        for i, o in enumerate(offs):
+            if o:
+                rec = payload[o : o + min_len + deltas[i]]
+                r.check(rec.startswith(b"<<") and b"/S" in rec,
+                        f"page-label page {i} inline record is a label dictionary")
+
+    # §F.6 outline hint table: header item count, one offset row per item;
+    # each inline record is (item object number, destination page) as 4-byte
+    # big-endian integers.
+    if "O" in opt and 0 <= opt["O"] < len(payload):
+        hr = BitReader(payload, opt["O"] * 8)
+        nitems = hr.get(32)
+        _h, offs, _x, base = parse_offset_table(payload, opt["O"], [32], nitems, 0)
+        real = set(outline_item_objects(data, root_num))
+        r.check(nitems == len(real),
+                f"outline table count ({nitems}) == outline items ({len(real)})")
+        got = set()
+        for o in offs:
+            rec = payload[o : o + 8]
+            r.check(len(rec) == 8, "outline inline record is 8 bytes")
+            if len(rec) == 8:
+                got.add(int.from_bytes(rec[:4], "big"))
+        r.check(got == real, f"outline item object numbers match real tree ({len(got)}/{len(real)})")
+
+    # §F.8 named-destination hint table: header count, one (offset, 16-bit
+    # name length) row per destination; inline record is name bytes + 4-byte
+    # big-endian destination page.
+    if "A" in opt and 0 <= opt["A"] < len(payload):
+        hr = BitReader(payload, opt["A"] * 8)
+        nitems = hr.get(32)
+        _h, offs, namelens, base = parse_offset_table(payload, opt["A"], [32], nitems, 16)
+        real = named_dest_names(data, root_num)
+        r.check(nitems == len(real),
+                f"named-dest table count ({nitems}) == destinations ({len(real)})")
+        got = []
+        for o, nlen in zip(offs, namelens):
+            got.append(payload[o : o + nlen])
+        r.check(sorted(got) == sorted(real),
+                f"named-dest names match real /Dests ({len(got)}/{len(real)})")
 
 
 def check_hint_tables(r: Result, data: bytes, lin: dict, xrefs: list[Xref]) -> None:
@@ -501,6 +681,10 @@ def check_hint_tables(r: Result, data: bytes, lin: dict, xrefs: list[Xref]) -> N
         for idx in ids:
             r.check(idx < shared.nshared_total,
                     f"shared identifier {idx} within {shared.nshared_total} entries")
+
+    # Optional Annex F tables (outline / thumbnail / named destination / page
+    # labels), emitted only when the corresponding structure exists.
+    check_optional_tables(r, dict_bytes, payload, data, root_num, pages)
 
 
 def check(path: str) -> Result:

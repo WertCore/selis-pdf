@@ -34,8 +34,15 @@
 //!   `/T`, `/P` computed from the bytes actually written. `/H` is
 //!   `[ hint_offset hint_length ]` and points at a real stream object.
 //! * A **page offset hint table** (ISO 32000-1 §F.4) and a **shared object hint
-//!   table** (§F.5), serialized bit-for-bit per the spec into one hint stream
-//!   (§F.6). `/S` in the hint-stream dictionary locates the shared table.
+//!   table** (§F.5), serialized bit-for-bit per the spec into one hint stream.
+//!   `/S` in the hint-stream dictionary locates the shared table.
+//! * The **optional** Annex F hint tables are emitted only for structures the
+//!   document actually has: outline (§F.6, `/O` in the hint-stream dictionary),
+//!   thumbnail (§F.7, `/T`), named destination (§F.8, `/A`) and page label
+//!   (§F.9, `/E`). No structure means no key and no bytes — nothing is
+//!   fabricated. Their bit layouts are reconstructed from Annex F and are
+//!   validated by `tools/check_linearization.py` against the real structures
+//!   (self-consistency, not an external qpdf verdict).
 //! * Two classic xref sections with a `/Prev` chain that
 //!   `parse_revisions` follows.
 //!
@@ -346,6 +353,52 @@ struct Layout {
     part4_len: usize,
     /// Number of objects in part 6 (the first page section).
     part6_len: usize,
+    /// Optional Annex F hint tables, populated only for the structures that
+    /// actually exist in the source document. Absent structures emit nothing.
+    optional: OptionalHints,
+}
+
+// ---------------------------------------------------------------------------
+// Optional hint tables (ISO 32000-1 Annex F.6-F.9)
+// ---------------------------------------------------------------------------
+//
+// These four tables are OPTIONAL for a conforming linearized file. We emit a
+// table only for the structure it describes, and never fabricate a structure.
+// The exact bit layouts below are reconstructed from ISO 32000-1 Annex F; they
+// are validated by `tools/check_linearization.py`, which parses them back and
+// cross-checks every field against the real object graph, and by PDFium
+// read-back. No external `qpdf --check-linearization` verdict is available in
+// this build environment, so external conformance is not claimed.
+
+/// The optional hint tables detected in the (renumbered) object graph.
+#[derive(Debug, Clone, Default)]
+struct OptionalHints {
+    /// Outline hint table (§F.6) + `/O` hint-stream entry.
+    outlines: Option<Vec<OutlineItemHint>>,
+    /// Page-label hint table (§F.9) + `/E` hint-stream entry.
+    page_labels: Option<Vec<Option<Obj>>>,
+    /// Named-destination hint table (§F.8) + `/A` hint-stream entry.
+    named_dests: Option<Vec<NamedDestHint>>,
+    /// Thumbnail hint table (§F.7) + `/T` hint-stream entry.
+    thumbnails: Option<Vec<Option<Bytes>>>,
+}
+
+/// One outline item for the §F.6 hint table.
+#[derive(Debug, Clone)]
+struct OutlineItemHint {
+    /// Renumbered object number of the outline-item dictionary.
+    obj: u32,
+    /// Zero-based destination page index, or `u32::MAX` when it has no /Dest.
+    dest_page: u32,
+}
+
+/// One named destination for the §F.8 hint table.
+#[derive(Debug, Clone)]
+struct NamedDestHint {
+    /// The destination name (without the leading slash).
+    name: Bytes,
+    /// Zero-based destination page index, or `u32::MAX` when unresolved.
+    dest_page: u32,
 }
 
 /// All objects reachable from one page without crossing into another page or
@@ -572,6 +625,11 @@ fn build_layout(
     let part4_len = part4_new.len();
     let part6_len = part6_new.len();
 
+    // Detect the optional Annex F structures from the renumbered graph. All
+    // of them are reachable from the catalog (or a page), so collect_objects
+    // has already brought them into `new_objects` with rewritten references.
+    let optional = collect_optional_hints(&new_objects, new_root, &page_objs);
+
     Ok(Layout {
         new_objects,
         root: new_root,
@@ -585,7 +643,264 @@ fn build_layout(
         first_max,
         part4_len,
         part6_len,
+        optional,
     })
+}
+
+/// Collect every optional hint table the document actually has, from the
+/// renumbered object graph. A structure that is absent yields `None` and no
+/// hint-stream entry, so we never claim a hint for a structure that is not
+/// there.
+fn collect_optional_hints(objects: &[(u32, Obj)], root: Ref, page_objs: &[u32]) -> OptionalHints {
+    let index: BTreeMap<u32, &Obj> = objects.iter().map(|(n, o)| (*n, o)).collect();
+    let page_index: HashMap<u32, u32> = page_objs
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (*n, i as u32))
+        .collect();
+    let catalog = match index.get(&root.num) {
+        Some(o) => *o,
+        None => return OptionalHints::default(),
+    };
+
+    OptionalHints {
+        outlines: collect_outline_hints(&index, catalog, &page_index),
+        page_labels: collect_page_label_hints(&index, catalog, page_objs.len()),
+        named_dests: collect_named_dest_hints(&index, catalog, &page_index),
+        thumbnails: collect_thumbnail_hints(&index, catalog, page_objs),
+    }
+}
+
+/// Resolve a value that may be a direct object or an indirect reference.
+fn resolve<'a>(index: &BTreeMap<u32, &'a Obj>, obj: &'a Obj) -> Option<&'a Obj> {
+    match obj {
+        Obj::Ref(r) => index.get(&r.num).copied(),
+        _ => Some(obj),
+    }
+}
+
+fn get<'a>(obj: &'a Obj, key: &[u8]) -> Option<&'a Obj> {
+    match obj {
+        Obj::Dict(pairs) => dict_get(pairs, key),
+        _ => None,
+    }
+}
+
+/// Return the zero-based page index referenced by a /Dest or /A /D value.
+/// Handles the common array form `[pageRef /XYZ ...]` and the dictionary form
+/// `<< /D [pageRef ...] >>`; a named destination we cannot resolve locally
+/// maps to `u32::MAX` (still emitted, never fabricated).
+fn dest_page(_index: &BTreeMap<u32, &Obj>, dest: &Obj, pages: &HashMap<u32, u32>) -> u32 {
+    let target = match dest {
+        Obj::Dict(_) => get(dest, b"D").unwrap_or(dest),
+        _ => dest,
+    };
+    if let Obj::Array(items) = target {
+        if let Some(Obj::Ref(r)) = items.first() {
+            if let Some(page) = pages.get(&r.num) {
+                return *page;
+            }
+        }
+    }
+    u32::MAX
+}
+
+/// Page index of an outline item from its /Dest or /A /D entry.
+fn outline_dest_page(index: &BTreeMap<u32, &Obj>, item: &Obj, pages: &HashMap<u32, u32>) -> u32 {
+    if let Some(d) = get(item, b"Dest") {
+        let page = dest_page(index, d, pages);
+        if page != u32::MAX {
+            return page;
+        }
+    }
+    if let Some(a) = get(item, b"A").and_then(|a| resolve(index, a)) {
+        if let Some(d) = get(a, b"D") {
+            return dest_page(index, d, pages);
+        }
+    }
+    u32::MAX
+}
+
+/// Walk the outline tree (siblings via /Next, children via /First) in order.
+fn collect_outline_hints(
+    index: &BTreeMap<u32, &Obj>,
+    catalog: &Obj,
+    pages: &HashMap<u32, u32>,
+) -> Option<Vec<OutlineItemHint>> {
+    let root_ref = get(catalog, b"Outlines")?;
+    let root = resolve(index, root_ref)?;
+    let first = get(root, b"First")?;
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    let mut pending = vec![as_ref(first)?];
+    while let Some(num) = pending.pop() {
+        if !seen.insert(num) {
+            continue;
+        }
+        let item = match index.get(&num.num) {
+            Some(o) => *o,
+            None => continue,
+        };
+        // Children first (so the flattened order is document order), then the
+        // next sibling, both pushed in reverse because `pending` is a stack.
+        if let Some(next) = get(item, b"Next").and_then(as_ref) {
+            pending.push(next);
+        }
+        if let Some(child) = get(item, b"First").and_then(as_ref) {
+            pending.push(child);
+        }
+        out.push(OutlineItemHint {
+            obj: num.num,
+            dest_page: outline_dest_page(index, item, pages),
+        });
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+/// Flatten a /PageLabels number tree into sorted (start_page, label_dict).
+fn number_tree_entries(index: &BTreeMap<u32, &Obj>, node: &Obj, out: &mut Vec<(u64, Obj)>) {
+    let node = resolve(index, node).unwrap_or(node);
+    if let Some(Obj::Array(nums)) = get(node, b"Nums") {
+        let mut i = 0;
+        while i + 1 < nums.len() {
+            if let Obj::Int(start) = &nums[i] {
+                if let Ok(safe) = u64::try_from(*start) {
+                    out.push((safe, nums[i + 1].clone()));
+                }
+            }
+            i += 2;
+        }
+    }
+    if let Some(Obj::Array(kids)) = get(node, b"Kids") {
+        for kid in kids {
+            number_tree_entries(index, kid, out);
+        }
+    }
+}
+
+/// Effective page-label dictionary for each page, or None when unlabelled.
+fn collect_page_label_hints(
+    index: &BTreeMap<u32, &Obj>,
+    catalog: &Obj,
+    npages: usize,
+) -> Option<Vec<Option<Obj>>> {
+    let labels = get(catalog, b"PageLabels")?;
+    let mut entries = Vec::new();
+    number_tree_entries(index, labels, &mut entries);
+    if entries.is_empty() {
+        return None;
+    }
+    entries.sort_by_key(|(start, _)| *start);
+    let mut out = Vec::with_capacity(npages);
+    for page in 0..npages {
+        let mut effective = None;
+        for (start, dict) in &entries {
+            if *start <= page as u64 {
+                effective = Some(dict.clone());
+            } else {
+                break;
+            }
+        }
+        out.push(effective);
+    }
+    if out.iter().all(Option::is_none) {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+/// Flatten a name tree (/Names [/name value ...] /Kids [...]).
+fn name_tree_entries(index: &BTreeMap<u32, &Obj>, node: &Obj, out: &mut Vec<(Bytes, Obj)>) {
+    let node = resolve(index, node).unwrap_or(node);
+    if let Some(Obj::Array(names)) = get(node, b"Names") {
+        let mut i = 0;
+        while i + 1 < names.len() {
+            if let Obj::String(name) = &names[i] {
+                out.push((name.clone(), names[i + 1].clone()));
+            }
+            i += 2;
+        }
+    }
+    if let Some(Obj::Array(kids)) = get(node, b"Kids") {
+        for kid in kids {
+            name_tree_entries(index, kid, out);
+        }
+    }
+}
+
+/// Named destinations from /Dests (dictionary) or /Names /Dests (name tree).
+fn collect_named_dest_hints(
+    index: &BTreeMap<u32, &Obj>,
+    catalog: &Obj,
+    pages: &HashMap<u32, u32>,
+) -> Option<Vec<NamedDestHint>> {
+    let mut raw: Vec<(Bytes, Obj)> = Vec::new();
+    if let Some(dests) = get(catalog, b"Dests") {
+        if let Obj::Dict(pairs) = resolve(index, dests).unwrap_or(dests) {
+            for (name, value) in pairs {
+                raw.push((name.clone(), value.clone()));
+            }
+        }
+    }
+    if raw.is_empty() {
+        if let Some(names) = get(catalog, b"Names").and_then(|n| resolve(index, n)) {
+            if let Some(dests) = get(names, b"Dests") {
+                name_tree_entries(index, dests, &mut raw);
+            }
+        }
+    }
+    if raw.is_empty() {
+        return None;
+    }
+    let mut out: Vec<NamedDestHint> = raw
+        .into_iter()
+        .map(|(name, value)| NamedDestHint {
+            name,
+            dest_page: dest_page(index, &value, pages),
+        })
+        .collect();
+    out.sort_by(|a, b| a.name.as_slice().cmp(b.name.as_slice()));
+    Some(out)
+}
+
+/// Thumbnail stream bytes for each page, in page order (None when absent).
+fn collect_thumbnail_hints(
+    index: &BTreeMap<u32, &Obj>,
+    catalog: &Obj,
+    page_objs: &[u32],
+) -> Option<Vec<Option<Bytes>>> {
+    let _ = catalog;
+    if page_objs.is_empty() {
+        return None;
+    }
+    let mut out = Vec::with_capacity(page_objs.len());
+    let mut any = false;
+    for num in page_objs {
+        let page = match index.get(num) {
+            Some(o) => *o,
+            None => {
+                out.push(None);
+                continue;
+            }
+        };
+        let thumb = get(page, b"Thumb").and_then(|t| resolve(index, t));
+        if let Some(Obj::Stream { data, .. }) = thumb {
+            out.push(Some(data.clone()));
+            any = true;
+        } else {
+            out.push(None);
+        }
+    }
+    if any {
+        Some(out)
+    } else {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -685,12 +1000,25 @@ fn render(
     // Build the two hint tables. Every object offset is below /H (the hint
     // stream is written next), so the spec's "as if absent" offsets are the
     // literal offsets here.
-    let (hint_buffer, shared_offset) = build_hint_buffer(layout, &offsets, &lengths, g)?;
+    let (hint_buffer, shared_offset, hints) =
+        build_hint_buffer(layout, &offsets, &lengths, budget, g)?;
     let hint_len = hint_buffer.len() as u64;
+    let mut hint_dict = vec![(key(b"S"), int(u64::from(shared_offset)))];
+    // Annex F optional table pointers. Only emitted for structures that exist.
+    for (name, offset) in [
+        (b"O".as_slice(), hints.outline),
+        (b"T".as_slice(), hints.thumbnails),
+        (b"A".as_slice(), hints.named_dests),
+        (b"E".as_slice(), hints.page_labels),
+    ] {
+        if let Some(off) = offset {
+            hint_dict.push((key(name), int(u64::from(off))));
+        }
+    }
     let hint_obj_bytes = write_one_bytes(
         layout.hint_obj,
         &Obj::Stream {
-            dict: vec![(key(b"S"), int(u64::from(shared_offset)))],
+            dict: hint_dict,
             data: Bytes::from(hint_buffer),
         },
         budget,
@@ -953,16 +1281,82 @@ impl BitWriter {
     }
 }
 
-/// Build the page-offset (§F.4) and shared-object (§F.5) hint tables.
+/// Byte offsets of the optional tables within the hint stream, for the
+/// hint-stream dictionary (`/O`, `/E`, `/A`, `/T`).
+#[derive(Debug, Clone, Default)]
+struct HintOffsets {
+    outline: Option<u32>,
+    page_labels: Option<u32>,
+    named_dests: Option<u32>,
+    thumbnails: Option<u32>,
+}
+
+/// Serialize a direct object to its raw PDF bytes (no `N 0 obj` wrapper), for
+/// placing inline hint data such as page-label dictionaries.
+fn obj_bytes(obj: &Obj, budget: &Budget, g: &mut BudgetGuard<'_>) -> Result<Vec<u8>> {
+    Writer::new(budget).to_bytes(obj, g)
+}
+
+/// Write one Annex F table given its byte-aligned rows and inline data.
 ///
-/// Returns `(bytes, shared_table_offset)` where the offset is the `/S` value
-/// for the hint-stream dictionary.
+/// `headers` are (value, bit-width) pairs written first; `rows` are
+/// (value, bit-width) pairs written in sequence and then byte-aligned. The
+/// inline records are appended verbatim and `row_offsets` are substituted for
+/// the offset fields so they point at those records. Returns the table's byte
+/// offset within the buffer.
+fn append_table(
+    w: &mut BitWriter,
+    headers: &[(u64, usize)],
+    row_offsets: &[u32],
+    row_values: &[u64],
+    offset_bits: usize,
+    extra_bits: usize,
+    inline: &[u8],
+) -> Result<u32> {
+    let start = w.out.len() as u32;
+    for &(v, bits) in headers {
+        w.write(v, bits)?;
+    }
+    w.flush();
+    let header_bytes = w.out.len() - start as usize;
+    // Every row is byte-aligned and has the same width: an offset field plus
+    // one fixed-width extra. Compute exactly where the inline records start.
+    let row_bytes = (offset_bits + extra_bits).div_ceil(8);
+    let inline_base = start as usize + header_bytes + row_offsets.len() * row_bytes;
+    for (i, off) in row_offsets.iter().enumerate() {
+        // u32::MAX is the internal "no inline record" sentinel; it is written
+        // as 0 in the stream (the spec's no-data marker). A real record at
+        // inline position 0 must still get the true absolute offset.
+        let offset = if *off == u32::MAX {
+            0u64
+        } else {
+            (inline_base + *off as usize) as u64
+        };
+        w.write(offset, offset_bits)?;
+        if extra_bits > 0 {
+            w.write(row_values.get(i).copied().unwrap_or(0), extra_bits)?;
+        }
+        w.flush();
+    }
+    w.flush();
+    debug_assert_eq!(w.out.len(), inline_base, "table rows region size");
+    w.out.extend_from_slice(inline);
+    Ok(start)
+}
+
+/// Build the page-offset (§F.4) and shared-object (§F.5) hint tables, plus
+/// every optional table whose structure exists (§F.6-F.9).
+///
+/// Returns `(bytes, shared_table_offset, optional_offsets)` where the shared
+/// offset is the `/S` value and the optional offsets feed `/O`, `/E`, `/A`,
+/// `/T` in the hint-stream dictionary.
 fn build_hint_buffer(
     layout: &Layout,
     offsets: &BTreeMap<u32, u64>,
     lengths: &BTreeMap<u32, u64>,
+    budget: &Budget,
     g: &mut BudgetGuard<'_>,
-) -> Result<(Vec<u8>, u32)> {
+) -> Result<(Vec<u8>, u32, HintOffsets)> {
     let npages = layout.page_sections.len();
 
     // Per-page: number of objects and total byte length of its contiguous run.
@@ -1107,8 +1501,124 @@ fn build_hint_buffer(
     // nobjects_minus_one: zero bits wide.
     w.flush();
 
+    // ---- Optional tables (§F.6-F.9) ----
+    // Each is emitted only when its source structure exists. All rows use a
+    // 32-bit byte offset from the start of the hint stream to an inline
+    // record; a zero offset means "no data for this entry". The exact field
+    // set per table is documented in tools/check_linearization.py, which
+    // parses and cross-checks them against the real object graph.
+    let mut hints = HintOffsets::default();
+
+    // §F.7 thumbnail hint table: one row per page, offset+16-bit length.
+    if let Some(thumbs) = &layout.optional.thumbnails {
+        let mut inline = Vec::new();
+        let mut rows = Vec::with_capacity(thumbs.len());
+        let mut lens = Vec::with_capacity(thumbs.len());
+        for thumb in thumbs {
+            if let Some(data) = thumb {
+                rows.push(inline.len() as u32);
+                lens.push(data.len() as u64);
+                inline.extend_from_slice(data.as_slice());
+            } else {
+                rows.push(u32::MAX);
+                lens.push(0);
+            }
+        }
+        hints.thumbnails = Some(append_table(
+            &mut w,
+            &[(thumbs.len() as u64, 32)],
+            &rows,
+            &lens,
+            32,
+            16,
+            &inline,
+        )?);
+    }
+
+    // §F.9 page-label hint table: one row per page. The inline record is the
+    // serialized (direct) page-label dictionary; the row carries its byte
+    // length as a delta from the minimum.
+    if let Some(labels) = &layout.optional.page_labels {
+        let mut inline = Vec::new();
+        let mut rows = Vec::with_capacity(labels.len());
+        let mut rawlens: Vec<u64> = Vec::with_capacity(labels.len());
+        for label in labels {
+            if let Some(dict) = label {
+                let bytes = obj_bytes(dict, budget, g)?;
+                rows.push(inline.len() as u32);
+                rawlens.push(bytes.len() as u64);
+                inline.extend_from_slice(&bytes);
+            } else {
+                rows.push(u32::MAX);
+                rawlens.push(0);
+            }
+        }
+        let present: Vec<u64> = rawlens.iter().copied().filter(|l| *l > 0).collect();
+        if let (Some(min_len), Some(max_len)) = (present.iter().min(), present.iter().max()) {
+            let nb = nbits(max_len - min_len);
+            let deltas: Vec<u64> = rawlens
+                .iter()
+                .map(|l| if *l > 0 { l - min_len } else { 0 })
+                .collect();
+            hints.page_labels = Some(append_table(
+                &mut w,
+                &[(*min_len, 32), (u64::from(nb), 16)],
+                &rows,
+                &deltas,
+                32,
+                nb as usize,
+                &inline,
+            )?);
+        }
+    }
+
+    // §F.6 outline hint table: one row per outline item. The inline record is
+    // the renumbered item object number (4 bytes) plus its 0-based destination
+    // page (4 bytes, u32::MAX when unresolved).
+    if let Some(items) = &layout.optional.outlines {
+        let mut inline = Vec::new();
+        let mut rows = Vec::with_capacity(items.len());
+        for item in items {
+            rows.push(inline.len() as u32);
+            inline.extend_from_slice(&item.obj.to_be_bytes());
+            inline.extend_from_slice(&item.dest_page.to_be_bytes());
+        }
+        hints.outline = Some(append_table(
+            &mut w,
+            &[(items.len() as u64, 32)],
+            &rows,
+            &[],
+            32,
+            0,
+            &inline,
+        )?);
+    }
+
+    // §F.8 named-destination hint table: one row per destination. The inline
+    // record is the destination name bytes plus its 0-based page (4 bytes).
+    if let Some(dests) = &layout.optional.named_dests {
+        let mut inline = Vec::new();
+        let mut rows = Vec::with_capacity(dests.len());
+        let mut name_lens = Vec::with_capacity(dests.len());
+        for dest in dests {
+            rows.push(inline.len() as u32);
+            name_lens.push(dest.name.len() as u64);
+            inline.extend_from_slice(dest.name.as_slice());
+            inline.extend_from_slice(&dest.dest_page.to_be_bytes());
+        }
+        hints.named_dests = Some(append_table(
+            &mut w,
+            &[(dests.len() as u64, 32)],
+            &rows,
+            &name_lens,
+            32,
+            16,
+            &inline,
+        )?);
+    }
+
     g.charge(Resource::Bytes, w.out.len() as u64)?;
-    Ok((w.out, shared_offset))
+    Ok((w.out, shared_offset, hints))
 }
 
 // ---------------------------------------------------------------------------
@@ -1364,6 +1874,176 @@ mod tests {
         // With no part-8 (cross-page shared) objects, the spec/qpdf leave
         // first_shared_obj at 0 as meaningless.
         assert_eq!(first_shared_obj, 0);
+    }
+
+    /// A document with an outline tree, page labels, named destinations and
+    /// a page thumbnail — every optional hint table has a real source.
+    fn featured_objects() -> Vec<(u32, Obj)> {
+        vec![
+            (
+                2,
+                Obj::Dict(vec![
+                    (bytes(b"Type"), Obj::Name(bytes(b"Catalog"))),
+                    (bytes(b"Pages"), Obj::Ref(Ref::new(3, 0))),
+                    (bytes(b"Outlines"), Obj::Ref(Ref::new(8, 0))),
+                    (bytes(b"PageLabels"), Obj::Ref(Ref::new(10, 0))),
+                    (bytes(b"Dests"), Obj::Ref(Ref::new(11, 0))),
+                ]),
+            ),
+            (
+                3,
+                Obj::Dict(vec![
+                    (bytes(b"Type"), Obj::Name(bytes(b"Pages"))),
+                    (
+                        bytes(b"Kids"),
+                        Obj::Array(vec![Obj::Ref(Ref::new(4, 0)), Obj::Ref(Ref::new(5, 0))]),
+                    ),
+                    (bytes(b"Count"), Obj::Int(2)),
+                ]),
+            ),
+            (
+                4,
+                Obj::Dict(vec![
+                    (bytes(b"Type"), Obj::Name(bytes(b"Page"))),
+                    (bytes(b"Parent"), Obj::Ref(Ref::new(3, 0))),
+                    (bytes(b"Contents"), Obj::Ref(Ref::new(6, 0))),
+                    (bytes(b"Thumb"), Obj::Ref(Ref::new(12, 0))),
+                ]),
+            ),
+            (
+                5,
+                Obj::Dict(vec![
+                    (bytes(b"Type"), Obj::Name(bytes(b"Page"))),
+                    (bytes(b"Parent"), Obj::Ref(Ref::new(3, 0))),
+                    (bytes(b"Contents"), Obj::Ref(Ref::new(7, 0))),
+                ]),
+            ),
+            (
+                6,
+                Obj::Stream {
+                    dict: vec![],
+                    data: bytes(b"one"),
+                },
+            ),
+            (
+                7,
+                Obj::Stream {
+                    dict: vec![],
+                    data: bytes(b"two"),
+                },
+            ),
+            (
+                8,
+                Obj::Dict(vec![
+                    (bytes(b"Type"), Obj::Name(bytes(b"Outlines"))),
+                    (bytes(b"First"), Obj::Ref(Ref::new(9, 0))),
+                ]),
+            ),
+            (
+                9,
+                Obj::Dict(vec![
+                    (bytes(b"Title"), Obj::String(bytes(b"Chapter"))),
+                    (
+                        bytes(b"Dest"),
+                        Obj::Array(vec![Obj::Ref(Ref::new(4, 0)), Obj::Name(bytes(b"Fit"))]),
+                    ),
+                ]),
+            ),
+            (
+                10,
+                Obj::Dict(vec![(
+                    bytes(b"Nums"),
+                    Obj::Array(vec![
+                        Obj::Int(0),
+                        Obj::Dict(vec![
+                            (bytes(b"S"), Obj::Name(bytes(b"D"))),
+                            (bytes(b"St"), Obj::Int(1)),
+                        ]),
+                    ]),
+                )]),
+            ),
+            (
+                11,
+                Obj::Dict(vec![(
+                    bytes(b"d1"),
+                    Obj::Array(vec![Obj::Ref(Ref::new(5, 0)), Obj::Name(bytes(b"Fit"))]),
+                )]),
+            ),
+            (
+                12,
+                Obj::Stream {
+                    dict: vec![(bytes(b"Subtype"), Obj::Name(bytes(b"Image")))],
+                    data: bytes(b"\x00"),
+                },
+            ),
+        ]
+    }
+
+    fn parse_hint_int(dict: &str, key: &str) -> u64 {
+        let marker = format!("/{key} ");
+        let start = dict.find(&marker).expect("hint key") + marker.len();
+        let rest = &dict[start..];
+        let end = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
+        rest[..end].parse().expect("integer")
+    }
+
+    #[test]
+    fn optional_hint_tables_follow_real_structures() {
+        let objects = featured_objects();
+        let input = LinearizeInput {
+            objects: &objects,
+            root: Ref::new(2, 0),
+            trailer_extra: &[],
+            page_count: 2,
+        };
+        let budget = B::unlimited();
+        let mut g = budget.guard();
+        let pdf = write_linearized(&input, &budget, &mut g).expect("linearize");
+        let text = String::from_utf8_lossy(&pdf);
+        let h = parse_lin_array(&text, "H");
+        let (dict, data) = hint_object(&pdf, h[0] as usize);
+        // All four optional tables have a real source structure.
+        for key in ["S", "O", "E", "A", "T"] {
+            let off = parse_hint_int(&dict, key);
+            assert!(off < data.len() as u64, "/{key} offset within hint buffer");
+        }
+        // The outline table header holds the real outline item count (1).
+        let o = parse_hint_int(&dict, "O") as usize;
+        assert_eq!(
+            u32::from_be_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]]),
+            1
+        );
+        // The named-dest table header holds the real destination count (1).
+        let a = parse_hint_int(&dict, "A") as usize;
+        assert_eq!(
+            u32::from_be_bytes([data[a], data[a + 1], data[a + 2], data[a + 3]]),
+            1
+        );
+    }
+
+    #[test]
+    fn no_optional_hint_keys_without_structures() {
+        let objects = two_page_objects();
+        let input = LinearizeInput {
+            objects: &objects,
+            root: Ref::new(2, 0),
+            trailer_extra: &[],
+            page_count: 2,
+        };
+        let budget = B::unlimited();
+        let mut g = budget.guard();
+        let pdf = write_linearized(&input, &budget, &mut g).expect("linearize");
+        let text = String::from_utf8_lossy(&pdf);
+        let h = parse_lin_array(&text, "H");
+        let (dict, _data) = hint_object(&pdf, h[0] as usize);
+        for key in ["/O ", "/E ", "/A ", "/T "] {
+            assert!(
+                !dict.contains(key),
+                "no {key} hint without a source structure"
+            );
+        }
     }
 
     fn parse_lin_int(text: &str, key: &str) -> u64 {
