@@ -1442,6 +1442,31 @@ pub fn write_objects_as_document_encrypted(
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
 ) -> Result<Vec<u8>> {
+    write_objects_as_document_encrypted_with_trailer(objects, root, &[], info, file_key, budget, g)
+}
+
+/// As [`write_objects_as_document_encrypted`], but merges `extra_trailer`
+/// entries into the trailer dictionary. An AESV3 handler upgrade uses this to
+/// carry `/Info` forward; `/Root`, `/Encrypt` and `/ID` remain writer-owned.
+///
+/// # Budget
+///
+/// As [`write_objects_as_document_encrypted`], plus the extra trailer bytes.
+///
+/// # Malformed Input
+///
+/// As [`write_objects_as_document_encrypted`]. An extra entry that names
+/// `/Size`, `/Root`, `/Encrypt`, `/ID`, `/Prev` or `/XRefStm` is ignored —
+/// those are derived by the writer and must not be forged by a caller.
+pub fn write_objects_as_document_encrypted_with_trailer(
+    objects: &[(u32, Obj)],
+    root: Ref,
+    extra_trailer: &[(Vec<u8>, Obj)],
+    info: &encrypt::EncryptInfo,
+    file_key: &[u8],
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Vec<u8>> {
     let mut max_num = 0u32;
     for (num, _) in objects {
         max_num = max_num.max(*num);
@@ -1526,7 +1551,7 @@ pub fn write_objects_as_document_encrypted(
         .copied()
         .take(16)
         .collect::<Vec<u8>>();
-    let trailer = dict(&[
+    let mut trailer_pairs: Vec<(Vec<u8>, Obj)> = vec![
         (
             b"Size".to_vec(),
             Obj::Int(i64::try_from(size).unwrap_or(i64::MAX)),
@@ -1540,7 +1565,17 @@ pub fn write_objects_as_document_encrypted(
                 Obj::HexString(bytes(&id_first)),
             ]),
         ),
-    ]);
+    ];
+    for (key, value) in extra_trailer {
+        let reserved = matches!(
+            key.as_slice(),
+            b"Size" | b"Root" | b"Encrypt" | b"ID" | b"Prev" | b"XRefStm"
+        );
+        if !reserved && !trailer_pairs.iter().any(|(k, _)| k == key) {
+            trailer_pairs.push((key.clone(), value.clone()));
+        }
+    }
+    let trailer = dict(&trailer_pairs);
     let mut tw = Writer::new(budget);
     out.extend_from_slice(&tw.to_bytes(&trailer, g)?);
     out.push(b'\n');

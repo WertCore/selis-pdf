@@ -33,7 +33,17 @@
 //! reuse that handler (even RC4/AESV2), encrypt every changed string/stream
 //! with the correct per-object key, carry `/Encrypt` and the refreshed `/ID`
 //! in the appended trailer, and verify the result by reopening it with the
-//! password. See [`EncryptionPolicy`] for the (refused) AESV3-upgrade path.
+//! password. [`EncryptionPolicy::KeepExisting`] is that append path.
+//!
+//! With explicit consent, [`EncryptionPolicy::UpgradeToAesV3`] is the one
+//! deliberate exception: [`save_incremental_encrypted`] detects the upgrade
+//! intent on the key and **fully rewrites** the document under a fresh AESV3
+//! (revision 6) handler with new user/owner passwords, because an append can
+//! never replace the old `/Encrypt` dictionary whose bytes stay authoritative
+//! in the preserved prefix. The rewrite reuses the authenticated source key
+//! only to decrypt the old objects, then verifies the result reopens with the
+//! NEW password (and produces no bytes on any refusal). See
+//! [`EncryptionPolicy`] for the consent gate.
 //!
 //! # Signatures and DocMDP (SL-5.EDIT.07)
 //!
@@ -49,7 +59,7 @@ use std::collections::BTreeMap;
 use selis_bytes::Bytes;
 use selis_error::{err, Code, Result};
 use selis_pdf_cos::doc_writer::write_incremental_update_full;
-use selis_pdf_cos::encrypt::{self, DecryptPolicy, EncryptInfo, Handler};
+use selis_pdf_cos::encrypt::{self, DecryptPolicy, EncryptInfo, Handler, R6Material};
 use selis_pdf_cos::{Obj, Ref};
 use selis_pdf_doc::Resolver;
 use selis_sandbox::{Budget, BudgetGuard};
@@ -232,24 +242,39 @@ fn updated_id(
 /// An incremental save cannot change a document's security handler: the
 /// untouched prefix was encrypted with its file key, so an object appended
 /// under a *different* key would be unreadable in the same document. Changing
-/// handler therefore requires a full rewrite, which is a different operation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// handler therefore requires a full rewrite, which
+/// [`save_incremental_encrypted`] performs on the caller's behalf only when
+/// the caller opts in with [`EncryptionPolicy::UpgradeToAesV3`] and consent.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EncryptionPolicy {
     /// Reuse the source document's handler and per-object key (ADR-P0019).
-    /// This is the only mode the incremental writer supports, and the default.
+    /// This is the default and keeps the original bytes as a verbatim prefix.
     KeepExisting,
     /// Ask for an explicit AESV3 (revision 6) upgrade.
     ///
     /// `user_consent` is mandatory: without it the request is refused with
-    /// `PERMISSION_DENIED`. With consent it is *still* refused here — with
-    /// `ENCRYPT_UNSUPPORTED` — because an incremental save cannot re-key the
-    /// earlier revisions. The caller must use the full rewrite path
-    /// (`save_rewritten` with a fresh AESV3 handler) instead. We never silently
-    /// upgrade.
+    /// `PERMISSION_DENIED` before any password work. With consent, the source
+    /// is authenticated with the *old* password and the save performs a full
+    /// rewrite under a fresh AESV3 handler using the new passwords below. We
+    /// never silently upgrade, and an append is never attempted under the new
+    /// key (the old `/Encrypt` bytes would stay authoritative in the prefix).
     UpgradeToAesV3 {
         /// Whether the caller confirmed the destructive re-encryption.
         user_consent: bool,
+        /// The new user (opening) password for the rewritten AESV3 document.
+        new_user_password: Vec<u8>,
+        /// The new owner password for the rewritten AESV3 document.
+        new_owner_password: Vec<u8>,
     },
+}
+
+/// The credentials a consented AESV3 upgrade will install. Carried on the
+/// authenticated key so the policy chosen at open time reaches the save, where
+/// the full rewrite actually happens.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AesV3Upgrade {
+    pub(crate) new_user_password: Vec<u8>,
+    pub(crate) new_owner_password: Vec<u8>,
 }
 
 /// The authenticated key material for an encrypted incremental save.
@@ -260,6 +285,9 @@ pub enum EncryptionPolicy {
 pub struct EncryptedSaveKey {
     pub(crate) info: EncryptInfo,
     pub(crate) file_key: Vec<u8>,
+    /// `Some` when this key was opened with a consented AESV3 upgrade policy;
+    /// the save then rewrites instead of appending.
+    pub(crate) upgrade: Option<AesV3Upgrade>,
 }
 
 impl EncryptedSaveKey {
@@ -278,6 +306,13 @@ impl EncryptedSaveKey {
     /// A short label for diagnostics and test evidence.
     #[must_use]
     pub fn handler_name(&self) -> &'static str {
+        if self.info.handler == Handler::PubKey {
+            return match self.info.v {
+                4 => "Public-key AESV2 (PKCS#7 s4)",
+                5 => "Public-key AESV3 (PKCS#7 s5)",
+                _ => "other public-key handler",
+            };
+        }
         match (self.info.v, self.info.r, self.info.aes) {
             (1, 2, false) => "RC4-40 (R2)",
             (2, 3, false) => "RC4-128 (R3)",
@@ -309,7 +344,11 @@ pub fn encrypted_save_key_from_parts(
     if info.handler != Handler::Standard || file_key.is_empty() {
         return None;
     }
-    Some(EncryptedSaveKey { info, file_key })
+    Some(EncryptedSaveKey {
+        info,
+        file_key,
+        upgrade: None,
+    })
 }
 
 /// Authenticate `src` with `password` and prepare the key material for an
@@ -317,7 +356,9 @@ pub fn encrypted_save_key_from_parts(
 ///
 /// Returns `Ok(None)` when the document is not encrypted. [`EncryptionPolicy`]
 /// is applied *before* key derivation, so a disallowed upgrade fails even if
-/// the password is correct.
+/// the password is correct. A consented upgrade authenticates with the *old*
+/// password and returns a key that carries the new credentials; the full
+/// rewrite happens in [`save_incremental_encrypted`].
 ///
 /// # Budget / Malformed Input
 ///
@@ -355,8 +396,23 @@ pub fn open_encrypted(
         )
     })?;
 
+    // Capture the requested upgrade before the policy is consumed by the
+    // consent gate below. The source handler is always authenticated with the
+    // OLD password; the new credentials are only installed at save time.
+    let upgrade = match &policy {
+        EncryptionPolicy::KeepExisting => None,
+        EncryptionPolicy::UpgradeToAesV3 {
+            new_user_password,
+            new_owner_password,
+            ..
+        } => Some(AesV3Upgrade {
+            new_user_password: new_user_password.clone(),
+            new_owner_password: new_owner_password.clone(),
+        }),
+    };
+
     let Some(encrypt_ref) = revision.encrypt else {
-        if matches!(policy, EncryptionPolicy::UpgradeToAesV3 { .. }) {
+        if upgrade.is_some() {
             return Err(err!(
                 Code::EncryptUnsupported,
                 during = "incremental-encrypted",
@@ -366,12 +422,15 @@ pub fn open_encrypted(
         return Ok(None);
     };
 
-    // Policy gate before any password work: knowing the password is not the
-    // same as consenting to a handler change (ADR-P0019).
+    // Consent gate before any password work: knowing the password is not the
+    // same as consenting to a handler change (ADR-P0019). With consent the
+    // intent is carried on the returned key; the rewrite itself is deferred to
+    // save_incremental_encrypted.
     match policy {
         EncryptionPolicy::KeepExisting => {}
         EncryptionPolicy::UpgradeToAesV3 {
             user_consent: false,
+            ..
         } => {
             return Err(err!(
                 Code::PermissionDenied,
@@ -379,13 +438,9 @@ pub fn open_encrypted(
                 detail = "AESV3 upgrade requires explicit user consent; the existing handler is reused by default"
             ));
         }
-        EncryptionPolicy::UpgradeToAesV3 { user_consent: true } => {
-            return Err(err!(
-                Code::EncryptUnsupported,
-                during = "incremental-encrypted",
-                detail = "AESV3 upgrade is not implemented for incremental save: the earlier revisions keep the old file key; use save_rewritten with a fresh AESV3 handler instead"
-            ));
-        }
+        EncryptionPolicy::UpgradeToAesV3 {
+            user_consent: true, ..
+        } => {}
     }
 
     let info = encrypt::parse_encrypt(src, Some(encrypt_ref), budget, g)?.ok_or_else(|| {
@@ -411,20 +466,113 @@ pub fn open_encrypted(
             detail = "password did not authenticate against the existing handler"
         )
     })?;
-    Ok(Some(EncryptedSaveKey { info, file_key }))
+    Ok(Some(EncryptedSaveKey {
+        info,
+        file_key,
+        upgrade,
+    }))
 }
 
-/// Save into an encrypted document, reusing its existing security handler.
+/// Authenticate a public-key-encrypted document with the recipient's private
+/// key and prepare the material for an encrypted incremental save.
 ///
-/// Every changed string/stream is encrypted with the source file key and the
-/// appended trailer carries `/Encrypt` plus a refreshed `/ID`, so the output
-/// is one coherent document under the *same* key as the original bytes.
+/// The COS layer's public-key reader (SL-1.ENC.03) parses the `/Adobe.PPKLite`
+/// / `/Adobe.PubSec` `/Encrypt` dictionary and unwraps one `/Recipients` CMS
+/// blob with the credential. The returned key reuses that handler and its file
+/// key: a changed object is encrypted with the same per-object algorithm
+/// (AESV2 for `/V 4`, direct-key AESV3 for `/V 5`), so every recipient of the
+/// unchanged `/Recipients` array can still read the saved file. No new CMS
+/// envelopes are minted — the PKCS#7 layer is read-only — so this is an edit
+/// of an existing public-key document, never creation of a new one.
+///
+/// The recipient's [`selis_crypto::pkcs7::PubKeyAuth`] is returned alongside
+/// the key so the policy layer can enforce the CMS permission bits
+/// (SL-1.ENC.09); this low-level save does not override them.
+///
+/// # Budget / Malformed Input
+///
+/// Charges the parse of `/Encrypt` and the CMS blob parses (see
+/// [`encrypt::authenticate_public_key`]). Returns `Ok(None)` for a clear
+/// document. A standard-handler `/Encrypt` is `ENCRYPT_UNSUPPORTED` here (use
+/// [`open_encrypted`] with a password); a wrong credential is
+/// `RECIPIENT_NO_MATCH`, and structural CMS damage is `ENCRYPT_MALFORMED`.
+pub fn open_encrypted_public_key(
+    src: &[u8],
+    credential: &selis_crypto::pkcs7::PubKeyCredential,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Option<(EncryptedSaveKey, selis_crypto::pkcs7::PubKeyAuth)>> {
+    let startxref = selis_pdf_cos::xref::find_startxref(src, 4096).ok_or_else(|| {
+        err!(
+            Code::ObjUnexpected,
+            during = "incremental-encrypted",
+            detail = "public-key open: no startxref"
+        )
+    })?;
+    let doc = selis_pdf_cos::parse_revisions(src, startxref, budget, g)?;
+    let last = doc.len().checked_sub(1).ok_or_else(|| {
+        err!(
+            Code::ObjUnexpected,
+            during = "incremental-encrypted",
+            detail = "public-key open: no revisions"
+        )
+    })?;
+    let revision = doc.revisions().get(last).ok_or_else(|| {
+        err!(
+            Code::ObjUnexpected,
+            during = "incremental-encrypted",
+            detail = "public-key open: no revision"
+        )
+    })?;
+    let Some(encrypt_ref) = revision.encrypt else {
+        return Ok(None);
+    };
+    let info = encrypt::parse_encrypt(src, Some(encrypt_ref), budget, g)?.ok_or_else(|| {
+        err!(
+            Code::EncryptMalformed,
+            during = "incremental-encrypted",
+            detail = "public-key open: unreadable /Encrypt dictionary"
+        )
+    })?;
+    if info.handler != Handler::PubKey {
+        return Err(err!(
+            Code::EncryptUnsupported,
+            during = "incremental-encrypted",
+            detail = "open_encrypted_public_key needs a /Adobe.PPKLite or /Adobe.PubSec /Encrypt dictionary; this document uses the standard handler (use open_encrypted with a password)"
+        ));
+    }
+    let auth = encrypt::authenticate_public_key(&info, credential, g)?;
+    let key = EncryptedSaveKey {
+        info,
+        file_key: auth.key.clone(),
+        upgrade: None,
+    };
+    Ok(Some((key, auth)))
+}
+
+/// Save into an encrypted document.
+///
+/// With a key from [`EncryptionPolicy::KeepExisting`] every changed
+/// string/stream is encrypted with the source file key and the appended
+/// trailer carries `/Encrypt` plus a refreshed `/ID`, so the output is one
+/// coherent document under the *same* key as the original bytes (the I3
+/// prefix stays intact).
+///
+/// With a key from a consented [`EncryptionPolicy::UpgradeToAesV3`], an
+/// incremental append cannot replace the old `/Encrypt` dictionary — the old
+/// bytes stay authoritative in the preserved prefix — so this instead
+/// **fully rewrites** the document under a fresh AESV3/R6 handler with the new
+/// passwords. The reported `prefix_preserved` is `false` and `revisions` is
+/// `1` for that path; no bytes are produced unless the new file reopens with
+/// the new password and materialises to the expected model.
 ///
 /// # Budget / Malformed Input
 ///
 /// As [`save_incremental`], plus: the key must authenticate (see
 /// [`open_encrypted`]); a wrong key fails verification with `VERIFY_FAILED`
-/// rather than producing a document with plaintext objects.
+/// rather than producing a document with plaintext objects. On the upgrade
+/// path an unavailable OS CSPRNG is `ENCRYPT_UNSUPPORTED`, and any mismatch in
+/// the rewritten model is `VERIFY_FAILED`; in both cases the source is intact.
 pub fn save_incremental_encrypted(
     src: &[u8],
     model: &ObjectModel,
@@ -433,7 +581,244 @@ pub fn save_incremental_encrypted(
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
 ) -> Result<(Vec<u8>, IncrementalSaveReport)> {
+    if key.upgrade.is_some() {
+        return rewrite_to_aesv3(src, model, mutations, key, budget, g);
+    }
     save_incremental_inner(src, model, mutations, Some(key), budget, g)
+}
+
+/// Perform a consented AESV3 upgrade as a full, verified rewrite.
+///
+/// The source was authenticated with its OLD password; `key.upgrade` carries
+/// the NEW credentials. Every source object is already plaintext in `model`,
+/// so it is written afresh under a brand-new file key with the new R6 handler.
+/// The old `/Encrypt` dictionary is dropped (it cannot appear in the new
+/// single-revision file) and a fresh one is allocated by the encrypted writer.
+///
+/// # Budget / Malformed Input
+///
+/// As [`save_incremental_encrypted`]. The rewrite is verification-gated: the
+/// output must be a single revision that reopens with the new password and
+/// materialises to the expected model, otherwise `VERIFY_FAILED` is returned
+/// and no bytes reach the caller. A missing OS entropy source is
+/// `ENCRYPT_UNSUPPORTED` — the old key is never reused as a stand-in.
+fn rewrite_to_aesv3(
+    src: &[u8],
+    model: &ObjectModel,
+    mutations: &[ObjectMutation],
+    key: &EncryptedSaveKey,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<(Vec<u8>, IncrementalSaveReport)> {
+    let upgrade = key.upgrade.as_ref().ok_or_else(|| {
+        err!(
+            Code::InternalInvariant,
+            during = "incremental-encrypted",
+            detail = "AESV3 rewrite called without upgrade credentials"
+        )
+    })?;
+
+    // A full rewrite must not be a way around a signature/MDP refusal.
+    crate::signature_guard::check_mutation_allowed(model, mutations, budget, g)?;
+    let expected = apply(model, mutations);
+    let changed = changes(model, &expected, mutations);
+
+    // Locate the roots and the OLD /Encrypt object in the source.
+    let start = selis_pdf_cos::xref::find_startxref(src, 4096).ok_or_else(|| {
+        err!(
+            Code::ObjUnexpected,
+            during = "incremental-encrypted",
+            detail = "AESV3 upgrade: no startxref"
+        )
+    })?;
+    let doc = selis_pdf_cos::parse_revisions(src, start, budget, g)?;
+    let last = doc.len().checked_sub(1).ok_or_else(|| {
+        err!(
+            Code::ObjUnexpected,
+            during = "incremental-encrypted",
+            detail = "AESV3 upgrade: no revisions"
+        )
+    })?;
+    let revision = doc.revisions().get(last).ok_or_else(|| {
+        err!(
+            Code::ObjUnexpected,
+            during = "incremental-encrypted",
+            detail = "AESV3 upgrade: no revision"
+        )
+    })?;
+    let root = revision.root.ok_or_else(|| {
+        err!(
+            Code::ObjUnexpected,
+            during = "incremental-encrypted",
+            detail = "AESV3 upgrade: no /Root"
+        )
+    })?;
+    let info_ref = revision
+        .trailer
+        .iter()
+        .find(|(k, _)| k.as_slice() == b"Info")
+        .and_then(|(_, v)| match v {
+            Obj::Ref(r) => Some(*r),
+            _ => None,
+        });
+    let old_encrypt_num = revision.encrypt.map(|r| r.num);
+
+    // `expected` is the decrypted source with the caller's mutations applied.
+    // Drop the old /Encrypt dictionary: the encrypted writer allocates a fresh
+    // one (it is never re-encrypted, and must not survive the rewrite).
+    let objects: Vec<(u32, Obj)> = expected
+        .iter()
+        .filter(|(num, _)| Some(**num) != old_encrypt_num)
+        .map(|(num, obj)| (*num, obj.clone()))
+        .collect();
+
+    // A fresh file key and four salts — never the old key, never a fixed seed.
+    let material = R6Material::generate().ok_or_else(|| {
+        err!(
+            Code::EncryptUnsupported,
+            during = "incremental-encrypted",
+            detail = "no OS entropy source for a fresh AESV3 key; refusing to reuse the old key"
+        )
+    })?;
+    let (new_info, new_file_key) = EncryptInfo::new_r6(
+        &upgrade.new_user_password,
+        &upgrade.new_owner_password,
+        key.info.p,
+        &material,
+    );
+
+    let mut extra_trailer: Vec<(Vec<u8>, Obj)> = Vec::new();
+    if let Some(info) = info_ref {
+        extra_trailer.push((b"Info".to_vec(), Obj::Ref(info)));
+    }
+    let out = selis_pdf_cos::doc_writer::write_objects_as_document_encrypted_with_trailer(
+        &objects,
+        root,
+        &extra_trailer,
+        &new_info,
+        &new_file_key,
+        budget,
+        g,
+    )?;
+
+    // Verification: single revision, AESV3 handler, opens with the NEW
+    // password, and materialises to exactly the expected plaintext model.
+    let out_start = selis_pdf_cos::xref::find_startxref(&out, 4096).ok_or_else(|| {
+        err!(
+            Code::VerifyFailed,
+            during = "incremental-encrypted",
+            detail = "AESV3 upgrade: rewritten document has no startxref"
+        )
+    })?;
+    let out_doc = selis_pdf_cos::parse_revisions(&out, out_start, budget, g)?;
+    if out_doc.len() != 1 {
+        return Err(err!(
+            Code::VerifyFailed,
+            during = "incremental-encrypted",
+            detail = format!(
+                "AESV3 upgrade must yield one revision, got {}",
+                out_doc.len()
+            )
+        ));
+    }
+    let out_revision = out_doc.revisions().last().ok_or_else(|| {
+        err!(
+            Code::VerifyFailed,
+            during = "incremental-encrypted",
+            detail = "AESV3 upgrade: no rewritten revision"
+        )
+    })?;
+    let encrypt_ref = out_revision.encrypt.ok_or_else(|| {
+        err!(
+            Code::VerifyFailed,
+            during = "incremental-encrypted",
+            detail = "AESV3 upgrade: rewritten document has no /Encrypt"
+        )
+    })?;
+    let parsed_info =
+        encrypt::parse_encrypt(&out, Some(encrypt_ref), budget, g)?.ok_or_else(|| {
+            err!(
+                Code::VerifyFailed,
+                during = "incremental-encrypted",
+                detail = "AESV3 upgrade: unreadable rewritten /Encrypt dictionary"
+            )
+        })?;
+    if parsed_info.r != 6 || parsed_info.v != 5 || !parsed_info.aes {
+        return Err(err!(
+            Code::VerifyFailed,
+            during = "incremental-encrypted",
+            detail = format!(
+                "AESV3 upgrade installed r={} v={} aes={}, expected r=6 v=5 aes=true",
+                parsed_info.r, parsed_info.v, parsed_info.aes
+            )
+        ));
+    }
+    let id0 = encrypt::document_id(&out_revision.trailer);
+    let new_key_material = encrypt::authenticate(&parsed_info, &id0, &upgrade.new_user_password)
+        .ok_or_else(|| {
+            err!(
+                Code::VerifyFailed,
+                during = "incremental-encrypted",
+                detail =
+                    "AESV3 upgrade: rewritten file did not authenticate with the new user password"
+            )
+        })?;
+    let reopened_key =
+        encrypted_save_key_from_parts(parsed_info, new_key_material).ok_or_else(|| {
+            err!(
+                Code::VerifyFailed,
+                during = "incremental-encrypted",
+                detail = "AESV3 upgrade: rewritten handler was not a standard handler"
+            )
+        })?;
+
+    let mut expected_cmp = expected.clone();
+    if let Some(num) = old_encrypt_num {
+        expected_cmp.remove(&num);
+    }
+    let mut reopened = materialise_encrypted(&out, &reopened_key, budget, g)?;
+    reopened.remove(&encrypt_ref.num);
+    // The writer rewrites stream /Length to the new ciphertext length; the
+    // read path leaves it alone. Normalise both sides to the plaintext length
+    // before comparing, exactly as the append path does.
+    let reopened = normalise_model_lengths(&reopened);
+    let expected_cmp = normalise_model_lengths(&expected_cmp);
+    if reopened != expected_cmp {
+        let missing: Vec<u32> = expected_cmp
+            .keys()
+            .copied()
+            .filter(|n| !reopened.contains_key(n))
+            .collect();
+        let extra: Vec<u32> = reopened
+            .keys()
+            .copied()
+            .filter(|n| !expected_cmp.contains_key(n))
+            .collect();
+        let differing: Vec<u32> = expected_cmp
+            .iter()
+            .filter_map(|(n, v)| reopened.get(n).filter(|other| *other != v).map(|_| *n))
+            .collect();
+        return Err(err!(
+            Code::VerifyFailed,
+            during = "incremental-encrypted",
+            detail = format!(
+                "AESV3 upgrade: rewritten model differs (missing {missing:?}, extra {extra:?}, differing {differing:?})"
+            )
+        ));
+    }
+
+    let bytes_in = u64::try_from(src.len()).unwrap_or(u64::MAX);
+    let bytes_out = u64::try_from(out.len()).unwrap_or(u64::MAX);
+    Ok((
+        out,
+        IncrementalSaveReport {
+            bytes_in,
+            bytes_out,
+            objects_changed: changed.len(),
+            revisions: 1,
+            prefix_preserved: false,
+        },
+    ))
 }
 
 /// Re-materialise a document with its decryption policy applied, so every
