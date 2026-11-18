@@ -66,9 +66,22 @@
 //!
 //! `tools/check_linearization.py` independently parses both hint tables and
 //! cross-checks them against the emitted object graph. That is a strong
-//! self-consistency check, but it is **not** `qpdf --check-linearization`:
-//! no external linearisation checker is installed here. See
-//! `pdf-plan/37-ASPOSE-PARITY.md` §15 for the precise, honest status.
+//! self-consistency check. The external verdict is available here too:
+//! classic-xref output from the test corpus passes `qpdf --check-linearization`
+//! with `no linearization errors` (qpdf 12.4.2). See
+//! `pdf-plan/37-ASPOSE-PARITY.md` §15 for the precise, honest status, including
+//! the still-non-conformant opt-in compressed mode.
+//!
+//! # Incremental-update input
+//!
+//! The writer takes an *already collected* object graph (see
+//! [`LinearizeInput`]), so it emits exactly one coherent revision. If the
+//! caller collected from a file with `/Prev` history, the live (newest-wins)
+//! state is preserved but the earlier revisions are intentionally **flattened**:
+//! this is what every linearizer does, and an Annex F layout cannot retain a
+//! `/Prev` chain without invalidating `/L`, `/T`, `/E`, `/H` and the page-offset
+//! table. The caller reports the number of flattened revisions; a populated
+//! digital signature is refused at the tool boundary before this writer runs.
 //!
 //! # Failure policy
 //!

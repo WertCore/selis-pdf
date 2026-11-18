@@ -13,6 +13,31 @@
 //! classic PDF 1.4 xref tables (the compatibility default), while
 //! [`linearize_file_with_mode`] can emit PDF 1.5 `/Type /XRef` streams and
 //! `/ObjStm` object streams with the same hint tables.
+//!
+//! # Incremental-update contract
+//!
+//! Linearizing is a **full rewrite**, by this tool and by every other
+//! linearizer (qpdf's `--linearize` and Acrobat's "Optimize for Fast Web View"
+//! included). The rewrite preserves the *live* document state — the objects
+//! reachable from the newest revision's catalog, so pages, content,
+//! annotations and form values are the ones the reader sees today — but the
+//! prior revisions' bytes are **intentionally flattened** into one coherent
+//! file. This is not a shortcut: an Annex F linearized layout fixes `/L`, `/T`,
+//! `/E`, `/H` and the page-offset table over one contiguous byte stream, so a
+//! retained `/Prev` history would make those claims false. The number of
+//! genuinely appended revisions is reported in
+//! [`LinearizeReport::revisions_flattened`] and on the CLI status line; a
+//! linearized input's two xref sections (first-page + main) are *not* counted
+//! as history.
+//!
+//! A *populated* digital signature (a signature field's `/V` with `/ByteRange`,
+//! or `/Perms /Signatures`) is refused with typed
+//! [`selis_error::Code::SignatureWouldBreak`] before anything is written: a
+//! full rewrite necessarily changes the bytes and offsets a signature covers,
+//! so emitting the file would leave a signature claim that no longer verifies.
+//! Empty signature fields carry no claim and do not trigger the refusal.
+
+use std::collections::HashSet;
 
 use selis_pdf_cos::copy::{collect_objects, resolve_ref};
 use selis_pdf_cos::{Obj, Ref};
@@ -35,27 +60,33 @@ pub struct LinearizeReport {
     pub declared_length: u64,
     /// The declared page count (`/N`) from the output's lin dictionary.
     pub declared_pages: u32,
+    /// Xref sections the source exposes (`selis_pdf_cos::Doc::len()`).
+    ///
+    /// A linearized source has two (first-page + main); an incrementally
+    /// updated source has one per saved revision.
+    pub revisions_in: usize,
+    /// Genuine incremental revisions whose history the rewrite flattened.
+    ///
+    /// Zero for a single-revision source and for a linearized source (its two
+    /// xref sections are the linearization pair, not saved history).
+    pub revisions_flattened: usize,
 }
 
 /// Linearize `path` into `output`, returning the measured report and the
 /// structural verification of the committed bytes.
 ///
+/// A convenience wrapper over [`linearize_file_with_mode`]. That shared entry
+/// point prints the one-line summary — including the incremental-history
+/// flattening notice — and the verification line for every caller, the CLI
+/// included.
+///
 /// # Errors
 ///
-/// [`crate::ToolError`] when the input cannot be read, is encrypted, has no
-/// usable page tree, or the rewritten output fails re-opening / verification.
+/// [`crate::ToolError`] when the input cannot be read, is encrypted, carries a
+/// populated digital signature, has no usable page tree, or the rewritten
+/// output fails re-opening / verification.
 pub fn linearize(path: &str, output: &str) -> CliResult<(LinearizeReport, Verification)> {
-    let (report, verification) = linearize_file_with_mode(path, output, Default::default())?;
-    eprintln!(
-        "linearized {path}: {in} -> {out} bytes, {objects} objects, /L {declared}, /N {pages} -> {output}",
-        in = report.in_bytes,
-        out = report.out_bytes,
-        objects = report.objects,
-        declared = report.declared_length,
-        pages = report.declared_pages,
-    );
-    verification.emit_line();
-    Ok((report, verification))
+    linearize_file_with_mode(path, output, Default::default())
 }
 
 /// Linearize `path` and return both the report and verification. This is the
@@ -75,6 +106,11 @@ pub fn linearize_file(path: &str, output: &str) -> CliResult<(LinearizeReport, V
 /// eligible non-stream objects into `/ObjStm` streams, while keeping the same
 /// Annex F hint tables and `/Linearized` dictionary.
 ///
+/// The shared entry prints a one-line summary on stderr — sizes, object
+/// count, `/L`, `/N` and an explicit incremental-history flattening notice —
+/// followed by the verification verdict line, so every caller sees the
+/// contract, not just a return value.
+///
 /// # Errors
 ///
 /// As [`linearize_file`]; the compressed mode also refuses (with a typed
@@ -93,6 +129,8 @@ pub fn linearize_file_with_mode(
     let startxref = selis_pdf_cos::xref::find_startxref(&src, 4096).unwrap_or(0);
     let doc = selis_pdf_cos::parse_revisions(&src, startxref, &budget, &mut g)
         .map_err(|e| CliError(format!("{path}: {e}")))?;
+    let revisions_in = doc.len();
+    let revisions_flattened = count_incremental_revisions(&doc);
     let rev = doc
         .revisions()
         .last()
@@ -100,6 +138,21 @@ pub fn linearize_file_with_mode(
     if rev.encrypt.is_some() {
         return Err(CliError(format!(
             "{path}: document is encrypted; remove the password with unlock first"
+        )));
+    }
+    // A full rewrite changes every byte a signature covers. Refuse loudly,
+    // before collecting or writing, rather than hand back a file whose
+    // signature claim no longer verifies (TOOL.04, Code::SignatureWouldBreak).
+    if has_populated_signature(&src, &doc, &budget, &mut g) {
+        let mut ctx = selis_error::Ctx::new();
+        ctx.during = Some("linearize");
+        ctx.detail = Some(format!(
+            "{path}: linearizing would invalidate an existing digital signature; \
+             linearize before signing or re-sign the output"
+        ));
+        return Err(CliError::from(selis_error::Error::with(
+            selis_error::Code::SignatureWouldBreak,
+            ctx,
         )));
     }
     let root = rev
@@ -201,6 +254,8 @@ pub fn linearize_file_with_mode(
         out_bytes: bytes.len(),
         declared_length,
         declared_pages,
+        revisions_in,
+        revisions_flattened,
     };
     let verification = Verification::from_gate(
         Some(&observed),
@@ -209,7 +264,193 @@ pub fn linearize_file_with_mode(
         u64::try_from(in_bytes).unwrap_or(u64::MAX),
         u64::try_from(bytes.len()).unwrap_or(u64::MAX),
     );
+
+    let history = if report.revisions_flattened == 0 {
+        "no incremental history".to_string()
+    } else {
+        format!(
+            "flattened {} prior revision(s): revision history not preserved",
+            report.revisions_flattened
+        )
+    };
+    eprintln!(
+        "linearized {path}: {in} -> {out} bytes, {objects} objects, /L {declared}, /N {pages}, {history} -> {output}",
+        in = report.in_bytes,
+        out = report.out_bytes,
+        objects = report.objects,
+        declared = report.declared_length,
+        pages = report.declared_pages,
+    );
+    verification.emit_line();
     Ok((report, verification))
+}
+
+/// Count the genuinely appended (incremental) revisions in `doc`.
+///
+/// `parse_revisions` exposes one revision per xref section, but a *linearized*
+/// file has two sections (first-page + main) and no history: its `/Prev` chain
+/// walks forward from a small offset to a larger one. A real incremental update
+/// walks backward from the appended xref to an older offset. Counting forward
+/// hops and subtracting them from the chain length therefore reports saved
+/// history without mislabelling the linearization pair as an update.
+///
+/// # Budget
+///
+/// O(revisions) over a vector already owned by `doc`; a bounded `HashSet` of
+/// xref offsets. No byte scanning and no object resolution.
+///
+/// # Malformed Input
+///
+/// A cyclic or truncated `/Prev` chain is broken by the visited set and the
+/// remaining sections are conservatively counted as history. No panic.
+fn count_incremental_revisions(doc: &selis_pdf_cos::Doc) -> usize {
+    let revisions = doc.revisions();
+    let chain_len = revisions.len();
+    if chain_len <= 1 {
+        return 0;
+    }
+    // `parse_revisions` sets each revision's byte_range.end to its xref offset.
+    let prev_targets: HashSet<u64> = revisions.iter().filter_map(|rev| rev.prev).collect();
+    let Some(mut cursor) = revisions
+        .iter()
+        .map(|rev| rev.byte_range.end)
+        .find(|offset| !prev_targets.contains(offset))
+    else {
+        return chain_len.saturating_sub(1);
+    };
+
+    let mut seen: HashSet<u64> = HashSet::new();
+    let mut links = 0usize;
+    let mut forward = 0usize;
+    while links < chain_len && seen.insert(cursor) {
+        let Some(rev) = revisions.iter().find(|rev| rev.byte_range.end == cursor) else {
+            break;
+        };
+        let Some(next) = rev.prev.filter(|next| *next != 0) else {
+            break;
+        };
+        if next > cursor {
+            forward = forward.saturating_add(1);
+        }
+        cursor = next;
+        links = links.saturating_add(1);
+    }
+    links.saturating_sub(forward)
+}
+
+/// Whether `src` carries a *populated* digital signature.
+///
+/// A signature claim exists when a `/FT /Sig` field under the catalog's
+/// `/AcroForm` has a `/V` signature dictionary with `/ByteRange`, or when the
+/// catalog carries the document-level MDP/time-stamp entry `/Perms /Signatures`.
+/// An empty signature field (`/FT /Sig` with no `/V`) makes no claim and is not
+/// reported. Field traversal is depth- and count-bounded.
+///
+/// # Budget
+///
+/// At most [`MAX_SIGNATURE_FIELDS`] field objects and [`MAX_FIELD_DEPTH`]
+/// `/Kids` levels are resolved through the caller's guard; a hostile form
+/// cannot make this unbounded.
+///
+/// # Malformed Input
+///
+/// A missing or damaged `/AcroForm`, `/Fields` or `/Perms` simply yields no
+/// detection; the helper never fails the operation it guards and never panics.
+fn has_populated_signature(
+    src: &[u8],
+    doc: &selis_pdf_cos::Doc,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> bool {
+    use selis_pdf_cos::reconcile as rec;
+
+    const MAX_SIGNATURE_FIELDS: usize = 256;
+    const MAX_FIELD_DEPTH: usize = 8;
+
+    if let Ok(Some(acro)) = rec::catalog_entry(src, doc, b"AcroForm", budget, g) {
+        let form = match &acro {
+            Obj::Ref(r) => resolve_ref(src, doc, *r, budget, g).ok(),
+            other => Some(other.clone()),
+        };
+        if let Some(Obj::Dict(form_pairs)) = form {
+            let fields = form_pairs
+                .iter()
+                .find(|(k, _)| k.as_slice() == b"Fields")
+                .map(|(_, v)| v.clone());
+            if let Some(fields) = fields {
+                let fields = match &fields {
+                    Obj::Ref(r) => resolve_ref(src, doc, *r, budget, g).ok(),
+                    other => Some(other.clone()),
+                };
+                if let Some(Obj::Array(items)) = fields {
+                    let mut stack: Vec<(Obj, usize)> = items
+                        .iter()
+                        .rev()
+                        .take(MAX_SIGNATURE_FIELDS)
+                        .map(|obj| (obj.clone(), 0usize))
+                        .collect();
+                    let mut visited = 0usize;
+                    while let Some((field, depth)) = stack.pop() {
+                        if visited >= MAX_SIGNATURE_FIELDS || depth > MAX_FIELD_DEPTH {
+                            break;
+                        }
+                        visited = visited.saturating_add(1);
+                        let resolved = match &field {
+                            Obj::Ref(r) => match resolve_ref(src, doc, *r, budget, g) {
+                                Ok(obj) => obj,
+                                Err(_) => continue,
+                            },
+                            other => other.clone(),
+                        };
+                        let Obj::Dict(pairs) = resolved else {
+                            continue;
+                        };
+                        let is_sig = pairs.iter().any(|(k, v)| {
+                            k.as_slice() == b"FT"
+                                && matches!(v, Obj::Name(n) if n.as_slice() == b"Sig")
+                        });
+                        if is_sig {
+                            if let Some((_, value)) =
+                                pairs.iter().find(|(k, _)| k.as_slice() == b"V")
+                            {
+                                let signature = match value {
+                                    Obj::Ref(r) => resolve_ref(src, doc, *r, budget, g).ok(),
+                                    other => Some(other.clone()),
+                                };
+                                if let Some(Obj::Dict(sig_pairs)) = signature {
+                                    if sig_pairs.iter().any(|(k, _)| k.as_slice() == b"ByteRange") {
+                                        return true;
+                                    }
+                                }
+                            }
+                        }
+                        if let Some((_, Obj::Array(kids))) =
+                            pairs.iter().find(|(k, _)| k.as_slice() == b"Kids")
+                        {
+                            for kid in kids.iter().rev() {
+                                stack.push((kid.clone(), depth.saturating_add(1)));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Document-level MDP / time stamp (the dictionary form of /Perms; the
+    // permission-bits form is an integer and carries no signature).
+    if let Ok(Some(perms)) = rec::catalog_entry(src, doc, b"Perms", budget, g) {
+        let resolved = match &perms {
+            Obj::Ref(r) => resolve_ref(src, doc, *r, budget, g).ok(),
+            other => Some(other.clone()),
+        };
+        if let Some(Obj::Dict(pairs)) = resolved {
+            if pairs.iter().any(|(k, _)| k.as_slice() == b"Signatures") {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Read `/L` and `/N` from the output's object-1 linearisation dictionary via
@@ -329,7 +570,6 @@ fn as_bytes(obj: &Obj) -> Option<selis_bytes::Bytes> {
 }
 
 #[cfg(test)]
-
 mod tests {
     #![allow(
         clippy::unwrap_used,
@@ -382,6 +622,151 @@ mod tests {
         b.add_page(200.0, 300.0, b"BT (PAGE-THREE) Tj ET\n");
         b.set_info(b"Title", "linearize fixture");
         b.write(&budget, &mut g).expect("write fixture")
+    }
+
+    fn bs(s: &[u8]) -> selis_bytes::Bytes {
+        selis_bytes::Bytes::copy_from_slice(s)
+    }
+
+    /// A two-revision PDF built with the engine's incremental writer.
+    ///
+    /// Revision 1 has page content `REVISION-ONE` and a text field whose value
+    /// is `OLD-VALUE`. Revision 2 replaces the page content with `REVISION-TWO`,
+    /// adds an annotation and changes the field value to `NEW-VALUE`. The
+    /// revision-1 content object becomes unreferenced, as in a real append.
+    fn multi_revision_pdf() -> Vec<u8> {
+        let budget = Budget::unlimited();
+        let mut g = budget.guard();
+        let mut b = selis_pdf_cos::doc_writer::DocumentBuilder::new();
+        let page = b.add_page(200.0, 300.0, b"BT (REVISION-ONE) Tj ET\n");
+        let field_num = b.allocate();
+        let acro_num = b.allocate();
+        let field = |value: &[u8]| {
+            Obj::Dict(vec![
+                (bs(b"Type"), Obj::Name(bs(b"Annot"))),
+                (bs(b"FT"), Obj::Name(bs(b"Tx"))),
+                (bs(b"T"), Obj::String(bs(b"Field1"))),
+                (bs(b"V"), Obj::String(bs(value))),
+                (
+                    bs(b"Rect"),
+                    Obj::Array(vec![
+                        Obj::Int(10),
+                        Obj::Int(10),
+                        Obj::Int(200),
+                        Obj::Int(30),
+                    ]),
+                ),
+                (bs(b"P"), Obj::Ref(page)),
+            ])
+        };
+        b.add_object(field_num, field(b"OLD-VALUE"));
+        b.add_object(
+            acro_num,
+            Obj::Dict(vec![
+                (
+                    bs(b"Fields"),
+                    Obj::Array(vec![Obj::Ref(Ref::new(field_num, 0))]),
+                ),
+                (bs(b"SigFlags"), Obj::Int(0)),
+            ]),
+        );
+        b.add_catalog_entry(b"AcroForm", Obj::Ref(Ref::new(acro_num, 0)));
+        let original = b.write(&budget, &mut g).expect("base revision");
+
+        let content: &[u8] = b"BT (REVISION-TWO) Tj ET\n";
+        let new_content = Obj::Stream {
+            dict: vec![(bs(b"Length"), Obj::Int(content.len() as i64))],
+            data: bs(content),
+        };
+        let annot = Obj::Dict(vec![
+            (bs(b"Type"), Obj::Name(bs(b"Annot"))),
+            (bs(b"Subtype"), Obj::Name(bs(b"Text"))),
+            (
+                bs(b"Rect"),
+                Obj::Array(vec![Obj::Int(1), Obj::Int(2), Obj::Int(3), Obj::Int(4)]),
+            ),
+            (bs(b"Contents"), Obj::String(bs(b"added in rev 2"))),
+        ]);
+        let updated_page = Obj::Dict(vec![
+            (bs(b"Type"), Obj::Name(bs(b"Page"))),
+            (bs(b"Parent"), Obj::Ref(Ref::new(2, 0))),
+            (
+                bs(b"MediaBox"),
+                Obj::Array(vec![Obj::Int(0), Obj::Int(0), Obj::Int(200), Obj::Int(300)]),
+            ),
+            (bs(b"Contents"), Obj::Ref(Ref::new(7, 0))),
+            (bs(b"Resources"), Obj::Dict(Vec::new())),
+            (bs(b"Annots"), Obj::Array(vec![Obj::Ref(Ref::new(8, 0))])),
+        ]);
+        selis_pdf_cos::doc_writer::write_incremental_update(
+            &original,
+            &[
+                (page.num, updated_page),
+                (field_num, field(b"NEW-VALUE")),
+                (7, new_content),
+                (8, annot),
+            ],
+            &[(b"Root".to_vec(), Obj::Ref(Ref::new(1, 0)))],
+            &budget,
+            &mut g,
+        )
+        .expect("incremental revision")
+    }
+
+    /// A PDF with a signature field. With `populated`, the field's `/V` points
+    /// at a signature dictionary carrying `/ByteRange` (a real signature
+    /// claim); otherwise the field is empty and makes no claim.
+    fn signed_pdf(populated: bool) -> Vec<u8> {
+        let budget = Budget::unlimited();
+        let mut g = budget.guard();
+        let mut b = selis_pdf_cos::doc_writer::DocumentBuilder::new();
+        b.add_page(200.0, 300.0, b"BT (SIGNED) Tj ET\n");
+        let field_num = b.allocate();
+        let acro_num = b.allocate();
+        let sig_num = b.allocate();
+        let mut field = vec![
+            (bs(b"Type"), Obj::Name(bs(b"Annot"))),
+            (bs(b"FT"), Obj::Name(bs(b"Sig"))),
+            (bs(b"T"), Obj::String(bs(b"Signature1"))),
+            (
+                bs(b"Rect"),
+                Obj::Array(vec![Obj::Int(0), Obj::Int(0), Obj::Int(0), Obj::Int(0)]),
+            ),
+        ];
+        if populated {
+            field.push((bs(b"V"), Obj::Ref(Ref::new(sig_num, 0))));
+        }
+        b.add_object(field_num, Obj::Dict(field));
+        b.add_object(
+            sig_num,
+            Obj::Dict(vec![
+                (bs(b"Type"), Obj::Name(bs(b"Sig"))),
+                (bs(b"Filter"), Obj::Name(bs(b"Adobe.PPKLite"))),
+                (bs(b"SubFilter"), Obj::Name(bs(b"adbe.pkcs7.detached"))),
+                (
+                    bs(b"ByteRange"),
+                    Obj::Array(vec![
+                        Obj::Int(0),
+                        Obj::Int(100),
+                        Obj::Int(200),
+                        Obj::Int(300),
+                    ]),
+                ),
+                (bs(b"Contents"), Obj::HexString(bs(b"00"))),
+            ]),
+        );
+        b.add_object(
+            acro_num,
+            Obj::Dict(vec![
+                (
+                    bs(b"Fields"),
+                    Obj::Array(vec![Obj::Ref(Ref::new(field_num, 0))]),
+                ),
+                (bs(b"SigFlags"), Obj::Int(3)),
+            ]),
+        );
+        b.add_catalog_entry(b"AcroForm", Obj::Ref(Ref::new(acro_num, 0)));
+        b.write(&budget, &mut g).expect("signed fixture")
     }
 
     #[test]
@@ -693,5 +1078,92 @@ mod tests {
     fn writer_refuses_encrypted_flag_via_error_type() {
         let e = selis_pdf_optimize::LinearizeError::Encrypted;
         assert_eq!(e.code(), selis_error::Code::AlreadyEncrypted);
+    }
+
+    #[test]
+    fn linearizing_multi_revision_preserves_final_state_and_reports_flattening() {
+        let dir = temp_dir("multi-revision");
+        let input = dir.join("in.pdf");
+        let output = dir.join("out.pdf");
+        let src = multi_revision_pdf();
+
+        // The fixture is genuinely a two-revision, incrementally updated file.
+        let budget = Budget::unlimited();
+        let mut g = budget.guard();
+        let sx = selis_pdf_cos::xref::find_startxref(&src, 4096).expect("startxref");
+        let doc = selis_pdf_cos::parse_revisions(&src, sx, &budget, &mut g).expect("parse");
+        assert_eq!(doc.len(), 2);
+        assert_eq!(count_incremental_revisions(&doc), 1);
+
+        std::fs::write(&input, &src).expect("write input");
+        let (report, verification) =
+            linearize_file(input.to_str().unwrap(), output.to_str().unwrap()).expect("linearize");
+        assert_eq!(verification.verdict, "ok");
+        assert_eq!(report.revisions_in, 2);
+        assert_eq!(report.revisions_flattened, 1);
+        let out = std::fs::read(&output).expect("read output");
+
+        // The live state of the newest revision is preserved: rev-2 page
+        // content, its annotation and the new form value are all present;
+        // rev-1's now-unreferenced content and old value are dropped.
+        let text = String::from_utf8_lossy(&out);
+        assert!(text.contains("REVISION-TWO"), "rev-2 page content kept");
+        assert!(
+            !text.contains("REVISION-ONE"),
+            "rev-1 content flattened, not retained"
+        );
+        assert!(text.contains("added in rev 2"), "rev-2 annotation kept");
+        assert!(text.contains("NEW-VALUE"), "rev-2 form value kept");
+        assert!(!text.contains("OLD-VALUE"), "rev-1 form value flattened");
+
+        // Read back through the engine, not just a byte scan.
+        let sx = selis_pdf_cos::xref::find_startxref(&out, 4096).expect("startxref");
+        let doc = selis_pdf_cos::parse_revisions(&out, sx, &budget, &mut g).expect("reopen");
+        let pages = crate::tools::page_refs_of(&out, &doc, &budget, &mut g).expect("pages");
+        assert_eq!(pages.len(), 1);
+        let content = page_content(&out, &doc, pages[0], &budget, &mut g).expect("content");
+        assert!(
+            String::from_utf8_lossy(&content).contains("REVISION-TWO"),
+            "page content reads as the newest revision"
+        );
+        // The output's own two xref sections are the linearization pair, not
+        // incremental history: a second pass must not mislabel them.
+        assert_eq!(doc.len(), 2);
+        assert_eq!(count_incremental_revisions(&doc), 0);
+        let out2 = dir.join("out2.pdf");
+        let (report2, _) =
+            linearize_file(output.to_str().unwrap(), out2.to_str().unwrap()).expect("relinearize");
+        assert_eq!(report2.revisions_flattened, 0);
+    }
+
+    #[test]
+    fn refuses_signed_pdf_with_typed_error_and_writes_nothing() {
+        let dir = temp_dir("signed");
+        let input = dir.join("in.pdf");
+        let output = dir.join("out.pdf");
+        std::fs::write(&input, signed_pdf(true)).expect("write input");
+
+        let err = linearize_file(input.to_str().unwrap(), output.to_str().unwrap())
+            .expect_err("a populated signature must be refused");
+        assert!(
+            err.0.contains("[E2807]"),
+            "typed SIGNATURE_WOULD_BREAK code: {err}"
+        );
+        assert!(err.0.contains("digital signature"), "clear reason: {err}");
+        assert!(!output.exists(), "no output file on refusal");
+    }
+
+    #[test]
+    fn an_empty_signature_field_is_not_a_signature_claim() {
+        let dir = temp_dir("unsigned-field");
+        let input = dir.join("in.pdf");
+        let output = dir.join("out.pdf");
+        std::fs::write(&input, signed_pdf(false)).expect("write input");
+
+        let (report, verification) =
+            linearize_file(input.to_str().unwrap(), output.to_str().unwrap()).expect("linearize");
+        assert_eq!(verification.verdict, "ok");
+        assert_eq!(report.revisions_flattened, 0);
+        assert!(output.exists());
     }
 }
