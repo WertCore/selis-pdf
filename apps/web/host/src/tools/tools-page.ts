@@ -70,6 +70,7 @@ import {
 	signatureRows,
 	signingStamp,
 } from "./sign-protocol.js";
+import { LINEARIZE_NOTE, linearizeReportRows } from "./linearize.js";
 import { SUBSET_FONTS_NOTE, subsetReportRows } from "./subset.js";
 import {
 	type TextOp,
@@ -2347,6 +2348,12 @@ function init(): void {
 			options.append(note);
 			return;
 		}
+		if (tool.id === "linearize") {
+			const note = make("p", "option-note");
+			note.textContent = LINEARIZE_NOTE;
+			options.append(note);
+			return;
+		}
 		if (tool.id === "compress") {
 			radioGroup(
 				"level",
@@ -3592,6 +3599,10 @@ function fileTile(file: File, index: number, tool: ToolDef | null): HTMLLIElemen
 			// The op needs no options: it walks the document's own text and
 			// embedded font programs. One PDF in, one verified PDF out.
 			return { op: "subset_fonts", files: wireFiles };
+		}
+		if (tool.id === "linearize") {
+			// Op 43 needs no options: one PDF in, one linearised PDF out.
+			return { op: "linearize", files: wireFiles };
 		}
 		if (tool.id === "zip") {
 			return { op: "zip", files: wireFiles };
@@ -5234,12 +5245,20 @@ function fileTile(file: File, index: number, tool: ToolDef | null): HTMLLIElemen
 				);
 			}
 			document.documentElement.dataset.noUpload = "verified";
-			// The subset card shows the engine's measured fonts/glyphs report
+			// The subset and linearize cards add their own measured report rows
 			// beside the standard verification rows; other tools have none.
-			showResult(
-				result,
-				tool.id === "subset_fonts" ? subsetReportRows(result.verification) : [],
-			);
+			const extraRows =
+				tool.id === "subset_fonts"
+					? subsetReportRows(result.verification)
+					: tool.id === "linearize"
+						? linearizeReportRows(
+								result.outputs.find((output) =>
+									output.name.toLowerCase().endsWith(".pdf"),
+								)?.bytes ?? new Uint8Array(0),
+								result.verification,
+							)
+						: [];
+			showResult(result, extraRows);
 			setStatus("Done. The result was verified on this device.", "ok");
 		} catch (error) {
 			const message =

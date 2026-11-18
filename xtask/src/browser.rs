@@ -5419,7 +5419,7 @@ const SIGNATURE_REPORT_LEG: SignatureReportSpec = SignatureReportSpec {
 /// Every card `/tools.html` renders, sorted — the list the browser check holds
 /// itself to. A new card has to be added here and given a leg, not merely
 /// rendered.
-const TOOLS_PAGE_CARDS: [&str; 47] = [
+const TOOLS_PAGE_CARDS: [&str; 49] = [
     "attach",
     "attachments",
     "batch",
@@ -5441,6 +5441,7 @@ const TOOLS_PAGE_CARDS: [&str; 47] = [
     "image_watermark",
     "invert",
     "jpg",
+    "linearize",
     "merge",
     "metadata",
     "metadata_report",
@@ -5460,6 +5461,7 @@ const TOOLS_PAGE_CARDS: [&str; 47] = [
     "sign",
     "split",
     "strip_metadata",
+    "subset_fonts",
     "text",
     "tiff",
     "unlock",
