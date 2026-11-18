@@ -19,8 +19,8 @@ Specifically it validates, from raw bytes only:
       - /H == [ offset, length ] of a real hint *stream* object
       - /O == the first leaf /Page object number (and its type is /Page)
       - /N == the independently counted number of leaf pages
-      - /T == the byte offset of the whitespace before entry 0 of the *first*
-        xref section
+      - /T == the byte offset of the whitespace before entry 0 of the *main*
+        (last) xref section (qpdf's convention)
       - /E == the byte offset where the first-page section ends
       - /P == 1
   * the two classic xref sections and their /Prev chain: startxref targets the
@@ -48,12 +48,14 @@ Specifically it validates, from raw bytes only:
 
 WHAT THIS IS NOT
 ----------------
-This is **not** `qpdf --check-linearization`. qpdf, mutool, pdftk and pikepdf
-are not installed here and are not fetched from the network. A pass is a
-rigorous independent conformance verdict over the Annex F fields this writer
-emits; it is not a claim of bit-for-bit compatibility with qpdf's much broader
-checker (which also validates object streams, xref streams, MD5 group
-signatures, and many structural cases this writer does not produce).
+This is **not** `qpdf --check-linearization`. A pass is a rigorous independent
+conformance verdict over the Annex F fields this writer emits; it is not a
+claim of bit-for-bit compatibility with qpdf's much broader checker (which also
+validates object streams, xref streams, MD5 group signatures, and many
+structural cases this writer does not produce). Classic-xref output is also
+checked with the real qpdf binary separately (it reports "no linearization
+errors" on the conformance fixtures); the opt-in compressed/xref-stream mode
+still has known qpdf object-stream warnings.
 
 ``--interop`` additionally opens the file with pypdf and pypdfium2 (independent
 implementations) to prove it loads and renders with the right page count. That
@@ -374,6 +376,28 @@ def outline_item_objects(
     return result
 
 
+def outline_object_numbers(
+    data: bytes, offsets: dict[int, int], root_num: int
+) -> set[int]:
+    """All objects reachable from /Outlines (dict, items, actions), no pages."""
+    catalog = obj_body(data, offsets, root_num)
+    root = _one_ref(catalog, b"Outlines")
+    if root is None:
+        return set()
+    result: set[int] = set()
+    pending = [root]
+    while pending:
+        num = pending.pop()
+        if num in result:
+            continue
+        body = obj_body(data, offsets, num)
+        if re.search(rb"/Type\s*/Pages?(?![A-Za-z])", body):
+            continue
+        result.add(num)
+        pending.extend(int(m.group(1)) for m in re.finditer(rb"(\d+)\s+\d+\s+R", body))
+    return result
+
+
 def _name_tree_strings(data: bytes, offsets: dict[int, int], root_num: int) -> set[bytes]:
     catalog = obj_body(data, offsets, root_num)
     names_root = _one_ref(catalog, b"Names")
@@ -638,12 +662,17 @@ def conformance_check(data: bytes, path: str = "<bytes>") -> Result:
         )
         if main.root is not None:
             r.add(main.root in offsets, "XREF", f"/Root object {main.root} exists")
+        # In a linearized file BOTH trailers carry /Size = one plus the highest
+        # object number in the whole file, even though the first-page section
+        # lists only its own objects (qpdf rejects a section-local /Size).
+        global_max = max((n for x in xrefs for n in x.entries), default=0)
         for x in xrefs:
             covered = max(x.entries, default=0)
             r.add(
-                x.size == covered + 1,
+                x.size == global_max + 1,
                 "XREF",
-                f"xref {x.offset} /Size covers entries through {covered}",
+                f"xref {x.offset} /Size ({x.size}) is one plus highest object "
+                f"({global_max}); its own entries reach {covered}",
             )
             bad = [
                 n
@@ -690,13 +719,13 @@ def conformance_check(data: bytes, path: str = "<bytes>") -> Result:
             p = t
             while p < len(data) and data[p : p + 1] in (b" ", b"\r", b"\n", b"\t"):
                 p += 1
-            first_xref = xrefs[0].offset
-            hdr = re.match(rb"\s*xref\s+\d+\s+\d+\s*\r?\n", data[first_xref:])
-            entry0 = first_xref + (hdr.end() if hdr else 0)
+            main_xref = xrefs[-1].offset
+            hdr = re.match(rb"\s*xref\s+\d+\s+\d+\s*\r?\n", data[main_xref:])
+            entry0 = main_xref + (hdr.end() if hdr else 0)
             r.add(
                 data[t : t + 1] in (b" ", b"\r", b"\n", b"\t") and p == entry0,
                 "LIN",
-                f"/T points at whitespace before first xref entry 0 "
+                f"/T points at whitespace before main xref entry 0 "
                 f"(byte at /T = {data[t : t + 1]!r}, skips to {p}, entry 0 at {entry0})",
             )
 
@@ -716,10 +745,14 @@ def conformance_check(data: bytes, path: str = "<bytes>") -> Result:
     if stream is None:
         return r
     dict_bytes, payload = stream.dict_bytes, stream.payload
+    # /H's second element is the length of the WHOLE hint stream object
+    # ("N 0 obj" .. "endobj\n"), matching qpdf's writer/checker.
+    obj_end = data.find(b"endobj", hint_offset)
+    whole_obj_len = (obj_end + len(b"endobj\n") - hint_offset) if obj_end >= 0 else -1
     r.add(
-        hint_length == len(payload),
+        hint_length == whole_obj_len,
         "HINT",
-        f"/H length ({hint_length}) equals actual payload length ({len(payload)})",
+        f"/H length ({hint_length}) equals whole hint object length ({whole_obj_len})",
     )
     if stream.length_field is not None:
         r.add(
@@ -977,23 +1010,37 @@ def conformance_check(data: bytes, path: str = "<bytes>") -> Result:
     elif page_label_starts(data, offsets, root_num):
         r.add(False, "F.9", "document has /PageLabels but hint stream has no /E table")
 
-    # F.6 outlines
+    # F.6 outlines: qpdf's 16-byte HGeneric record (four 32-bit big-endian
+    # fields), not a row table. nobjects counts the /Outlines dictionary plus
+    # every reachable outline item/action object.
     if "O" in opt and 0 <= opt["O"] < len(payload):
         try:
             hr = BitReader(payload, opt["O"] * 8)
-            nitems = hr.get(32)
-            tbl = parse_offset_table(payload, opt["O"], [32], nitems, 0)
+            first_object = hr.get(32)
+            first_object_offset = hr.get(32)
+            nobjects = hr.get(32)
+            group_length = hr.get(32)
         except Exception as exc:  # noqa: BLE001
             r.add(False, "F.6", f"outline table parses ({exc})")
         else:
-            real = outline_item_objects(data, offsets, root_num)
-            r.add(nitems == len(real), "F.6", f"outline count ({nitems}) == real items ({len(real)})")
-            got = set()
-            for x in tbl.offsets:
-                rec = payload[x : x + 8]
-                if len(rec) == 8:
-                    got.add(int.from_bytes(rec[:4], "big"))
-            r.add(got == real, "F.6", "outline inline item object numbers match real tree")
+            real = outline_object_numbers(data, offsets, root_num)
+            catalog = obj_body(data, offsets, root_num)
+            om = re.search(rb"/Outlines\s+(\d+)\s+\d+\s+R", catalog)
+            r.add(
+                nobjects == len(real),
+                "F.6",
+                f"outline object count ({nobjects}) == real outline objects ({len(real)})",
+            )
+            r.add(
+                om is not None and first_object == int(om.group(1)),
+                "F.6",
+                f"outline first_object ({first_object}) is the /Outlines dictionary",
+            )
+            r.add(
+                0 <= first_object_offset < len(data) and group_length > 0,
+                "F.6",
+                "outline offset and group length are in range",
+            )
     elif outline_item_objects(data, offsets, root_num):
         r.add(False, "F.6", "document has an outline tree but hint stream has no /O table")
 

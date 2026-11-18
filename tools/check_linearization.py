@@ -6,8 +6,8 @@ claims, including a full parse of the hint tables it emits:
 
   * object 1 is a /Linearized dictionary within the first 1024 bytes;
   * /L equals the real file length, /N the leaf-page count, /O a real /Page;
-  * /T points at the whitespace before entry 0 of a classic first xref, or at
-    the first-page /Type /XRef stream object;
+  * /T points at the whitespace before entry 0 of the MAIN (last) xref in the
+    /Prev chain, or at the main /Type /XRef stream object (qpdf's convention);
   * /E is a byte offset at/after the first-page objects;
   * /H is a 2- or 4-element array pointing at real hint stream object(s);
   * both xref sections parse (classic table or /Type /XRef stream), their /Prev
@@ -411,6 +411,32 @@ def page_objects(data: bytes, root_num: int) -> list[int]:
     return leaves
 
 
+def outline_root_object(data: bytes, root_num: int) -> int | None:
+    """Object number of the catalog's /Outlines dictionary, if any."""
+    catalog = obj_dict(data, root_num)
+    m = re.search(rb"/Outlines\s+(\d+)\s+\d+\s+R", catalog)
+    return int(m.group(1)) if m else None
+
+
+def outline_object_numbers(data: bytes, root_num: int) -> set[int]:
+    """All objects reachable from /Outlines (dict, items, actions), no pages."""
+    root = outline_root_object(data, root_num)
+    if root is None:
+        return set()
+    out: set[int] = set()
+    pending = [root]
+    while pending:
+        num = pending.pop()
+        if num in out:
+            continue
+        body = obj_dict(data, num)
+        if re.search(rb"/Type\s*/Pages?(?![A-Za-z])", body):
+            continue
+        out.add(num)
+        pending.extend(int(m.group(1)) for m in re.finditer(rb"(\d+)\s+\d+\s+R", body))
+    return out
+
+
 def outline_item_objects(data: bytes, root_num: int) -> list[int]:
     """Object numbers of all outline items (walk /First and /Next chains)."""
     catalog = obj_dict(data, root_num)
@@ -737,23 +763,26 @@ def check_optional_tables(
                 r.check(rec.startswith(b"<<") and b"/S" in rec,
                         f"page-label page {i} inline record is a label dictionary")
 
-    # §F.6 outline hint table: header item count, one offset row per item;
-    # each inline record is (item object number, destination page) as 4-byte
-    # big-endian integers.
+    # §F.6 outline hint table: qpdf reads a single 16-byte "generic" record —
+    # four 32-bit big-endian fields:
+    #   first_object, first_object_offset, nobjects, group_length.
+    # `nobjects` counts the /Outlines dictionary itself plus every reachable
+    # outline item and action object, not just the /First//Next item chain.
     if "O" in opt and 0 <= opt["O"] < len(payload):
         hr = BitReader(payload, opt["O"] * 8)
-        nitems = hr.get(32)
-        _h, offs, _x, base = parse_offset_table(payload, opt["O"], [32], nitems, 0)
-        real = set(outline_item_objects(data, root_num))
-        r.check(nitems == len(real),
-                f"outline table count ({nitems}) == outline items ({len(real)})")
-        got = set()
-        for o in offs:
-            rec = payload[o : o + 8]
-            r.check(len(rec) == 8, "outline inline record is 8 bytes")
-            if len(rec) == 8:
-                got.add(int.from_bytes(rec[:4], "big"))
-        r.check(got == real, f"outline item object numbers match real tree ({len(got)}/{len(real)})")
+        first_object = hr.get(32)
+        first_object_offset = hr.get(32)
+        nobjects = hr.get(32)
+        group_length = hr.get(32)
+        outlines_root = outline_root_object(data, root_num)
+        real = outline_object_numbers(data, root_num)
+        r.check(first_object == outlines_root,
+                f"outline first_object ({first_object}) == /Outlines object ({outlines_root})")
+        r.check(nobjects == len(real),
+                f"outline table count ({nobjects}) == outline objects ({len(real)})")
+        r.check(0 <= first_object_offset < len(data),
+                f"outline first_object_offset ({first_object_offset}) within file")
+        r.check(group_length > 0, f"outline group_length ({group_length}) positive")
 
     # §F.8 named-destination hint table: header count, one (offset, 16-bit
     # name length) row per destination; inline record is name bytes + 4-byte
@@ -840,9 +869,15 @@ def check_hint_tables(r: Result, data: bytes, lin: dict, xrefs: list[Xref]) -> N
         return
     s = int(sm.group(1))
     r.check(0 <= s < len(payload), f"/S ({s}) within hint buffer ({len(payload)} bytes)")
+    # qpdf's /H second element is the length of the WHOLE hint stream OBJECT
+    # ("N 0 obj" .. "endobj\n"), not just its stream data. The object end was
+    # located independently above, so compare against that span.
+    # read_stream_object ends at "endobj"; the written object also has the
+    # trailing newline, which qpdf's end_after_space includes.
+    whole_obj_len = _obj_end - hint_offset + 1
     r.check(
-        hint_offset + hint_length == hint_offset + len(payload),
-        f"/H length ({hint_length}) == stream data length ({len(payload)})",
+        hint_length == whole_obj_len,
+        f"/H length ({hint_length}) == whole hint object length ({whole_obj_len})",
     )
     if not (0 <= s < len(payload)):
         return
@@ -1049,19 +1084,20 @@ def check(path: str) -> Result:
         t = lin["T"]
         r.check(0 <= t < len(data), f"/T ({t}) within file")
         if 0 <= t < len(data):
-            if xrefs[0].kind == "stream":
-                # For an xref-stream first page, /T is the offset of the xref
-                # stream object (also the startxref target).
-                r.check(t == xrefs[0].offset,
-                        f"/T ({t}) targets the first-page xref stream ({xrefs[0].offset})")
+            # qpdf's /T check consults the LAST xref in the /Prev chain (the
+            # main xref at the end of a linearized file), not the first-page
+            # xref near the start. Verify against that section.
+            main_xref = xrefs[-1]
+            if main_xref.kind == "stream":
+                r.check(t == main_xref.offset,
+                        f"/T ({t}) targets the main xref stream ({main_xref.offset})")
             else:
                 p = t
-                while p < len(data) and data[p : p + 1] in (b" ", b"\r", b"\n"):
+                while p < len(data) and data[p : p + 1] in (b" ", b"\r", b"\n", b"\t"):
                     p += 1
-                first_xref = xrefs[0].offset
-                hdr = re.match(rb"\s*xref\s+\d+\s+\d+\s*\n", data[first_xref:])
-                entry0 = first_xref + (hdr.end() if hdr else 0)
-                r.check(p == entry0, f"/T skips to first xref entry ({p} == {entry0})")
+                hdr = re.match(rb"\s*xref\s+\d+\s+\d+\s*\n", data[main_xref.offset:])
+                entry0 = main_xref.offset + (hdr.end() if hdr else 0)
+                r.check(p == entry0, f"/T skips to main xref entry 0 ({p} == {entry0})")
 
     if "E" in lin:
         e = lin["E"]

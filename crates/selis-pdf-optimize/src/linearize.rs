@@ -441,16 +441,20 @@ struct Layout {
 // These five tables are OPTIONAL for a conforming linearized file. We emit a
 // table only for the structure it describes, and never fabricate a structure.
 // The exact bit layouts below are reconstructed from ISO 32000-1 Annex F and
-// qpdf's writer; they are validated by `tools/check_linearization.py`, which
-// parses them back and cross-checks every field against the real object graph,
-// and by PDFium read-back. No external `qpdf --check-linearization` verdict is
-// available in this build environment, so external conformance is not claimed.
+// qpdf's writer; they are validated by `tools/check_linearization.py` and
+// `tools/check_linearization_conformance.py`, which parse them back and
+// cross-check every field against the real object graph, and by PDFium
+// read-back. Classic-xref output also passes the real
+// `qpdf --check-linearization` binary ("no linearization errors") on the
+// conformance fixtures; the opt-in compressed/xref-stream mode still has known
+// qpdf object-stream layout warnings.
 
 /// The optional hint tables detected in the (renumbered) object graph.
 #[derive(Debug, Clone, Default)]
 struct OptionalHints {
-    /// Outline hint table (§F.6) + `/O` hint-stream entry.
-    outlines: Option<Vec<OutlineItemHint>>,
+    /// Outline hint table (§F.6) + `/O` hint-stream entry. The `usize` is the
+    /// number of outline items found (zero means no table).
+    outlines: Option<usize>,
     /// Page-label hint table (§F.9) + `/E` hint-stream entry.
     page_labels: Option<Vec<Option<Obj>>>,
     /// Named-destination hint table (§F.8) + `/A` hint-stream entry.
@@ -469,15 +473,6 @@ struct FormFieldHint {
     /// Zero-based index of the page whose `/Annots` contains the widget, or
     /// `u32::MAX` when no page could be resolved locally.
     page: u32,
-}
-
-/// One outline item for the §F.6 hint table.
-#[derive(Debug, Clone)]
-struct OutlineItemHint {
-    /// Renumbered object number of the outline-item dictionary.
-    obj: u32,
-    /// Zero-based destination page index, or `u32::MAX` when it has no /Dest.
-    dest_page: u32,
 }
 
 /// One named destination for the §F.8 hint table.
@@ -523,6 +518,37 @@ fn page_object_set(
     out
 }
 
+/// Transitive closure of the object numbers reachable from `roots`, never
+/// crossing into a page tree node or a leaf page. This mirrors qpdf's
+/// `updateObjectMaps`: categories such as "open document" (part 4), outlines
+/// and thumbnails are gathered from the catalog/pages without swallowing the
+/// page tree itself.
+fn reachable_excluding(
+    index: &BTreeMap<u32, &Obj>,
+    roots: Vec<u32>,
+    tree_nodes: &HashSet<u32>,
+    pages: &HashSet<u32>,
+) -> HashSet<u32> {
+    let mut seen = HashSet::new();
+    let mut out = HashSet::new();
+    let mut pending = roots;
+    while let Some(num) = pending.pop() {
+        if !seen.insert(num) {
+            continue;
+        }
+        if tree_nodes.contains(&num) || pages.contains(&num) {
+            continue;
+        }
+        if let Some(obj) = index.get(&num) {
+            out.insert(num);
+            let mut refs = Vec::new();
+            collect_refs(obj, &mut refs);
+            pending.extend(refs.iter().map(|r| r.num));
+        }
+    }
+    out
+}
+
 fn build_layout(
     index: &BTreeMap<u32, &Obj>,
     root: Ref,
@@ -546,16 +572,68 @@ fn build_layout(
         }
     }
 
-    // Part 6 is every object reachable from page 0, with the page object first.
-    let mut part6_old: Vec<u32> = page_all[0].clone();
+    // qpdf's part 4 ("open document") is the catalog plus everything reachable
+    // from its /ViewerPreferences, /PageMode, /Threads, /OpenAction, /AcroForm
+    // and /Encrypt keys. Objects there take precedence over the first page, so
+    // form fields/widgets that a page's /Annots reaches still belong to part 4.
+    let catalog = index
+        .get(&root.num)
+        .ok_or_else(|| to_error(LinearizeError::BadPageTree("catalog vanished")))?;
+    let mut open_roots = vec![root.num];
+    for key in [
+        b"ViewerPreferences".as_slice(),
+        b"PageMode",
+        b"Threads",
+        b"OpenAction",
+        b"AcroForm",
+        b"Encrypt",
+    ] {
+        if let Some(Obj::Ref(r)) = get(catalog, key) {
+            open_roots.push(r.num);
+        }
+    }
+    let open_doc = reachable_excluding(index, open_roots, tree_nodes, &page_nums);
+
+    // Outlines and thumbnails are part 9 (never part 6) for our writer, matching
+    // qpdf unless /PageMode is /UseOutlines. They must not inflate the F.4
+    // per-page object counts or the /E end-of-first-page-section offset.
+    let mut outline_roots = Vec::new();
+    if let Some(Obj::Ref(r)) = get(catalog, b"Outlines") {
+        outline_roots.push(r.num);
+    }
+    let outlines = reachable_excluding(index, outline_roots, tree_nodes, &page_nums);
+    let mut thumb_roots = Vec::new();
+    for p in pages {
+        if let Some(page) = index.get(&p.num) {
+            if let Some(Obj::Ref(r)) = get(page, b"Thumb") {
+                thumb_roots.push(r.num);
+            }
+        }
+    }
+    let thumbs = reachable_excluding(index, thumb_roots, tree_nodes, &page_nums);
+
+    let mut excluded: HashSet<u32> = open_doc.iter().copied().collect();
+    excluded.extend(outlines.iter().copied());
+    excluded.extend(thumbs.iter().copied());
+    excluded.extend(tree_nodes.iter().copied());
+
+    // Part 6 is the first page's objects minus part 4 / outlines / thumbnails /
+    // page tree, with the page object first. Objects shared with other pages
+    // stay here (qpdf's c_first_page_shared also lives in part 6).
+    let mut part6_old: Vec<u32> = page_all[0]
+        .iter()
+        .copied()
+        .filter(|n| !excluded.contains(n))
+        .collect();
     part6_old.retain(|n| *n != pages[0].num);
     part6_old.insert(0, pages[0].num);
     let part6_set: HashSet<u32> = part6_old.iter().copied().collect();
 
-    // Part 8: referenced by two or more pages and not already in part 6.
+    // Part 8: referenced by two or more pages and not already in part 6 or one
+    // of the part 4 / part 9 categories.
     let mut part8_old: Vec<u32> = users
         .iter()
-        .filter(|(n, count)| **count >= 2 && !part6_set.contains(n))
+        .filter(|(n, count)| **count >= 2 && !part6_set.contains(n) && !excluded.contains(n))
         .map(|(n, _)| *n)
         .collect();
     part8_old.sort_unstable();
@@ -569,22 +647,25 @@ fn build_layout(
     let shared_set: HashSet<u32> = shared_old.iter().copied().collect();
 
     // Part 7: for each later page, the page object followed by its private
-    // objects (everything in its set that is not a shared-table object).
+    // objects. Part 4 / outlines / thumbnails / page-tree objects are excluded
+    // so they do not inflate the F.4 per-page object count.
     let mut part7_old: Vec<Vec<u32>> = Vec::with_capacity(pages.len().saturating_sub(1));
     for i in 1..pages.len() {
         let mut group: Vec<u32> = page_all[i]
             .iter()
             .copied()
-            .filter(|n| !shared_set.contains(n))
+            .filter(|n| !shared_set.contains(n) && !excluded.contains(n))
             .collect();
         group.retain(|n| *n != pages[i].num);
         group.insert(0, pages[i].num);
         part7_old.push(group);
     }
 
-    // Part 9: everything not already assigned (catalog handled as part 4).
+    // Part 9: everything not already assigned. Outlines, thumbnails and the
+    // page tree are always here; part 4 (open document) is written first.
     let mut assigned: HashSet<u32> = shared_set;
     assigned.insert(root.num);
+    assigned.extend(open_doc.iter().copied());
     for group in &part7_old {
         assigned.extend(group.iter().copied());
     }
@@ -594,6 +675,17 @@ fn build_layout(
         .filter(|n| !assigned.contains(n))
         .collect();
     part9_old.sort_unstable();
+
+    // Part 4: the catalog first, then the open-document objects in ascending
+    // object-number order (qpdf's part 4 order).
+    let mut part4_old: Vec<u32> = vec![root.num];
+    let mut open_list: Vec<u32> = open_doc
+        .iter()
+        .copied()
+        .filter(|n| *n != root.num)
+        .collect();
+    open_list.sort_unstable();
+    part4_old.extend(open_list);
 
     // Assign new object numbers in part order: 1 is the lin dictionary.
     let mut remap: HashMap<u32, u32> = HashMap::new();
@@ -609,6 +701,13 @@ fn build_layout(
     next = next
         .checked_add(1)
         .ok_or_else(|| to_error(LinearizeError::OutOfRange))?;
+    for old in part4_old.iter().skip(1) {
+        remap.insert(*old, next);
+        part4_new.push(next);
+        next = next
+            .checked_add(1)
+            .ok_or_else(|| to_error(LinearizeError::OutOfRange))?;
+    }
 
     for old in &part6_old {
         remap.insert(*old, next);
@@ -752,7 +851,7 @@ fn collect_optional_hints(objects: &[(u32, Obj)], root: Ref, page_objs: &[u32]) 
     };
 
     OptionalHints {
-        outlines: collect_outline_hints(&index, catalog, &page_index),
+        outlines: collect_outline_hints(&index, catalog),
         page_labels: collect_page_label_hints(&index, catalog, page_objs.len()),
         named_dests: collect_named_dest_hints(&index, catalog, &page_index),
         thumbnails: collect_thumbnail_hints(&index, catalog, page_objs),
@@ -794,32 +893,15 @@ fn dest_page(_index: &BTreeMap<u32, &Obj>, dest: &Obj, pages: &HashMap<u32, u32>
     u32::MAX
 }
 
-/// Page index of an outline item from its /Dest or /A /D entry.
-fn outline_dest_page(index: &BTreeMap<u32, &Obj>, item: &Obj, pages: &HashMap<u32, u32>) -> u32 {
-    if let Some(d) = get(item, b"Dest") {
-        let page = dest_page(index, d, pages);
-        if page != u32::MAX {
-            return page;
-        }
-    }
-    if let Some(a) = get(item, b"A").and_then(|a| resolve(index, a)) {
-        if let Some(d) = get(a, b"D") {
-            return dest_page(index, d, pages);
-        }
-    }
-    u32::MAX
-}
-
-/// Walk the outline tree (siblings via /Next, children via /First) in order.
-fn collect_outline_hints(
-    index: &BTreeMap<u32, &Obj>,
-    catalog: &Obj,
-    pages: &HashMap<u32, u32>,
-) -> Option<Vec<OutlineItemHint>> {
+/// Walk the outline tree (siblings via /Next, children via /First) and count
+/// its items. The count only gates whether an F.6 table is emitted; qpdf's
+/// generic table's `nobjects` is computed from the full reachable outline
+/// object set in `outline_object_set`, which also includes action objects.
+fn collect_outline_hints(index: &BTreeMap<u32, &Obj>, catalog: &Obj) -> Option<usize> {
     let root_ref = get(catalog, b"Outlines")?;
     let root = resolve(index, root_ref)?;
     let first = get(root, b"First")?;
-    let mut out = Vec::new();
+    let mut count = 0usize;
     let mut seen = HashSet::new();
     let mut pending = vec![as_ref(first)?];
     while let Some(num) = pending.pop() {
@@ -830,23 +912,18 @@ fn collect_outline_hints(
             Some(o) => *o,
             None => continue,
         };
-        // Children first (so the flattened order is document order), then the
-        // next sibling, both pushed in reverse because `pending` is a stack.
         if let Some(next) = get(item, b"Next").and_then(as_ref) {
             pending.push(next);
         }
         if let Some(child) = get(item, b"First").and_then(as_ref) {
             pending.push(child);
         }
-        out.push(OutlineItemHint {
-            obj: num.num,
-            dest_page: outline_dest_page(index, item, pages),
-        });
+        count = count.saturating_add(1);
     }
-    if out.is_empty() {
+    if count == 0 {
         None
     } else {
-        Some(out)
+        Some(count)
     }
 }
 
@@ -1153,19 +1230,6 @@ fn render(
         budget,
         g,
     )?;
-    let first_t_rel = {
-        let (_, rel) = build_xref(
-            &seed,
-            sizes.first_max,
-            sizes.all_max,
-            layout.root,
-            &layout.trailer_extra,
-            Some(_guess.main_xref),
-            budget,
-            g,
-        )?;
-        rel
-    };
     let xref_len = dummy_xref.len() as u64;
     let first_xref_offset = PREFIX_LEN as u64;
     let objects_start = first_xref_offset
@@ -1204,7 +1268,6 @@ fn render(
     // literal offsets here.
     let (hint_buffer, shared_offset, hints) =
         build_hint_buffer(layout, &offsets, &lengths, budget, g)?;
-    let hint_len = hint_buffer.len() as u64;
     let mut hint_dict = vec![(key(b"S"), int(u64::from(shared_offset)))];
     // Annex F optional table pointers. Only emitted for structures that exist.
     for (name, offset) in [
@@ -1242,7 +1305,12 @@ fn render(
     let mut zero_entries: Vec<(u32, Option<u64>)> = vec![(1, Some(0))];
     zero_entries.extend(layout.new_objects.iter().map(|(n, _)| (*n, Some(0))));
     zero_entries.push((layout.hint_obj, Some(0)));
-    let (zero_xref, _) = build_xref(
+    // The main xref section is the one qpdf's `/T` check consults: it seeks to
+    // `/T`, skips whitespace and expects to land on entry 0 of the *last* xref
+    // read in the /Prev chain (the main xref for a linearized file). Its
+    // relative whitespace offset is value-independent (no /Prev), so the seed
+    // xref's `t_rel` is also the real main xref's `t_rel`.
+    let (zero_xref, main_xref_t_rel) = build_xref(
         &zero_entries,
         sizes.all_max,
         sizes.all_max,
@@ -1269,7 +1337,7 @@ fn render(
         o = sizes.first_page_num,
         e = first_end,
         n = sizes.page_count,
-        t = first_xref_offset + first_t_rel,
+        t = main_xref + main_xref_t_rel,
     )
     .into_bytes();
     let mut prefix = Vec::with_capacity(PREFIX_LEN);
@@ -1341,7 +1409,7 @@ fn render(
 
     let actual = Guess {
         file_len: out.len() as u64,
-        first_start: first_xref_offset + first_t_rel,
+        first_start: main_xref + main_xref_t_rel,
         first_end,
         main_xref,
     };
@@ -1560,6 +1628,41 @@ fn append_table(
     debug_assert_eq!(w.out.len(), inline_base, "table rows region size");
     w.out.extend_from_slice(inline);
     Ok(start)
+}
+
+/// Objects reachable from the `/Outlines` dictionary (the dictionary itself,
+/// every outline item and their action/destination objects), excluding pages
+/// and the page tree. qpdf's F.6 "generic" hint table describes this exact
+/// contiguous group: `(dict object number, all object numbers)`.
+fn outline_object_set(objects: &[(u32, Obj)], root: Ref) -> Option<(u32, Vec<u32>)> {
+    let index: BTreeMap<u32, &Obj> = objects.iter().map(|(n, o)| (*n, o)).collect();
+    let catalog = index.get(&root.num)?;
+    let dict = match get(catalog, b"Outlines") {
+        Some(Obj::Ref(r)) => r.num,
+        _ => return None,
+    };
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    let mut pending = vec![dict];
+    while let Some(num) = pending.pop() {
+        if !seen.insert(num) {
+            continue;
+        }
+        let obj = match index.get(&num) {
+            Some(o) => *o,
+            None => continue,
+        };
+        match name_of(obj, b"Type").as_deref() {
+            Some(b"Page") | Some(b"Pages") => continue,
+            _ => {}
+        }
+        out.push(num);
+        let mut refs = Vec::new();
+        collect_refs(obj, &mut refs);
+        pending.extend(refs.iter().map(|r| r.num));
+    }
+    out.sort_unstable();
+    Some((dict, out))
 }
 
 /// Build the page-offset (§F.4) and shared-object (§F.5) hint tables, plus
@@ -1791,26 +1894,35 @@ fn build_hint_buffer(
         }
     }
 
-    // §F.6 outline hint table: one row per outline item. The inline record is
-    // the renumbered item object number (4 bytes) plus its 0-based destination
-    // page (4 bytes, u32::MAX when unresolved).
-    if let Some(items) = &layout.optional.outlines {
-        let mut inline = Vec::new();
-        let mut rows = Vec::with_capacity(items.len());
-        for item in items {
-            rows.push(inline.len() as u32);
-            inline.extend_from_slice(&item.obj.to_be_bytes());
-            inline.extend_from_slice(&item.dest_page.to_be_bytes());
+    // §F.6 outline hint table. qpdf reads a single 16-byte "generic" record,
+    // not a row table: four 32-bit fields
+    //   first_object         - object number of the /Outlines dictionary
+    //   first_object_offset  - its byte offset (hint-stream-relative)
+    //   nobjects             - dict + every outline item/action object
+    //   group_length         - bytes covered by that contiguous group.
+    // Writing a row table here makes qpdf report "incorrect object count in
+    // outline hint table" (it misreads our header as fields 1..4).
+    if layout.optional.outlines.is_some() {
+        if let Some((dict_num, outline_objs)) = outline_object_set(&layout.new_objects, layout.root)
+        {
+            let first_offset = offsets.get(&dict_num).copied().unwrap_or(0);
+            let group_end = outline_objs
+                .iter()
+                .filter_map(|n| {
+                    offsets
+                        .get(n)
+                        .and_then(|off| lengths.get(n).map(|len| off.saturating_add(*len)))
+                })
+                .max()
+                .unwrap_or(first_offset);
+            let group_length = group_end.saturating_sub(first_offset);
+            hints.outline = Some(w.out.len() as u32);
+            w.write(u64::from(dict_num), 32)?;
+            w.write(first_offset, 32)?;
+            w.write(outline_objs.len() as u64, 32)?;
+            w.write(group_length, 32)?;
+            w.flush();
         }
-        hints.outline = Some(append_table(
-            &mut w,
-            &[(items.len() as u64, 32)],
-            &rows,
-            &[],
-            32,
-            0,
-            &inline,
-        )?);
     }
 
     // §F.8 named-destination hint table: one row per destination. The inline
@@ -2000,6 +2112,54 @@ mod tests {
         let mut g = budget.guard();
         let e = write_linearized(&input, &budget, &mut g).expect_err("must refuse");
         assert_eq!(e.code(), Code::ObjUnexpected);
+    }
+
+    /// qpdf's `/T` check seeks to `/T`, skips whitespace and expects to land on
+    /// entry 0 of the LAST xref in the /Prev chain (the main xref near EOF),
+    /// not the first-page xref near the header. Lock that in so a future layout
+    /// tweak cannot silently reintroduce the qpdf "space before first xref item"
+    /// warning.
+    #[test]
+    fn t_targets_the_main_xref_entry_zero() {
+        let objects = two_page_objects();
+        let input = LinearizeInput {
+            objects: &objects,
+            root: Ref::new(2, 0),
+            trailer_extra: &[],
+            page_count: 2,
+        };
+        let budget = B::unlimited();
+        let mut g = budget.guard();
+        let pdf = write_linearized(&input, &budget, &mut g).expect("linearize");
+        let t = parse_lin_int(&String::from_utf8_lossy(&pdf), "T") as usize;
+
+        // Locate the last "xref" keyword (the main section) and its entry 0.
+        let main = pdf
+            .windows(6)
+            .rposition(|w| w == b"\nxref\n")
+            .expect("main xref")
+            + 1;
+        let mut entry0 = main + 5;
+        while pdf[entry0] != b'\n' {
+            entry0 += 1; // subsection header, e.g. "0 9"
+        }
+        entry0 += 1; // the newline ending the subsection header
+
+        assert!(
+            main < t && t < entry0,
+            "/T sits inside the main xref header"
+        );
+        assert!(
+            pdf[t..entry0]
+                .iter()
+                .all(|b| matches!(b, b' ' | b'\r' | b'\n' | b'\t')),
+            "bytes from /T to entry 0 are whitespace"
+        );
+        assert_eq!(
+            pdf[entry0..entry0 + 10],
+            b"0000000000"[..],
+            "entry 0 begins where /T's whitespace run ends"
+        );
     }
 
     #[test]
@@ -2249,12 +2409,19 @@ mod tests {
             let off = parse_hint_int(&dict, key);
             assert!(off < data.len() as u64, "/{key} offset within hint buffer");
         }
-        // The outline table header holds the real outline item count (1).
+        // The outline table is qpdf's 16-byte HGeneric record:
+        // (first_object, first_object_offset, nobjects, group_length).
+        // featured_objects has one outline dict + one item = 2 objects.
         let o = parse_hint_int(&dict, "O") as usize;
-        assert_eq!(
-            u32::from_be_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]]),
-            1
-        );
+        let first_object = u32::from_be_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]]);
+        let first_offset = u32::from_be_bytes([data[o + 4], data[o + 5], data[o + 6], data[o + 7]]);
+        let nobjects = u32::from_be_bytes([data[o + 8], data[o + 9], data[o + 10], data[o + 11]]);
+        let group_length =
+            u32::from_be_bytes([data[o + 12], data[o + 13], data[o + 14], data[o + 15]]);
+        assert!(first_object > 1, "/O first_object names a real object");
+        assert!(first_offset > 0, "/O first_object_offset is nonzero");
+        assert_eq!(nobjects, 2, "/O nobjects counts the dict and its one item");
+        assert!(group_length > 0, "/O group_length is positive");
         // The named-dest table header holds the real destination count (1).
         let a = parse_hint_int(&dict, "A") as usize;
         assert_eq!(

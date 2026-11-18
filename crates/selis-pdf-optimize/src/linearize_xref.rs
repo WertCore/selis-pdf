@@ -392,7 +392,7 @@ pub(super) fn render(
         .hint_obj
         .checked_add(1)
         .ok_or_else(|| to_error(LinearizeError::OutOfRange))?;
-    for group in 1..ngroups {
+    for group in 0..ngroups {
         let members: Vec<(u32, Obj)> = groups[group]
             .iter()
             .filter(|(num, obj)| !keep_direct(*num, obj, layout.root))
@@ -430,7 +430,10 @@ pub(super) fn render(
     // The real first-page xref also carries this section's object streams.
     // The seed must have exactly the same entry count for its length to be a
     // valid layout guess.
-    if let Some(built) = objstms[1].as_ref() {
+    // The first-page xref section covers groups 0 (part 4) and 1 (part 6), so
+    // only their object streams appear there. The seed must have exactly the
+    // same entry count for its length to be a valid layout guess.
+    for built in objstms.iter().take(2).flatten() {
         seed_entries.insert(built.num, Entry::Direct(0));
     }
     seed_entries.insert(first_xref_num, Entry::Direct(0));
@@ -507,7 +510,6 @@ pub(super) fn render(
     // effective offsets/lengths above.
     let (hint_buffer, shared_offset, hints) =
         build_hint_buffer(layout, &offsets, &lengths, budget, g)?;
-    let hint_len = hint_buffer.len() as u64;
     let mut hint_dict = vec![(key(b"S"), int(u64::from(shared_offset)))];
     for (name, offset) in [
         (b"O".as_slice(), hints.outline),
@@ -528,9 +530,17 @@ pub(super) fn render(
         budget,
         g,
     )?;
+    // qpdf requires /H[1] to span the whole hint stream object, not just its
+    // stream data (same convention as the classic-xref writer).
+    let hint_obj_len = hint_obj_bytes.len() as u64;
     let main_xref = hint_offset
-        .checked_add(hint_obj_bytes.len() as u64)
+        .checked_add(hint_obj_len)
         .ok_or_else(|| to_error(LinearizeError::OutOfRange))?;
+    // For xref streams qpdf's `first_xref_item_offset` is the offset of the
+    // xref stream object itself (the last section read via /Prev), and its /T
+    // check seeks to /T, skips whitespace, and expects to land there. Point /T
+    // directly at the main xref stream header.
+    let t_offset = main_xref;
 
     // Seed the main xref stream to measure the final file length (/L). Its
     // self-entry depends only on `main_xref`, already known this pass.
@@ -567,11 +577,11 @@ pub(super) fn render(
         "1 0 obj\n<< /Linearized 1 /L {l} /H [ {ho} {hl} ] /O {o} /E {e} /N {n} /T {t} /P 1 >>\nendobj\n",
         l = file_len,
         ho = hint_offset,
-        hl = hint_len,
+        hl = hint_obj_len,
         o = sizes.first_page_num,
         e = first_end,
         n = sizes.page_count,
-        t = first_xref_offset,
+        t = t_offset,
     )
     .into_bytes();
     let mut prefix = Vec::with_capacity(PREFIX_LEN);
@@ -593,7 +603,7 @@ pub(super) fn render(
     for (num, _) in layout.new_objects[..first_count].iter() {
         first_entries.insert(*num, placements[num]);
     }
-    if let Some(built) = objstms[1].as_ref() {
+    for built in objstms.iter().take(2).flatten() {
         first_entries.insert(built.num, Entry::Direct(built.offset));
     }
     first_entries.insert(first_xref_num, Entry::Direct(first_xref_offset));
@@ -648,7 +658,7 @@ pub(super) fn render(
 
     let actual = Guess {
         file_len: out.len() as u64,
-        first_start: first_xref_offset,
+        first_start: t_offset,
         first_end,
         main_xref,
     };
