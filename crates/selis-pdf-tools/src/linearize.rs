@@ -438,10 +438,20 @@ mod tests {
                 .position(|w| w == b"\nendstream")
                 .expect("hint endstream");
         assert!(s < data_end - data_start, "/S within hint payload");
+        // `/H`'s second element is the length of the WHOLE hint stream object
+        // (`N 0 obj` ... `endobj`), which is what qpdf's conformance checker
+        // requires — not just the stream payload length.
+        let obj_end = data_end
+            + out[data_end..]
+                .windows(6)
+                .position(|w| w == b"endobj")
+                .expect("hint endobj")
+            + 6
+            + 1; // trailing newline after endobj is part of the object bytes
         assert_eq!(
             h[1] as usize,
-            data_end - data_start,
-            "/H length == payload length"
+            obj_end - hint_at,
+            "/H length == whole hint object length"
         );
         // All page contents survived; verify *logical* order via the engine,
         // not raw byte position (linearization deliberately reorders objects).

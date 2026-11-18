@@ -1146,6 +1146,7 @@ fn render(
     let (dummy_xref, _first_t_rel_seed) = build_xref(
         &seed,
         sizes.first_max,
+        sizes.all_max,
         layout.root,
         &layout.trailer_extra,
         Some(_guess.main_xref),
@@ -1156,6 +1157,7 @@ fn render(
         let (_, rel) = build_xref(
             &seed,
             sizes.first_max,
+            sizes.all_max,
             layout.root,
             &layout.trailer_extra,
             Some(_guess.main_xref),
@@ -1225,8 +1227,14 @@ fn render(
         budget,
         g,
     )?;
+    // `/H`'s second element is the LENGTH OF THE WHOLE HINT STREAM OBJECT
+    // (`N 0 obj` ... `endobj`), not just the stream data. qpdf's own writer
+    // uses the object length and rejects a data-only length as a "hint table
+    // length mismatch". The stream data length (`hint_len`) is still embedded
+    // as the stream's own /Length by `write_one_bytes`.
+    let hint_obj_len = hint_obj_bytes.len() as u64;
     let main_xref = hint_offset
-        .checked_add(hint_obj_bytes.len() as u64)
+        .checked_add(hint_obj_len)
         .ok_or_else(|| to_error(LinearizeError::OutOfRange))?;
 
     // Main xref length (value independent) gives the final file length, which
@@ -1236,6 +1244,7 @@ fn render(
     zero_entries.push((layout.hint_obj, Some(0)));
     let (zero_xref, _) = build_xref(
         &zero_entries,
+        sizes.all_max,
         sizes.all_max,
         layout.root,
         &layout.trailer_extra,
@@ -1256,7 +1265,7 @@ fn render(
         "1 0 obj\n<< /Linearized 1 /L {l} /H [ {ho} {hl} ] /O {o} /E {e} /N {n} /T {t} /P 1 >>\nendobj\n",
         l = file_len,
         ho = hint_offset,
-        hl = hint_len,
+        hl = hint_obj_len,
         o = sizes.first_page_num,
         e = first_end,
         n = sizes.page_count,
@@ -1286,6 +1295,7 @@ fn render(
     let (first_xref, _) = build_xref(
         &first_entries,
         sizes.first_max,
+        sizes.all_max,
         layout.root,
         &layout.trailer_extra,
         Some(_guess.main_xref),
@@ -1304,6 +1314,7 @@ fn render(
     all_entries.push((layout.hint_obj, Some(hint_offset)));
     let (main_xref_table, _) = build_xref(
         &all_entries,
+        sizes.all_max,
         sizes.all_max,
         layout.root,
         &layout.trailer_extra,
@@ -1386,6 +1397,7 @@ fn write_objects(
 fn build_xref(
     offsets: &[(u32, Option<u64>)],
     size: u32,
+    trailer_size: u32,
     root: Ref,
     extra: &[(Vec<u8>, Obj)],
     prev: Option<u64>,
@@ -1406,8 +1418,12 @@ fn build_xref(
         }
     }
 
+    // The trailer /Size is ONE PLUS THE HIGHEST OBJECT NUMBER IN THE FILE,
+    // even for the first-page xref section (whose own subsection lists only
+    // the first-page objects). qpdf's linearization checker rejects a /Size
+    // equal to the section's smaller entry count.
     let mut pairs: Vec<(Bytes, Obj)> = vec![
-        (key(b"Size"), int(u64::from(count))),
+        (key(b"Size"), int(u64::from(trailer_size.saturating_add(1)))),
         (key(b"Root"), Obj::Ref(root)),
     ];
     for (k, v) in extra {
