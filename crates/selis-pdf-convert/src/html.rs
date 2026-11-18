@@ -1,8 +1,9 @@
 //! The HTML subset parser (see the crate docs for the supported subset).
 
-use std::collections::BTreeMap;
-
-use crate::blocks::{BackgroundSize, Block, ImageBlock, Span, Style, TextAlign};
+use crate::blocks::{
+    BackgroundSize, Block, BlockCss, Border, BoxEdges, ImageBlock, Length, LineHeight, Span, Style,
+    TextAlign, TextDecoration,
+};
 use crate::image::{parse_data_uri, parse_image_source, EmbeddedImage};
 
 /// An open-list context.
@@ -18,19 +19,39 @@ struct ListCtx {
 #[derive(Debug, Default, Clone)]
 struct InlineProps {
     color: Option<[f64; 3]>,
-    size: Option<f64>,
+    size: Option<Length>,
     align: Option<TextAlign>,
     /// `background-image: url(data:image/…)` decoded through the same image
     /// path as `<img src>`; painted behind the runs of this element.
     background: Option<EmbeddedImage>,
     /// `background-size` for that image, when declared.
     background_size: Option<BackgroundSize>,
+    /// `font-weight: normal|bold`, mapped onto Helvetica / Helvetica-Bold.
+    weight: Option<bool>,
+    /// `font-style: normal|italic|oblique`, mapped onto Helvetica-Oblique.
+    italic: Option<bool>,
+    /// `line-height`, kept unresolved for layout.
+    line_height: Option<LineHeight>,
+    /// `text-decoration` rules. `None` means undeclared; `Some(default)`
+    /// (`text-decoration: none`) explicitly clears an inherited decoration.
+    decoration: Option<TextDecoration>,
+    /// Block box properties (margin / padding / border / background-color).
+    box_css: BlockCss,
 }
 
 impl InlineProps {
-    /// Read the five supported declarations from a CSS declaration list. This
-    /// is shared by inline `style=` attributes and the narrow `<style>`
-    /// rulesheet; unknown declarations are ignored, never guessed.
+    /// Read every supported declaration from a CSS declaration list. This is
+    /// shared by inline `style=` attributes and the `<style>` rulesheet;
+    /// unknown declarations and values are ignored, never guessed.
+    ///
+    /// # Budget
+    ///
+    /// One declaration slice list per call, bounded by the attribute/rulesheet
+    /// text (see [`split_declarations`]).
+    ///
+    /// # Malformed Input
+    ///
+    /// Never fails: a malformed declaration simply contributes no property.
     fn from_css(style: &str) -> Self {
         let mut out = Self::default();
         for declaration in split_declarations(style) {
@@ -63,6 +84,70 @@ impl InlineProps {
                         out.background_size = Some(size);
                     }
                 }
+                "font-weight" => {
+                    if let Some(bold) = css_font_weight(value) {
+                        out.weight = Some(bold);
+                    }
+                }
+                "font-style" => {
+                    if let Some(italic) = css_font_style(value) {
+                        out.italic = Some(italic);
+                    }
+                }
+                "line-height" => {
+                    if let Some(height) = css_line_height(value) {
+                        out.line_height = Some(height);
+                    }
+                }
+                "text-decoration" => {
+                    if let Some(decoration) = css_text_decoration(value) {
+                        out.decoration = Some(decoration);
+                    }
+                }
+                "background-color" => {
+                    if let Some(color) = css_color(value) {
+                        out.box_css.background_color = Some(color);
+                    }
+                }
+                "margin" => {
+                    if let Some(edges) = css_box_edges(value) {
+                        out.box_css.margin = Some(edges);
+                    }
+                }
+                "padding" => {
+                    if let Some(edges) = css_box_edges(value) {
+                        out.box_css.padding = Some(edges);
+                    }
+                }
+                "margin-top" | "margin-right" | "margin-bottom" | "margin-left" => {
+                    if let Some(length) = css_length(value) {
+                        let mut edges = out.box_css.margin.unwrap_or_default();
+                        match property.as_str() {
+                            "margin-top" => edges.top = length,
+                            "margin-right" => edges.right = length,
+                            "margin-bottom" => edges.bottom = length,
+                            _ => edges.left = length,
+                        }
+                        out.box_css.margin = Some(edges);
+                    }
+                }
+                "padding-top" | "padding-right" | "padding-bottom" | "padding-left" => {
+                    if let Some(length) = css_length(value) {
+                        let mut edges = out.box_css.padding.unwrap_or_default();
+                        match property.as_str() {
+                            "padding-top" => edges.top = length,
+                            "padding-right" => edges.right = length,
+                            "padding-bottom" => edges.bottom = length,
+                            _ => edges.left = length,
+                        }
+                        out.box_css.padding = Some(edges);
+                    }
+                }
+                "border" => {
+                    if let Some(border) = css_border(value) {
+                        out.box_css.border = Some(border);
+                    }
+                }
                 _ => {}
             }
         }
@@ -91,13 +176,202 @@ impl InlineProps {
             align: over.align.or(self.align),
             background: over.background.or(self.background),
             background_size: over.background_size.or(self.background_size),
+            weight: over.weight.or(self.weight),
+            italic: over.italic.or(self.italic),
+            line_height: over.line_height.or(self.line_height),
+            // Decoration and block-box groups cascade as a whole: a later
+            // declaration of one member replaces the group rather than merging
+            // individual sides from two rules.
+            decoration: over.decoration.or(self.decoration),
+            box_css: BlockCss {
+                margin: over.box_css.margin.or(self.box_css.margin),
+                padding: over.box_css.padding.or(self.box_css.padding),
+                border: over.box_css.border.or(self.box_css.border),
+                background_color: over
+                    .box_css
+                    .background_color
+                    .or(self.box_css.background_color),
+            },
         }
     }
 }
 
-/// The first `<style>` block's rules, keyed by element-type selector. Only the
-/// supported element names appear as keys; every other selector is ignored.
-type Rulesheet = BTreeMap<String, InlineProps>;
+/// A simple CSS selector: an optional element type, an optional ID and zero or
+/// more classes, in any order after the type. Descendant/child/universal/pseudo
+/// and attribute selectors are rejected by [`Self::parse`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SimpleSelector {
+    tag: Option<String>,
+    id: Option<String>,
+    classes: Vec<String>,
+}
+
+impl SimpleSelector {
+    /// Parse one selector token. Valid forms are `tag`, `.c`, `#i`, and simple
+    /// compounds such as `tag.c#i` / `.a.b`. Every character must belong to a
+    /// type or class/ID identifier, so whitespace, combinators, `*`, `:`, `[`,
+    /// `,` and at-rules are all refused.
+    ///
+    /// # Budget
+    ///
+    /// A handful of owned lowercase identifiers bounded by the selector text.
+    ///
+    /// # Malformed Input
+    ///
+    /// `None` for anything that is not a simple selector; never fails.
+    fn parse(input: &str) -> Option<Self> {
+        let text = input.trim();
+        if text.is_empty() {
+            return None;
+        }
+        let rejects = |c: char| {
+            c.is_whitespace()
+                || matches!(
+                    c,
+                    '>' | '+' | '~' | '*' | ':' | '[' | ']' | ',' | '(' | ')' | '='
+                )
+        };
+        if text.chars().any(rejects) {
+            return None;
+        }
+        let chars: Vec<char> = text.chars().collect();
+        let mut at = 0usize;
+        let mut tag = None;
+        if chars.first().is_some_and(|c| c.is_ascii_alphanumeric()) {
+            let start = at;
+            while chars
+                .get(at)
+                .is_some_and(|c| c.is_ascii_alphanumeric() || *c == '-')
+            {
+                at = at.saturating_add(1);
+            }
+            tag = Some(
+                chars
+                    .get(start..at)?
+                    .iter()
+                    .collect::<String>()
+                    .to_ascii_lowercase(),
+            );
+        }
+        let mut id = None;
+        let mut classes = Vec::new();
+        while at < chars.len() {
+            let marker = *chars.get(at)?;
+            if marker != '.' && marker != '#' {
+                return None;
+            }
+            at = at.saturating_add(1);
+            let start = at;
+            while chars
+                .get(at)
+                .is_some_and(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+            {
+                at = at.saturating_add(1);
+            }
+            if at == start {
+                return None;
+            }
+            let ident: String = chars
+                .get(start..at)?
+                .iter()
+                .collect::<String>()
+                .to_ascii_lowercase();
+            if marker == '#' {
+                id = Some(ident);
+            } else {
+                classes.push(ident);
+            }
+        }
+        if tag.is_none() && id.is_none() && classes.is_empty() {
+            return None;
+        }
+        Some(Self { tag, id, classes })
+    }
+
+    /// CSS specificity as `(id, class, type)`. Simple selectors carry at most
+    /// one type and one ID but may list several classes.
+    ///
+    /// # Budget
+    ///
+    /// Constant work, no allocation; class counts above 255 saturate.
+    ///
+    /// # Malformed Input
+    ///
+    /// Infallible; only already-parsed identifiers are inspected.
+    fn specificity(&self) -> (u8, u8, u8) {
+        (
+            u8::from(self.id.is_some()),
+            u8::try_from(self.classes.len()).unwrap_or(u8::MAX),
+            u8::from(self.tag.is_some()),
+        )
+    }
+
+    /// Whether an element with these attributes matches this selector.
+    ///
+    /// # Budget
+    ///
+    /// Linear in the selector's class count; no allocation.
+    ///
+    /// # Malformed Input
+    ///
+    /// Infallible: a missing/empty attribute simply fails that comparison.
+    fn matches(&self, tag: &str, id: Option<&str>, classes: &[String]) -> bool {
+        self.tag.as_deref().is_none_or(|wanted| wanted == tag)
+            && self
+                .id
+                .as_deref()
+                .is_none_or(|wanted| wanted == id.unwrap_or(""))
+            && self
+                .classes
+                .iter()
+                .all(|wanted| classes.iter().any(|have| have == wanted))
+    }
+}
+
+/// One rulesheet rule: its selector, declarations, specificity and source
+/// position. Later rules win ties, matching CSS source order.
+#[derive(Debug)]
+struct Rule {
+    selector: SimpleSelector,
+    props: InlineProps,
+    specificity: (u8, u8, u8),
+    order: usize,
+}
+
+/// The single `<style>` block's rules, in source order.
+#[derive(Debug, Default)]
+struct Rulesheet {
+    rules: Vec<Rule>,
+}
+
+impl Rulesheet {
+    /// Cascade every rule matching an element into one property set. Rules are
+    /// applied from lowest to highest `(specificity, source order)`, each one
+    /// overriding only the properties it actually declares.
+    ///
+    /// # Budget
+    ///
+    /// One slice of matching rules and one property set, both bounded by the
+    /// rulesheet size (the first `<style>` block only).
+    ///
+    /// # Malformed Input
+    ///
+    /// Infallible: no rule matches an element with no attributes when only
+    /// class/ID selectors were supplied.
+    fn props_for(&self, tag: &str, id: Option<&str>, classes: &[String]) -> InlineProps {
+        let mut matching: Vec<&Rule> = self
+            .rules
+            .iter()
+            .filter(|rule| rule.selector.matches(tag, id, classes))
+            .collect();
+        matching.sort_by_key(|rule| (rule.specificity, rule.order));
+        let mut out = InlineProps::default();
+        for rule in matching {
+            out = out.overridden_by(rule.props.clone());
+        }
+        out
+    }
+}
 
 /// A styled open element: its tag name (for matching the close tag), the
 /// inline properties it declared and, for `<a>`, its link target.
@@ -150,7 +424,7 @@ struct Parser<'a> {
     /// innermost declaration of each property wins (see `current_props`).
     styles: Vec<StyleFrame>,
     /// The single `<style>` rulesheet, cascaded under every element's own
-    /// inline `style=` attribute.
+    /// inline `style=` attribute after specificity/source-order resolution.
     rules: Rulesheet,
 }
 
@@ -288,6 +562,23 @@ impl<'a> Parser<'a> {
         if self.href_depth > 0 && matches!(s, Style::Regular) {
             s = Style::Italic;
         }
+        // CSS overrides the tag-derived style property by property. `normal`
+        // clears a bold/italic inherited from a parent tag; `Code` is kept.
+        let props = self.current_props();
+        if let Some(bold) = props.weight {
+            s = if bold {
+                s.with_bold()
+            } else {
+                s.without_bold()
+            };
+        }
+        if let Some(italic) = props.italic {
+            s = if italic {
+                s.with_italic()
+            } else {
+                s.without_italic()
+            };
+        }
         s
     }
 
@@ -309,6 +600,30 @@ impl<'a> Parser<'a> {
             }
             if out.background_size.is_none() {
                 out.background_size = frame.props.background_size;
+            }
+            if out.weight.is_none() {
+                out.weight = frame.props.weight;
+            }
+            if out.italic.is_none() {
+                out.italic = frame.props.italic;
+            }
+            if out.line_height.is_none() {
+                out.line_height = frame.props.line_height;
+            }
+            if out.decoration.is_none() {
+                out.decoration = frame.props.decoration;
+            }
+            if out.box_css.margin.is_none() {
+                out.box_css.margin = frame.props.box_css.margin;
+            }
+            if out.box_css.padding.is_none() {
+                out.box_css.padding = frame.props.box_css.padding;
+            }
+            if out.box_css.border.is_none() {
+                out.box_css.border = frame.props.box_css.border;
+            }
+            if out.box_css.background_color.is_none() {
+                out.box_css.background_color = frame.props.box_css.background_color;
             }
         }
         out
@@ -353,6 +668,11 @@ impl<'a> Parser<'a> {
                 && last.align == props.align
                 && last.background == props.background
                 && last.background_size == props.background_size
+                && last.weight == props.weight
+                && last.italic == props.italic
+                && last.line_height == props.line_height
+                && last.decoration == props.decoration.unwrap_or_default()
+                && last.block_css == props.box_css
             {
                 last.text.push_str(&collapsed);
                 return;
@@ -364,9 +684,14 @@ impl<'a> Parser<'a> {
             href,
             color: props.color,
             size: props.size,
+            weight: props.weight,
+            italic: props.italic,
+            line_height: props.line_height,
+            decoration: props.decoration.unwrap_or_default(),
             align: props.align,
             background: props.background,
             background_size: props.background_size,
+            block_css: props.box_css,
         });
     }
 
@@ -525,6 +850,8 @@ impl<'a> Parser<'a> {
         let mut src: Option<String> = None;
         let mut width: Option<String> = None;
         let mut height: Option<String> = None;
+        let mut class: Option<String> = None;
+        let mut id: Option<String> = None;
         let mut self_closing = false;
         let mut q = p;
         loop {
@@ -595,6 +922,8 @@ impl<'a> Parser<'a> {
                                 &mut src,
                                 &mut width,
                                 &mut height,
+                                &mut class,
+                                &mut id,
                             );
                         } else {
                             let vstart = q;
@@ -617,6 +946,8 @@ impl<'a> Parser<'a> {
                                 &mut src,
                                 &mut width,
                                 &mut height,
+                                &mut class,
+                                &mut id,
                             );
                         }
                     }
@@ -654,7 +985,14 @@ impl<'a> Parser<'a> {
                 // Two-level cascade: the rulesheet value is the base, and the
                 // element's own inline declarations override it property by
                 // property. Nested frames then apply innermost-wins as before.
-                let from_sheet = self.rules.get(&name).cloned().unwrap_or_default();
+                let classes: Vec<String> = class
+                    .as_deref()
+                    .unwrap_or("")
+                    .split_ascii_whitespace()
+                    .map(str::to_ascii_lowercase)
+                    .collect();
+                let element_id = id.as_deref().map(str::to_ascii_lowercase);
+                let from_sheet = self.rules.props_for(&name, element_id.as_deref(), &classes);
                 let inline = InlineProps::from_attrs(style.as_deref(), align.as_deref());
                 self.styles.push(StyleFrame {
                     tag: name.clone(),
@@ -1341,87 +1679,220 @@ fn strip_css_comments(css: &str) -> String {
     out
 }
 
-/// Parse the single inline `<style>` rulesheet into element-type rules.
+/// The fixed viewport width (in CSS px) used to evaluate the one supported
+/// `@media` feature. HTML parsing has no page geometry, so a single documented
+/// width keeps the condition deterministic — never a guess at the reader's
+/// actual window.
+const MEDIA_WIDTH_PX: f64 = 800.0;
+
+/// Evaluate the narrow `@media (min-width|max-width|width: <px|pt>)` condition.
 ///
-/// Supported: one `<style>` block, bare element-type selectors from
-/// `p`, `h1`–`h6`, `li`, `td`, and only the five declarations already supported
-/// inline (`color`, `font-size`, `text-align`, `background-image`,
-/// `background-size`). Ignored: classes/IDs/compound/descendant/universal
-/// selectors, at-rules (including `@media` and everything nested in them),
-/// unknown element names, unknown declarations and a second `<style>` block.
-/// Nothing here is guessed at and no external stylesheet is fetched.
+/// A single condition (optionally after `screen`/`all` and `and`) is accepted;
+/// media types such as `print`, feature lists and every other at-rule are
+/// refused. `@media` never changes specificity, only whether its rules exist.
 ///
 /// # Budget
 ///
-/// The CSS text is bounded by the document; rule storage is bounded by the
-/// small, fixed set of supported selectors (one entry per element name).
+/// A lowercase copy of the prelude and a handful of small slices.
+///
+/// # Malformed Input
+///
+/// `false` for anything that is not exactly one supported condition.
+fn media_matches(prelude: &str) -> bool {
+    let lower = prelude.trim().to_ascii_lowercase();
+    let Some(rest) = lower.strip_prefix("@media") else {
+        return false;
+    };
+    let condition = rest
+        .split("and")
+        .map(str::trim)
+        .find(|part| part.starts_with('('))
+        .unwrap_or("");
+    let Some(inner) = condition
+        .strip_prefix('(')
+        .and_then(|text| text.strip_suffix(')'))
+    else {
+        return false;
+    };
+    let mut pair = inner.splitn(2, ':');
+    let feature = pair.next().unwrap_or("").trim();
+    let value = pair.next().unwrap_or("").trim();
+    let (number, scale) = if let Some(n) = value.strip_suffix("px") {
+        (n, 1.0)
+    } else if let Some(n) = value.strip_suffix("pt") {
+        (n, 96.0_f64 / 72.0_f64)
+    } else {
+        return false;
+    };
+    let Ok(limit) = number.trim().parse::<f64>() else {
+        return false;
+    };
+    if !limit.is_finite() || limit < 0.0 {
+        return false;
+    }
+    let limit = limit * scale;
+    match feature {
+        "max-width" => MEDIA_WIDTH_PX <= limit,
+        "min-width" => MEDIA_WIDTH_PX >= limit,
+        "width" => (MEDIA_WIDTH_PX - limit).abs() < 0.5,
+        _ => false,
+    }
+}
+
+/// Parse the single inline `<style>` rulesheet into simple-selector rules.
+///
+/// Supported selectors: an element type, a class (`.c`), an ID (`#i`) and
+/// simple compounds of those (`p.c`, `.a.b`, `p#i.c`). Selectors are matched
+/// against each element's `class`/`id` attributes and cascaded by specificity
+/// (ID > class > type) then source order. Supported declarations are exactly
+/// the inline set (see [`InlineProps::from_css`]). `@media` with one width
+/// condition is honoured; every other at-rule and its contents are ignored.
+/// So are descendant/child/universal/pseudo/attribute selectors, a second
+/// `<style>` block and external stylesheets. Nothing is guessed or fetched.
+///
+/// # Budget
+///
+/// The CSS text is bounded by the document, and every accepted rule stores a
+/// small selector plus its declarations; no work is proportional to the page
+/// count because matching happens once, at element open time.
 ///
 /// # Malformed Input
 ///
 /// Never fails: unbalanced braces, stray text and unsupported selectors simply
-/// produce no rule.
+/// produce no rule. Unclosed at-rule blocks silently swallow the remainder.
 fn parse_rulesheet(input: &str) -> Rulesheet {
     let Some(css) = first_style_block(input) else {
-        return BTreeMap::new();
+        return Rulesheet::default();
     };
     let css = strip_css_comments(css);
-    let mut rules: Rulesheet = BTreeMap::new();
-    let mut selector = String::new();
-    let mut body = String::new();
-    let mut depth = 0usize;
+    let mut sheet = Rulesheet::default();
+    // A stack lets nested style rules inside `@media` keep their own selector
+    // and declarations, while unsupported at-rules swallow everything inside.
+    let mut stack: Vec<BlockCtx> = Vec::new();
+    let mut prelude = String::new();
     for ch in css.chars() {
+        // Decide the action from an immutable peek so we can mutate afterwards.
+        enum Action {
+            Root,
+            InAtRule(bool),
+            InStyle,
+        }
+        let action = match stack.last() {
+            None => Action::Root,
+            Some(BlockCtx::AtRule { include }) => Action::InAtRule(*include),
+            Some(BlockCtx::Style { .. }) => Action::InStyle,
+        };
         match ch {
-            '{' if depth == 0 => {
-                depth = 1;
-                body.clear();
-            }
-            '{' => {
-                depth = depth.saturating_add(1);
-                body.push(ch);
-            }
-            '}' => {
-                if depth == 1 {
-                    add_rulesheet_rule(&selector, &body, &mut rules);
-                    selector.clear();
-                    body.clear();
-                    depth = 0;
-                } else {
-                    depth = depth.saturating_sub(1);
-                    body.push(ch);
+            '{' => match action {
+                Action::Root | Action::InAtRule(_) => {
+                    let parent = match action {
+                        Action::Root => true,
+                        Action::InAtRule(include) => include,
+                        Action::InStyle => false,
+                    };
+                    let text = std::mem::take(&mut prelude);
+                    if text.trim().starts_with('@') {
+                        stack.push(BlockCtx::AtRule {
+                            include: parent && media_matches(&text),
+                        });
+                    } else {
+                        stack.push(BlockCtx::Style {
+                            selector: text,
+                            body: String::new(),
+                            include: parent,
+                            nested: 0,
+                        });
+                    }
                 }
-            }
-            _ if depth == 0 => selector.push(ch),
-            _ => body.push(ch),
+                Action::InStyle => {
+                    if let Some(BlockCtx::Style { body, nested, .. }) = stack.last_mut() {
+                        *nested = nested.saturating_add(1);
+                        body.push(ch);
+                    }
+                }
+            },
+            '}' => match stack.last() {
+                Some(BlockCtx::Style { nested, .. }) if *nested > 0 => {
+                    if let Some(BlockCtx::Style { body, nested, .. }) = stack.last_mut() {
+                        *nested = nested.saturating_sub(1);
+                        body.push(ch);
+                    }
+                }
+                Some(BlockCtx::Style { .. }) => {
+                    if let Some(BlockCtx::Style {
+                        selector,
+                        body,
+                        include,
+                        ..
+                    }) = stack.pop()
+                    {
+                        if include {
+                            add_rulesheet_rule(&selector, &body, &mut sheet);
+                        }
+                    }
+                }
+                Some(BlockCtx::AtRule { .. }) => {
+                    stack.pop();
+                }
+                None => {}
+            },
+            _ => match action {
+                Action::Root | Action::InAtRule(_) => prelude.push(ch),
+                Action::InStyle => {
+                    if let Some(BlockCtx::Style { body, .. }) = stack.last_mut() {
+                        body.push(ch);
+                    }
+                }
+            },
         }
     }
-    rules
+    sheet
 }
 
-/// Add one `{ selector { declarations } }` rule if its selector is supported.
-/// A selector is accepted only when it is a single ASCII alphanumeric token
-/// equal to one of the supported element names; that rejects class/ID,
-/// compound, descendant and universal selectors and at-rules in one stroke.
+/// One open brace context while reading a rulesheet.
+enum BlockCtx {
+    /// An at-rule block: `include` says whether nested rules are kept.
+    AtRule { include: bool },
+    /// A style rule, with its selector, declaration body and nested-brace count.
+    Style {
+        selector: String,
+        body: String,
+        include: bool,
+        nested: usize,
+    },
+}
+
+/// Add one `{ selector { declarations } }` rule when its selector is a
+/// supported simple selector. Every rule is kept in source order; specificity
+/// is computed once here and used when the rule is later matched.
+///
+/// # Budget
+///
+/// One selector + one property set per accepted rule, bounded by the CSS text.
+///
+/// # Malformed Input
+///
+/// An unsupported selector or empty declaration body contributes no rule.
 fn add_rulesheet_rule(selector: &str, body: &str, rules: &mut Rulesheet) {
-    let selector = selector.trim();
-    if selector.is_empty() || !selector.chars().all(|c| c.is_ascii_alphanumeric()) {
+    let Some(selector) = SimpleSelector::parse(selector) else {
         return;
-    }
-    let tag = selector.to_ascii_lowercase();
-    let supported = matches!(
-        tag.as_str(),
-        "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "li" | "td"
-    );
-    if supported {
-        // Repeated rules for one selector cascade in source order, later
-        // declarations winning property by property.
-        let props = InlineProps::from_css(body);
-        let merged = rules.remove(&tag).unwrap_or_default().overridden_by(props);
-        rules.insert(tag, merged);
-    }
+    };
+    let specificity = selector.specificity();
+    let props = InlineProps::from_css(body);
+    let order = rules.rules.len();
+    rules.rules.push(Rule {
+        selector,
+        props,
+        specificity,
+        order,
+    });
 }
 
 /// Store a recognised attribute into the tag scanner's scratch slots. Shared
-/// by the quoted and unquoted value paths so the match is compiled once.
+/// by the quoted and unquoted value paths so the match is compiled once. The
+/// slot list is deliberately flat (rather than a struct) to keep the scanner's
+/// per-tag scratch state allocation-free.
+#[allow(clippy::too_many_arguments)]
 fn keep_attribute(
     attr: &str,
     value: String,
@@ -1431,6 +1902,8 @@ fn keep_attribute(
     src: &mut Option<String>,
     width: &mut Option<String>,
     height: &mut Option<String>,
+    class: &mut Option<String>,
+    id: &mut Option<String>,
 ) {
     match attr {
         "href" => *href = Some(value),
@@ -1439,6 +1912,8 @@ fn keep_attribute(
         "src" => *src = Some(value),
         "width" => *width = Some(value),
         "height" => *height = Some(value),
+        "class" => *class = Some(value),
+        "id" => *id = Some(value),
         _ => {}
     }
 }
@@ -1471,29 +1946,279 @@ fn image_dimension(value: &str) -> Option<f64> {
     Some(size * scale)
 }
 
-/// A narrow `font-size` parser: absolute `pt`, `px` (at 96 dpi) and a bare
-/// number (treated as points), clamped to [1, 72]. Relative units (`em`, `%`,
-/// `rem`, keywords) are deliberately unsupported and return `None`.
-fn css_font_size(value: &str) -> Option<f64> {
+/// Parse one finite CSS number.
+///
+/// # Budget
+///
+/// One string allocation bounded by the declaration text.
+///
+/// # Malformed Input
+///
+/// `None` for text that is not a finite number.
+fn css_number(value: &str) -> Option<f64> {
+    let number = value.trim().parse::<f64>().ok()?;
+    number.is_finite().then_some(number)
+}
+
+/// Parse one non-negative CSS number (margins/padding are not allowed to be
+/// negative in this subset).
+///
+/// # Budget
+///
+/// One string allocation bounded by the declaration value.
+///
+/// # Malformed Input
+///
+/// `None` for non-numeric, non-finite or negative text.
+fn css_nonnegative(value: &str) -> Option<f64> {
+    let number = css_number(value)?;
+    (number >= 0.0).then_some(number)
+}
+
+/// Parse the supported CSS length units.
+///
+/// `pt`, `px` (folded to points at 96 dpi) and a bare number (points) are
+/// absolute; `em` and `rem` stay relative; a percentage becomes a fraction.
+/// `vh`/`vw` are viewport units and are **refused by name**, never approximated.
+/// Negative lengths are refused; every other unit or keyword returns `None`.
+///
+/// # Budget
+///
+/// One lowercase copy of the declaration value.
+///
+/// # Malformed Input
+///
+/// `None` for anything outside the documented unit set or a non-finite value.
+fn css_length(value: &str) -> Option<Length> {
     let v = value.trim().to_ascii_lowercase();
-    let (number, scale) = if let Some(n) = v.strip_suffix("pt") {
-        (n.trim(), 1.0)
-    } else if let Some(n) = v.strip_suffix("px") {
-        (n.trim(), 0.75)
-    } else if v
-        .chars()
+    if v.ends_with("vh") || v.ends_with("vw") {
+        return None;
+    }
+    if let Some(number) = v.strip_suffix("rem") {
+        return css_nonnegative(number).map(Length::Rem);
+    }
+    if let Some(number) = v.strip_suffix("em") {
+        return css_nonnegative(number).map(Length::Em);
+    }
+    if let Some(number) = v.strip_suffix("pt") {
+        return css_nonnegative(number).map(Length::Pt);
+    }
+    if let Some(number) = v.strip_suffix("px") {
+        return css_nonnegative(number).map(|n| Length::Pt(n * 0.75_f64));
+    }
+    if let Some(number) = v.strip_suffix('%') {
+        return css_nonnegative(number).map(|n| Length::Percent(n / 100.0_f64));
+    }
+    if v.chars()
         .last()
         .is_some_and(|c| c.is_ascii_digit() || c == '.')
     {
-        (v.as_str(), 1.0)
-    } else {
-        return None;
-    };
-    let size = number.parse::<f64>().ok()?;
-    if !size.is_finite() || size <= 0.0 {
+        return css_nonnegative(&v).map(Length::Pt);
+    }
+    None
+}
+
+/// A narrow `font-size` parser. Absolute lengths are clamped to [1, 72] pt;
+/// `em`/`rem`/`%` are kept relative and clamped when layout resolves them.
+/// Keywords (`small`, `larger`, …) and viewport units are ignored.
+///
+/// # Budget
+///
+/// One lowercase copy of the declaration value via [`css_length`].
+///
+/// # Malformed Input
+///
+/// `None` for anything [`css_length`] refuses.
+fn css_font_size(value: &str) -> Option<Length> {
+    match css_length(value)? {
+        Length::Pt(points) => Some(Length::Pt(points.clamp(1.0, 72.0))),
+        relative => Some(relative),
+    }
+}
+
+/// Parse the 1–4 value `margin` / `padding` shorthand, mirroring CSS's
+/// top/right/bottom/left expansion. Relative units are kept for layout.
+///
+/// # Budget
+///
+/// One token list bounded by the declaration text.
+///
+/// # Malformed Input
+///
+/// `None` for zero, more than four, or unparseable values — the property is
+/// then left at its inherited/default value.
+fn css_box_edges(value: &str) -> Option<BoxEdges> {
+    let lengths: Vec<Length> = value
+        .split_ascii_whitespace()
+        .map(css_length)
+        .collect::<Option<Vec<_>>>()?;
+    match lengths.len() {
+        1 => {
+            let all = lengths.first().copied()?;
+            Some(BoxEdges {
+                top: all,
+                right: all,
+                bottom: all,
+                left: all,
+            })
+        }
+        2 => {
+            let vertical = lengths.first().copied()?;
+            let horizontal = lengths.get(1).copied()?;
+            Some(BoxEdges {
+                top: vertical,
+                right: horizontal,
+                bottom: vertical,
+                left: horizontal,
+            })
+        }
+        3 => {
+            let top = lengths.first().copied()?;
+            let horizontal = lengths.get(1).copied()?;
+            let bottom = lengths.get(2).copied()?;
+            Some(BoxEdges {
+                top,
+                right: horizontal,
+                bottom,
+                left: horizontal,
+            })
+        }
+        4 => Some(BoxEdges {
+            top: lengths.first().copied()?,
+            right: lengths.get(1).copied()?,
+            bottom: lengths.get(2).copied()?,
+            left: lengths.get(3).copied()?,
+        }),
+        _ => None,
+    }
+}
+
+/// Parse `line-height`: a positive unitless factor or a supported length.
+/// `normal` and viewport units are ignored (the layout default is kept).
+///
+/// # Budget
+///
+/// One lowercase copy of the declaration value.
+///
+/// # Malformed Input
+///
+/// `None` for zero, negative, unknown units or an empty value.
+fn css_line_height(value: &str) -> Option<LineHeight> {
+    let v = value.trim().to_ascii_lowercase();
+    if v.is_empty() || v == "normal" || v.ends_with("vh") || v.ends_with("vw") {
         return None;
     }
-    Some((size * scale).clamp(1.0, 72.0))
+    if !v.chars().any(|c| c.is_ascii_alphabetic() || c == '%') {
+        let factor = css_number(&v)?;
+        return (factor > 0.0).then_some(LineHeight::Factor(factor));
+    }
+    css_length(&v).map(LineHeight::Length)
+}
+
+/// The `font-weight` subset: `normal` (400) and `bold` (700). Numeric aliases
+/// are accepted; every other value is ignored.
+///
+/// # Budget
+///
+/// One lowercase copy of the declaration value.
+///
+/// # Malformed Input
+///
+/// `None` for any value outside the two documented pairs.
+fn css_font_weight(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "normal" | "400" => Some(false),
+        "bold" | "700" => Some(true),
+        _ => None,
+    }
+}
+
+/// The `font-style` subset: `normal` versus `italic`/`oblique`, both mapped to
+/// Helvetica-Oblique. Every other value is ignored.
+///
+/// # Budget
+///
+/// One lowercase copy of the declaration value.
+///
+/// # Malformed Input
+///
+/// `None` for any value outside the three documented keywords.
+fn css_font_style(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "normal" => Some(false),
+        "italic" | "oblique" => Some(true),
+        _ => None,
+    }
+}
+
+/// The `text-decoration` subset: `underline` and `line-through` lines, and
+/// `none` to clear an inherited decoration. Colour/style tokens such as
+/// `dotted` or `wavy` are not part of the subset and are ignored individually;
+/// a value with no recognised line is dropped entirely.
+///
+/// # Budget
+///
+/// One lowercase copy and one token list bounded by the declaration text.
+///
+/// # Malformed Input
+///
+/// `None` for an empty value or one naming no supported line.
+fn css_text_decoration(value: &str) -> Option<TextDecoration> {
+    let lower = value.trim().to_ascii_lowercase();
+    let tokens: Vec<&str> = lower.split_ascii_whitespace().collect();
+    if tokens.is_empty() {
+        return None;
+    }
+    if tokens.contains(&"none") {
+        return Some(TextDecoration::default());
+    }
+    let underline = tokens.contains(&"underline");
+    let line_through = tokens.contains(&"line-through");
+    if !underline && !line_through {
+        return None;
+    }
+    Some(TextDecoration {
+        underline,
+        line_through,
+    })
+}
+
+/// Parse the `border` shorthand: a leading length plus optional `solid` and a
+/// colour. Only solid borders are understood; dashed/dotted/double/… and
+/// hidden borders are refused in full, never silently drawn as solid.
+///
+/// # Budget
+///
+/// One token list bounded by the declaration text.
+///
+/// # Malformed Input
+///
+/// `None` without a leading supported length, or when an unsupported border
+/// style is named. An unrecognised colour token is ignored (black is used).
+fn css_border(value: &str) -> Option<Border> {
+    let tokens: Vec<&str> = value.split_ascii_whitespace().collect();
+    let width = css_length(tokens.first().copied()?)?;
+    if tokens.iter().any(|token| {
+        matches!(
+            *token,
+            "dashed" | "dotted" | "double" | "groove" | "ridge" | "inset" | "outset" | "hidden"
+        )
+    }) {
+        return None;
+    }
+    let mut color = None;
+    for token in tokens.iter().skip(1) {
+        if *token == "solid" {
+            continue;
+        }
+        if let Some(parsed) = css_color(token) {
+            color = Some(parsed);
+        }
+    }
+    Some(Border {
+        width,
+        color: color.unwrap_or([0.0, 0.0, 0.0]),
+    })
 }
 
 /// A narrow `color` parser: `#rgb` / `#rrggbb`, `rgb(r,g,b)` (0–255) and a
@@ -1833,7 +2558,7 @@ mod tests {
         // The inner colour and size override the outer colour; alignment is
         // inherited from the paragraph.
         assert_eq!(styled.color, Some([0.0, 1.0, 0.0]));
-        assert_eq!(styled.size, Some(20.0));
+        assert_eq!(styled.size, Some(Length::Pt(20.0)));
         assert_eq!(styled.align, Some(TextAlign::Center));
         let before = spans
             .iter()
@@ -1896,11 +2621,74 @@ mod tests {
     fn css_helpers_ignore_unsupported_values() {
         assert_eq!(css_color("not-a-colour"), None);
         assert_eq!(css_color("#ggg"), None);
-        assert_eq!(css_font_size("2em"), None);
-        assert_eq!(css_font_size("80%"), None);
-        assert_eq!(css_font_size("12pt"), Some(12.0));
-        assert_eq!(css_font_size("12px"), Some(9.0));
+        assert_eq!(css_font_size("12pt"), Some(Length::Pt(12.0)));
+        assert_eq!(css_font_size("12px"), Some(Length::Pt(9.0)));
+        assert_eq!(css_font_size("2em"), Some(Length::Em(2.0)));
+        assert_eq!(css_font_size("80%"), Some(Length::Percent(0.8)));
+        assert_eq!(css_font_size("100vh"), None);
+        assert_eq!(css_font_size("small"), None);
         assert_eq!(css_align("justify"), None);
+    }
+
+    #[test]
+    fn relative_lengths_resolve_against_font_root_and_column() {
+        assert_eq!(Length::Em(2.0).resolve(11.0, 11.0, 500.0), 22.0);
+        assert_eq!(Length::Rem(2.0).resolve(11.0, 11.0, 500.0), 22.0);
+        assert_eq!(Length::Percent(0.5).resolve(11.0, 11.0, 500.0), 250.0);
+        assert_eq!(Length::Em(2.0).resolve_font(20.0, 11.0), 40.0);
+        assert_eq!(Length::Percent(0.5).resolve_font(20.0, 11.0), 10.0);
+        assert_eq!(css_length("1.5rem"), Some(Length::Rem(1.5)));
+        assert_eq!(css_length("10vh"), None);
+        assert_eq!(css_length("20vw"), None);
+        assert_eq!(css_length("-2em"), None);
+    }
+
+    #[test]
+    fn new_declarations_are_parsed_without_guessing() {
+        assert_eq!(css_font_weight("bold"), Some(true));
+        assert_eq!(css_font_weight("normal"), Some(false));
+        assert_eq!(css_font_weight("bolder"), None);
+        assert_eq!(css_font_style("italic"), Some(true));
+        assert_eq!(css_font_style("oblique"), Some(true));
+        assert_eq!(css_font_style("normal"), Some(false));
+        assert_eq!(css_line_height("1.5"), Some(LineHeight::Factor(1.5)));
+        assert_eq!(
+            css_line_height("12pt"),
+            Some(LineHeight::Length(Length::Pt(12.0)))
+        );
+        assert_eq!(css_line_height("normal"), None);
+        assert_eq!(css_line_height("50vh"), None);
+        assert_eq!(
+            css_text_decoration("underline line-through"),
+            Some(TextDecoration {
+                underline: true,
+                line_through: true,
+            })
+        );
+        assert_eq!(css_text_decoration("none"), Some(TextDecoration::default()));
+        assert_eq!(css_text_decoration("dotted"), None);
+        assert_eq!(
+            css_border("2px solid #ff0000"),
+            Some(Border {
+                width: Length::Pt(1.5),
+                color: [1.0, 0.0, 0.0],
+            })
+        );
+        assert_eq!(css_border("1px dashed red"), None);
+        assert_eq!(
+            css_box_edges("1pt 2pt"),
+            Some(BoxEdges {
+                top: Length::Pt(1.0),
+                right: Length::Pt(2.0),
+                bottom: Length::Pt(1.0),
+                left: Length::Pt(2.0),
+            })
+        );
+        assert_eq!(
+            css_box_edges("1em 2em 3em 4em").map(|e| e.left),
+            Some(Length::Em(4.0))
+        );
+        assert_eq!(css_box_edges("1em 2em 3em 4em 5em"), None);
     }
 
     #[test]
@@ -1931,27 +2719,95 @@ mod tests {
     }
 
     #[test]
-    fn rulesheet_keeps_only_supported_element_selectors() {
+    fn rulesheet_keeps_simple_selectors_and_ignores_the_rest() {
         let rules = parse_rulesheet(
             "<style>/* c */ p{color:red;font-size:14pt} h2{color:blue}\
              li{text-align:right} td{background-size:cover}\
-             .c{color:green}#i{color:green}p.x{color:green}div p{color:green}\
-             @media print{p{color:green}}unknown{color:green}</style>\
-             <style>p{color:purple}</style>",
+             .c{color:green}#i{color:green}p.x{color:green}\
+             div p{color:#ffff00}*>*:hover{[color:red]}\
+             @media print{p{color:#ff00ff}}unknown{color:#ff0000}\
+             p{bogus:1}</style><style>p{color:purple}</style>",
         );
-        assert_eq!(rules.len(), 4, "rules: {rules:?}");
-        assert_eq!(rules.get("p").and_then(|p| p.color), Some([1.0, 0.0, 0.0]));
-        assert_eq!(rules.get("p").and_then(|p| p.size), Some(14.0));
-        assert_eq!(rules.get("h2").and_then(|p| p.color), Some([0.0, 0.0, 1.0]));
+        // The second <style>, descendant/universal/pseudo/attribute selectors,
+        // `@media print`, unknown elements and unknown declarations are gone.
+        assert_eq!(rules.rules.len(), 9, "rules: {rules:?}");
+        let plain = rules.props_for("p", None, &[]);
+        assert_eq!(plain.color, Some([1.0, 0.0, 0.0]));
+        assert_eq!(plain.size, Some(Length::Pt(14.0)));
         assert_eq!(
-            rules.get("li").and_then(|p| p.align),
+            rules.props_for("h2", None, &[]).color,
+            Some([0.0, 0.0, 1.0])
+        );
+        assert_eq!(
+            rules.props_for("li", None, &[]).align,
             Some(TextAlign::Right)
         );
         assert_eq!(
-            rules.get("td").and_then(|p| p.background_size),
+            rules.props_for("td", None, &[]).background_size,
             Some(BackgroundSize::Cover)
         );
-        assert!(!rules.contains_key("unknown"));
+        assert_eq!(
+            rules.props_for("div", None, &["c".to_string()]).color,
+            Some([0.0, 128.0 / 255.0, 0.0])
+        );
+        assert_eq!(
+            rules.props_for("p", Some("i"), &[]).color,
+            Some([0.0, 128.0 / 255.0, 0.0])
+        );
+        assert_eq!(
+            rules.props_for("p", None, &["x".to_string()]).color,
+            Some([0.0, 128.0 / 255.0, 0.0])
+        );
+    }
+
+    #[test]
+    fn specificity_orders_id_above_class_above_type_then_source_order() {
+        let rules = parse_rulesheet(
+            "<style>\
+             p{color:#ff0000}\
+             .hit{color:#00ff00}\
+             #top{color:#0000ff}\
+             .late{color:#ffff00}\
+             .early{color:#00ffff}\
+             </style>",
+        );
+        // Two equal-specificity class rules: `.early` comes later, so it wins.
+        let both = rules.props_for("p", None, &["early".into(), "late".into()]);
+        assert_eq!(both.color, Some([0.0, 1.0, 1.0]));
+        // A class outranks the type rule even though it came first.
+        let class = rules.props_for("p", None, &["hit".into()]);
+        assert_eq!(class.color, Some([0.0, 1.0, 0.0]));
+        // An id outranks both, regardless of source position.
+        let id = rules.props_for("p", Some("top"), &["hit".into()]);
+        assert_eq!(id.color, Some([0.0, 0.0, 1.0]));
+    }
+
+    #[test]
+    fn media_width_rules_are_included_but_other_media_are_not() {
+        let rules = parse_rulesheet(
+            "<style>@media (max-width: 600px){p{color:#ff0000}}\
+             @media screen and (min-width: 400px){p{font-size:16pt}}\
+             @media print{p{color:#00ff00}}\
+             @supports (color:red){p{color:#0000ff}}</style>",
+        );
+        let props = rules.props_for("p", None, &[]);
+        assert_eq!(props.color, None, "neither print nor @supports applies");
+        assert_eq!(props.size, Some(Length::Pt(16.0)));
+    }
+
+    #[test]
+    fn class_and_id_attributes_reach_the_spans() {
+        let blocks = parse(
+            "<style>.mark{color:#ff0000}#lead{font-weight:bold}p.mark{text-decoration:underline}\
+             </style><p class=\"mark\" id=\"lead\">Hi</p>",
+        );
+        let Block::Paragraph(spans) = &blocks[0] else {
+            panic!("expected paragraph");
+        };
+        assert_eq!(spans[0].color, Some([1.0, 0.0, 0.0]));
+        assert!(spans[0].decoration.underline);
+        assert_eq!(spans[0].style, Style::Bold);
+        assert_eq!(spans[0].weight, Some(true));
     }
 
     #[test]
@@ -1968,10 +2824,10 @@ mod tests {
         };
         // Inline colour wins; size and alignment fall through to the sheet.
         assert_eq!(one[0].color, Some([0.0, 0.0, 1.0]));
-        assert_eq!(one[0].size, Some(14.0));
+        assert_eq!(one[0].size, Some(Length::Pt(14.0)));
         assert_eq!(one[0].align, Some(TextAlign::Center));
         // The unstyled paragraph takes the sheet's colour unchanged.
         assert_eq!(two[0].color, Some([1.0, 0.0, 0.0]));
-        assert_eq!(two[0].size, Some(14.0));
+        assert_eq!(two[0].size, Some(Length::Pt(14.0)));
     }
 }

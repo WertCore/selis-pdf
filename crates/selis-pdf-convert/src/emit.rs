@@ -185,6 +185,28 @@ pub(crate) fn build(
         if in_text {
             cb.end_text();
         }
+        // `text-decoration` rules last: a line-through must cross the glyphs,
+        // and an underline stays just below the baseline. Each is a filled
+        // rectangle in the run's own fill colour.
+        for line in &page.lines {
+            for item in &line.items {
+                if let Item::Decoration {
+                    x,
+                    top,
+                    w,
+                    h,
+                    color,
+                } = item
+                {
+                    cb.set_fill(color[0], color[1], color[2]).fill_rect(
+                        *x,
+                        page_h - top - h,
+                        *w,
+                        *h,
+                    );
+                }
+            }
+        }
 
         let data = cb.to_bytes();
         let content_num = take_num(&mut b);
