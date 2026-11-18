@@ -128,6 +128,10 @@ const WASM_RAW = "wasm32-unknown-unknown/release/selis_pdf_wasm.wasm";
 const TOOLS_WASM_OPT = "wasm32-unknown-unknown/release/selis_pdf_wasm_tools.opt.wasm";
 /** The unoptimised tools chunk, for developers who only ran `cargo build`. */
 const TOOLS_WASM_RAW = "wasm32-unknown-unknown/release/selis_pdf_wasm_tools.wasm";
+/** The optimise chunk (font subset op 41, linearize op 43), optimised first. */
+const OPTIMIZE_WASM_OPT = "wasm32-unknown-unknown/release/selis_pdf_wasm_optimize.opt.wasm";
+/** The unoptimised optimise chunk, for developers who only ran `cargo build`. */
+const OPTIMIZE_WASM_RAW = "wasm32-unknown-unknown/release/selis_pdf_wasm_optimize.wasm";
 /** The convert chunk, optimised first. Also import-free (checked below). */
 const CONVERT_WASM_OPT = "wasm32-unknown-unknown/release/selis_pdf_wasm_convert.opt.wasm";
 /** The unoptimised convert chunk, for developers who only ran `cargo build`. */
@@ -177,6 +181,17 @@ function findEngine() {
 function findToolsEngine() {
 	for (const dir of targetDirs()) {
 		for (const name of [TOOLS_WASM_OPT, TOOLS_WASM_RAW]) {
+			const candidate = join(dir, name);
+			if (existsSync(candidate)) return candidate;
+		}
+	}
+	return null;
+}
+
+/** The first optimise chunk that exists, optimised preferred over raw. */
+function findOptimizeEngine() {
+	for (const dir of targetDirs()) {
+		for (const name of [OPTIMIZE_WASM_OPT, OPTIMIZE_WASM_RAW]) {
 			const candidate = join(dir, name);
 			if (existsSync(candidate)) return candidate;
 		}
@@ -606,6 +621,52 @@ if (toolsImports.length > 0) {
 	process.exit(1);
 }
 
+// The optimise chunk is a second tools-family engine: font subset (op 41) and
+// linearize (op 43) moved here from the tools chunk. Only the two cards that
+// invoke those ops fetch it. It carries the same import-free contract as the
+// tools chunk, so a missing or import-bearing artifact is a build failure.
+const optimize = findOptimizeEngine();
+if (optimize === null) {
+	console.error(
+		[
+			"place-assets: no optimise WASM chunk found - the subset-fonts and linearize cards",
+			"cannot run without one, so this is a build failure rather than a skip. Build it first:",
+			"",
+			"  cargo build -p selis-pdf-wasm-optimize --target wasm32-unknown-unknown --release",
+			"",
+			"(`cargo xtask size-check` builds it with fat LTO. Set CARGO_TARGET_DIR if the",
+			"build is redirected; this script reads it.)",
+		].join("\n"),
+	);
+	process.exit(1);
+}
+
+const optimizeOut = join(publicRoot, "wasm/selis_pdf_wasm_optimize.wasm");
+mkdirSync(dirname(optimizeOut), { recursive: true });
+copyFileSync(optimize, optimizeOut);
+const optimizeBytes = readFileSync(optimizeOut).length;
+let optimizeImports;
+try {
+	optimizeImports = WebAssembly.Module.imports(new WebAssembly.Module(readFileSync(optimizeOut)));
+} catch (error) {
+	console.error(`place-assets: the optimise chunk at ${optimizeOut} is not valid WebAssembly: ${error}`);
+	process.exit(1);
+}
+if (optimizeImports.length > 0) {
+	console.error(
+		[
+			"place-assets: the optimise chunk has host imports; its two operations must run with none.",
+			"An import is a capability leak (clock, entropy, filesystem, network) and breaks the",
+			"no-upload guarantee. Found:",
+			...optimizeImports.map((entry) => `  ${entry.module}.${entry.name}`),
+			"",
+			"Rebuild it with:",
+			"  cargo build -p selis-pdf-wasm-optimize --target wasm32-unknown-unknown --release",
+		].join("\n"),
+	);
+	process.exit(1);
+}
+
 // The convert chunk is the third engine: Markdown/HTML/CSV → PDF. It is lazy,
 // so the tools page never downloads it unless the user picks Convert to PDF,
 // and it must be import-free for the same reason the tools chunk is: an import
@@ -864,6 +925,10 @@ writeFileSync(
 				url: "/wasm/selis_pdf_wasm_tools.wasm",
 				bytes: toolsBytes,
 			},
+			optimize: {
+				url: "/wasm/selis_pdf_wasm_optimize.wasm",
+				bytes: optimizeBytes,
+			},
 			convert: {
 				url: "/wasm/selis_pdf_wasm_convert.wasm",
 				bytes: convertBytes,
@@ -894,7 +959,8 @@ writeFileSync(
 console.log(
 	`place-assets: copied ${modules.length} modules, ${ASSET_COPIES.length} asset files, ` +
 		`the engine (${engineBytes} B, from ${relative(workspaceRoot, engine)}) and the ` +
-		`tools chunk (${toolsBytes} B, 0 imports) and the convert chunk (${convertBytes} B, 0 imports) ` +
+		`tools chunk (${toolsBytes} B, 0 imports) and the optimise chunk (${optimizeBytes} B, 0 imports) ` +
+		`and the convert chunk (${convertBytes} B, 0 imports) ` +
 		`and the raster chunk (${rasterBytes} B, 0 imports) and the html chunk (${htmlBytes} B, 0 imports) ` +
 		`and the security chunk (${securityBytes} B, 0 imports) ` +
 		`and the signing chunk (${signBytes} B, 0 imports) ` +

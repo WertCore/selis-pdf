@@ -17,6 +17,14 @@ describe("SL-4.WASM.02 — code splitting", () => {
 		expect(editor.viewerAuto).toBe(false);
 	});
 
+	it("the optimise chunk is manifest-registered and explicit-action-only", () => {
+		const optimize = MANIFEST.chunks.find((c) => c.id === "optimize");
+		if (!optimize) throw new Error("manifest missing optimize chunk");
+		expect(optimize.url).toBe("wasm/selis_pdf_wasm_optimize.wasm");
+		expect(optimize.budget).toBe(200_000);
+		expect(optimize.viewerAuto).toBe(false);
+	});
+
 	it("viewer session never downloads the editor chunk (loader invariant)", async () => {
 		const fetchFn = vi.fn(async () => new ArrayBuffer(10));
 		const loader = new ChunkLoader({ fetchFn, profile: "viewer" });

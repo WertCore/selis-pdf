@@ -1,11 +1,12 @@
 //! Chunk manifest (SL-4.WASM.02).
 //!
 //! The WASM binding is split into a **core viewer bundle** (`selis-pdf-wasm`:
-//! COS + render + text, ≤ 3 MB brotli) and five **lazily-loaded chunks**.
+//! COS + render + text, ≤ 3 MB brotli) and six **lazily-loaded chunks**.
 //! Each chunk is a separate `cdylib` (separate `.wasm` module, not dead code
 //! in one binary). The JS loader fetches a chunk only when the document or
 //! UI actually needs it; a viewer session that never edits never downloads the
-//! editor bytes.
+//! editor bytes. The `optimize` chunk (font subset op 41, linearise op 43) is
+//! likewise never fetched by a card that does not invoke one of those ops.
 
 use serde::{Deserialize, Serialize};
 
@@ -26,6 +27,9 @@ pub enum ChunkId {
     Convert,
     /// Editor: mutation journal + incremental save (`selis-pdf-edit`, Phase 5).
     Editor,
+    /// Optimise: font subset (op 41) + linearise (op 43), moved out of the
+    /// tools chunk so the common tools page does not download the writer.
+    Optimize,
 }
 
 impl ChunkId {
@@ -39,6 +43,7 @@ impl ChunkId {
             ChunkId::Convert => "selis_pdf_wasm_convert",
             ChunkId::Editor => "selis_pdf_wasm_editor",
             ChunkId::Cjk => "selis_pdf_wasm_cjk",
+            ChunkId::Optimize => "selis_pdf_wasm_optimize",
         }
     }
 
@@ -52,6 +57,7 @@ impl ChunkId {
             ChunkId::Ocr => "ocr",
             ChunkId::Convert => "convert",
             ChunkId::Editor => "editor",
+            ChunkId::Optimize => "optimize",
         }
     }
 
@@ -67,6 +73,7 @@ impl ChunkId {
             ChunkId::Ocr => false,
             ChunkId::Convert => false,
             ChunkId::Editor => false,
+            ChunkId::Optimize => false, // only the two optimise cards fetch it
         }
     }
 }
@@ -99,7 +106,7 @@ pub struct Manifest {
 }
 
 impl Manifest {
-    /// The canonical manifest for the 6-chunk split (core + 5 lazy).
+    /// The canonical manifest for the 7-chunk split (core + 6 lazy).
     #[must_use]
     pub fn canonical() -> Self {
         let engine = env!("CARGO_PKG_VERSION").to_string();
@@ -149,6 +156,13 @@ impl Manifest {
                     viewer_auto: false,
                     integrity: None,
                 },
+                ChunkEntry {
+                    id: ChunkId::Optimize,
+                    url: "wasm/selis_pdf_wasm_optimize.wasm".to_string(),
+                    budget: 200_000,
+                    viewer_auto: false,
+                    integrity: None,
+                },
             ],
         }
     }
@@ -163,6 +177,8 @@ impl Manifest {
     }
 
     /// Validates the "viewer never downloads editor" invariant (WASM.02 DoD).
+    /// The optimise chunk is explicit-action-only for the same reason: neither
+    /// chunk is part of the viewer's automatic fetch path.
     ///
     /// # Errors
     /// `crate::chunks_viewer_isolation` when violated (never silently).
@@ -170,6 +186,9 @@ impl Manifest {
         for e in &self.chunks {
             if e.id == ChunkId::Editor && e.viewer_auto {
                 return Err("viewer must not auto-load the editor chunk (SL-4.WASM.02)");
+            }
+            if e.id == ChunkId::Optimize && e.viewer_auto {
+                return Err("viewer must not auto-load the optimise chunk");
             }
         }
         Ok(())
@@ -186,6 +205,7 @@ mod tests {
         let m = Manifest::canonical();
         assert!(m.validate_viewer_isolation().is_ok());
         assert!(!m.viewer_may_load(ChunkId::Editor));
+        assert!(!m.viewer_may_load(ChunkId::Optimize));
         assert!(m.viewer_may_load(ChunkId::Core));
         assert!(m.viewer_may_load(ChunkId::Jpx));
     }
@@ -195,6 +215,8 @@ mod tests {
         assert_eq!(ChunkId::Core.artifact(), "selis_pdf_wasm");
         assert_eq!(ChunkId::Jpx.artifact(), "selis_pdf_wasm_jpx");
         assert_eq!(ChunkId::Editor.artifact(), "selis_pdf_wasm_editor");
+        assert_eq!(ChunkId::Optimize.artifact(), "selis_pdf_wasm_optimize");
+        assert_eq!(ChunkId::Optimize.name(), "optimize");
     }
 
     #[test]
@@ -203,6 +225,20 @@ mod tests {
         let json = serde_json::to_string(&m).expect("serialise");
         let back: Manifest = serde_json::from_str(&json).expect("deserialise");
         assert_eq!(m, back);
+    }
+
+    #[test]
+    fn optimize_chunk_is_manifest_but_not_viewer_auto() {
+        let m = Manifest::canonical();
+        assert_eq!(m.chunks.len(), 7);
+        let optimize = m
+            .chunks
+            .iter()
+            .find(|e| e.id == ChunkId::Optimize)
+            .expect("optimize");
+        assert_eq!(optimize.url, "wasm/selis_pdf_wasm_optimize.wasm");
+        assert_eq!(optimize.budget, 200_000);
+        assert!(!optimize.viewer_auto);
     }
 
     #[test]

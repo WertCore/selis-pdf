@@ -3,7 +3,7 @@
  *
  * - Core (`selis_pdf_wasm.wasm`) loads eagerly during app startup.
  * - JPX/CJK load lazily when needed (filter/font probe hits).
- * - OCR/convert/editor load only after explicit user action.
+ * - OCR/convert/editor/optimize load only after explicit user action.
  * - Viewer session invariant: editor is *never* fetched — the loader
  *   enforces it and the test suite proves it (`loader.test.ts`).
  *

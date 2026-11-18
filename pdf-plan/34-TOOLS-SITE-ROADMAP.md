@@ -90,7 +90,7 @@ raster path and is therefore not a Phase 1A/2 shortcut.
       file and a typed error.
 - [ ] The operation exists in the CLI and the browser through the same `selis-pdf-tools` code.
 - [ ] The tools WASM chunk has zero imports, is lazy-loaded, and stays under its size budget
-      (currently 320 000 B brotli; baseline 300 192 B). The convert chunk has its own budget: 600 000 B, baseline 62 712 B. The raster chunk has its own budget: 1 300 000 B, baseline 1 093 374 B.
+      (currently 320 000 B brotli; baseline 300 192 B). The convert chunk has its own budget: 600 000 B, baseline 62 712 B. The raster chunk has its own budget: 1 300 000 B, baseline 1 093 374 B. The two heavy optimise operations (ops 41 and 43) now live in their own lazy `selis-pdf-wasm-optimize` chunk: 186 423 B brotli against a 200 000 B budget, with the tools chunk down to 424 472 B against 440 000 B. The op codes and the two cards' URLs are unchanged; only the module that exports them changed.
 - [ ] A browser run makes only same-origin GETs for the page graph and the WASM chunk; no request
       carries document bytes, a filename, or page text.
 - [ ] Keyboard operation, labels for every control, visible focus, and a live status region.

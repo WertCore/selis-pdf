@@ -123,14 +123,42 @@ budget = 900000
 # page-label /E) then added a further +11.3 KB to 494 896 B brotli — all behind
 # the linearize op and the fill-forms checkbox, exercised only when those
 # document structures exist. The baseline moves with both; the 2% rule gates
-# the next slice. STRUCTURAL NOTE: parity work has carried this chunk from
-# 420 KB to 495 KB with only ~5 KB of headroom left. The right next investment
-# is a dedicated lazy chunk for the heavy edit/optimise operations (font
-# subset, linearise, form fidelity) rather than another budget step.
+# the next slice. STRUCTURAL NOTE (historical): parity work had carried this
+# chunk from 420 KB to 495 KB with only ~5 KB of headroom left, so the recorded
+# next investment was a dedicated lazy chunk for the heavy optimise operations
+# rather than another budget step.
+#
+# That investment has now landed. Ops 41 (font subset) and 43 (linearize),
+# together with the glyph walk, the CIDToGIDMap rewrite and the Annex F hint
+# tables they link, moved to `selis-pdf-wasm-optimize` (row below). Their
+# dispatch in the tools chunk is gone; the form-fidelity operations deliberately
+# stay here because they share the form writer. The budget comes back down from
+# 500 000 toward the pre-feature level (420 000 before the subset/linearise
+# work) rather than the growth being deleted: the tool history above is kept in
+# full, and this row documents why the measurement moved. HEADROOM NOTE: the
+# rebuilt budget is kept above the pre-feature ceiling so the form and text-edit
+# work that legitimately grew in the meantime still has room; the 2% rule, not
+# the extra headroom, gates the next slice. Measured at 424 472 B brotli after
+# the move (down 70 424 B from 494 896 B), so the lowered 440 000 ceiling still
+# leaves ~15 KB of room for the form and text-edit work that remains here.
 [[budget]]
 chunk = "tools"
 artifact = "selis_pdf_wasm_tools"
-budget = 500000
+budget = 440000
+
+# The optimise chunk: font subset (op 41) and linearise (op 43), moved out of
+# the tools chunk so a tools page that never picks those two cards does not pay
+# for the subsetter or the linearisation writer. Both ops keep their stable wire
+# codes; only the module that exports them changes. The chunk links the same
+# in-memory `selis-pdf-tools` backend and declares no host imports, so it is
+# instantiated with the same empty import object as every other lazy chunk.
+# Measured at 186 423 B brotli (590 588 B raw) with both operations, hence the
+# 200 000 ceiling. The 2% regression rule gates the next slice; this chunk is
+# deliberately tight because it is fetched only by two explicit card actions.
+[[budget]]
+chunk = "optimize"
+artifact = "selis_pdf_wasm_optimize"
+budget = 200000
 
 # The raster page's lazy chunk (PDF → PNG, JPG, TIFF and WebP). It carries the
 # whole render walk, tiny-skia, the built-in Liberation fallback faces, the owned

@@ -24,6 +24,12 @@ import {
 	type ToolId,
 	spellOut,
 } from "../tool-registry.js";
+import { opsChunkForTool } from "./chunk-routing.js";
+import {
+	type OptimizeWasm,
+	loadOptimize,
+	runOptimize,
+} from "./optimize-protocol.js";
 import {
 	ToolInputError,
 	hasImageHeader,
@@ -40,6 +46,7 @@ import {
 	type ToolOutputReport,
 	ToolProtocolError,
 	type ToolRequest,
+	type ToolResult,
 	type ToolsWasm,
 	type Verification,
 	type VerificationRow,
@@ -3733,6 +3740,20 @@ function fileTile(file: File, index: number, tool: ToolDef | null): HTMLLIElemen
 		return wasmPromise;
 	}
 
+	// The two optimise cards run the same wire protocol but a different module.
+	// Keep its promise separate so a failed load is retried on its own and so
+	// opening an optimise card never downloads the (larger) tools chunk.
+	let optimizeWasmPromise: Promise<OptimizeWasm> | null = null;
+	function getOptimizeWasm(): Promise<OptimizeWasm> {
+		if (optimizeWasmPromise === null) {
+			optimizeWasmPromise = loadOptimize().catch((error: unknown) => {
+				optimizeWasmPromise = null;
+				throw error;
+			});
+		}
+		return optimizeWasmPromise;
+	}
+
 	let convertWasmPromise: Promise<ConvertWasm> | null = null;
 	function getConvertWasm(): Promise<ConvertWasm> {
 		if (convertWasmPromise === null) {
@@ -5241,11 +5262,27 @@ function fileTile(file: File, index: number, tool: ToolDef | null): HTMLLIElemen
 			}
 			const wireFiles = await readWireFiles();
 			const request = buildRequest(tool, wireFiles);
-			setStatus("Loading the local tools engine…", "info");
-			const wasm = await getWasm();
-			setStatus("Running locally…", "info");
-			await nextPaint();
-			const result = runTool(wasm, request);
+			const chunk = opsChunkForTool(tool.id);
+			setStatus(
+				chunk === "optimize"
+					? "Loading the local optimise engine…"
+					: "Loading the local tools engine…",
+				"info",
+			);
+			let result: ToolResult;
+			if (chunk === "optimize") {
+				// Ops 41 and 43 keep their wire codes, but the guest that exports
+				// them is the optimise chunk, never the tools chunk.
+				const optimize = await getOptimizeWasm();
+				setStatus("Running locally…", "info");
+				await nextPaint();
+				result = runOptimize(optimize, request);
+			} else {
+				const wasm = await getWasm();
+				setStatus("Running locally…", "info");
+				await nextPaint();
+				result = runTool(wasm, request);
+			}
 			try {
 				await requestRecorder.assertNoUpload(wireFiles.map((file) => file.bytes));
 			} catch (error) {
