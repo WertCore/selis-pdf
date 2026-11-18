@@ -8,13 +8,16 @@
 //! the `svg` subset become `Form` streams with their own `/BBox` and font
 //! resources. Each is drawn at its measured rectangle with `cm` + `Do`.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use selis_bytes::Bytes;
 use selis_error::Result;
 use selis_pdf_cos::doc_writer::{ContentBuilder, DocumentBuilder};
 use selis_pdf_cos::{Obj, Ref};
 use selis_sandbox::{Budget, BudgetGuard, Resource};
 
-use crate::blocks::Block;
+use crate::blocks::{Block, Style};
+use crate::font_embed::{self, EmbeddedFace, EMBEDDED_STYLES};
 use crate::image::{EmbeddedImage, EmbeddedSvg, ImageSource};
 use crate::layout::{self, Item};
 use crate::Options;
@@ -61,22 +64,38 @@ pub(crate) fn build(
         }
     }
 
-    // The five font objects, shared by every page.
-    let mut font_pairs: Vec<(Bytes, Obj)> = Vec::new();
-    for (idx, name) in FONTS.iter().enumerate() {
-        let num = take_num(&mut b);
-        b.add_object(
-            num,
-            Obj::Dict(vec![
-                (bytes(b"Type"), Obj::Name(bytes(b"Font"))),
-                (bytes(b"Subtype"), Obj::Name(bytes(b"Type1"))),
-                (bytes(b"BaseFont"), Obj::Name(bytes(name.as_bytes()))),
-                (bytes(b"Encoding"), Obj::Name(bytes(b"WinAnsiEncoding"))),
-            ]),
-        );
-        let key = format!("F{}", idx.saturating_add(1));
-        font_pairs.push((bytes(key.as_bytes()), Obj::Ref(Ref::new(num, 0))));
+    // When embedding, the subset is built from the bytes actually shown in
+    // each of the four embeddable faces, never from the whole bundled program.
+    let mut used: BTreeMap<&'static str, BTreeSet<u8>> = BTreeMap::new();
+    if opts.embed_font.is_some() {
+        for page in &pages {
+            for line in &page.lines {
+                for item in &line.items {
+                    if let Item::Text {
+                        font, bytes: text, ..
+                    } = item
+                    {
+                        if is_embeddable_face(font) {
+                            let set = used.entry(font).or_insert_with(BTreeSet::new);
+                            for &byte in text {
+                                let _ = set.insert(byte);
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
+
+    // The five font objects, shared by every page. Standard-14 by default;
+    // with `embed_font`, F1–F4 become subset TrueType fonts and Courier (F5)
+    // stays a standard-14 Type1 font.
+    let mut object_count = 1u64; // the shared resource dictionary below
+    let font_pairs = if let Some(choice) = opts.embed_font {
+        embedded_font_pairs(&mut b, choice, &used, &mut object_count, g)?
+    } else {
+        standard14_font_pairs(&mut b, &mut object_count)
+    };
     let font_dict = Obj::Dict(font_pairs);
     let res_num = take_num(&mut b);
     b.add_object(
@@ -85,7 +104,6 @@ pub(crate) fn build(
     );
     let res_ref = Ref::new(res_num, 0);
 
-    let mut object_count = 6u64;
     for page in &pages {
         // Allocate one XObject per image on this page and remember the
         // content-stream placement (resource name, rectangle and the scale
@@ -273,6 +291,190 @@ pub(crate) fn build(
 
     g.charge(Resource::Objects, object_count)?;
     b.write(budget, g)
+}
+
+/// Whether a layout font name is one of the four embeddable text faces.
+/// Courier (the code face) has no bundled Liberation sans/serif equivalent.
+///
+/// # Budget
+///
+/// None: a pure string comparison.
+///
+/// # Malformed Input
+///
+/// None: any name simply answers `false` when it is not one of the four.
+fn is_embeddable_face(name: &str) -> bool {
+    matches!(
+        name,
+        "Helvetica" | "Helvetica-Bold" | "Helvetica-Oblique" | "Helvetica-BoldOblique"
+    )
+}
+
+/// The standard-14 Type1 font object for one base-font name.
+///
+/// # Budget
+///
+/// None: the object is charged by the caller's object counter.
+///
+/// # Malformed Input
+///
+/// None: any string is a valid PDF Name token here.
+fn standard14_font_obj(name: &str) -> Obj {
+    Obj::Dict(vec![
+        (bytes(b"Type"), Obj::Name(bytes(b"Font"))),
+        (bytes(b"Subtype"), Obj::Name(bytes(b"Type1"))),
+        (bytes(b"BaseFont"), Obj::Name(bytes(name.as_bytes()))),
+        (bytes(b"Encoding"), Obj::Name(bytes(b"WinAnsiEncoding"))),
+    ])
+}
+
+/// Build the five standard-14 font objects, charging one object each.
+///
+/// # Budget
+///
+/// Charges five objects against `object_count`.
+///
+/// # Malformed Input
+///
+/// None: the font names are the crate's own constants.
+fn standard14_font_pairs(b: &mut DocumentBuilder, object_count: &mut u64) -> Vec<(Bytes, Obj)> {
+    let mut pairs = Vec::new();
+    for (idx, name) in FONTS.iter().enumerate() {
+        let num = take_num(b);
+        b.add_object(num, standard14_font_obj(name));
+        *object_count = object_count.saturating_add(1);
+        let key = format!("F{}", idx.saturating_add(1));
+        pairs.push((bytes(key.as_bytes()), Obj::Ref(Ref::new(num, 0))));
+    }
+    pairs
+}
+
+/// Build the resource font map for an embedded family: four subset TrueType
+/// faces (F1–F4) plus the unchanged standard-14 Courier face (F5).
+///
+/// # Budget
+///
+/// Charges one object per written font/font-file stream; the subset programs'
+/// bytes are charged inside [`font_embed::build_face`].
+///
+/// # Malformed Input
+///
+/// A build without bundled faces or an unsubsettable program is refused with a
+/// typed `ConvertUnsupported`; budget exhaustion propagates as `BUDGET_*`.
+fn embedded_font_pairs(
+    b: &mut DocumentBuilder,
+    choice: crate::FontChoice,
+    used: &BTreeMap<&'static str, BTreeSet<u8>>,
+    object_count: &mut u64,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Vec<(Bytes, Obj)>> {
+    let mut pairs = Vec::new();
+    let empty = BTreeSet::new();
+    for (idx, style) in EMBEDDED_STYLES.iter().enumerate() {
+        let base14 = Style::font(*style);
+        let bytes_used = used.get(base14).unwrap_or(&empty);
+        let face = font_embed::build_face(choice, *style, bytes_used, base14, g)?;
+        let font_ref = add_embedded_font(b, face, object_count);
+        let key = format!("F{}", idx.saturating_add(1));
+        pairs.push((bytes(key.as_bytes()), font_ref));
+    }
+    // Courier has no bundled mono face in either family; keep standard-14.
+    let num = take_num(b);
+    b.add_object(num, standard14_font_obj("Courier"));
+    *object_count = object_count.saturating_add(1);
+    pairs.push((bytes(b"F5"), Obj::Ref(Ref::new(num, 0))));
+    Ok(pairs)
+}
+
+/// Write one subset TrueType font: a `/FontFile2` stream and a `/TrueType`
+/// font dictionary with a real `/FontDescriptor`, `/Widths` and WinAnsi
+/// encoding. Returns the font object's reference for the resource dict.
+///
+/// # Budget
+///
+/// Charges two objects (font program stream and font dictionary) against
+/// `object_count`.
+///
+/// # Malformed Input
+///
+/// None: `face` was produced by the subsetter and already parsed; a broken
+/// program would have been refused before reaching here.
+fn add_embedded_font(b: &mut DocumentBuilder, face: EmbeddedFace, object_count: &mut u64) -> Obj {
+    let upem = f64::from(selis_font::units_per_em(&face.program).unwrap_or(1000));
+    let italic = face.base_font.contains("Italic");
+    let serif = face.base_font.contains("Serif");
+
+    let file_num = take_num(b);
+    let len = i64::try_from(face.program.len()).unwrap_or(i64::MAX);
+    b.add_object(
+        file_num,
+        Obj::Stream {
+            dict: vec![
+                (bytes(b"Length"), Obj::Int(len)),
+                (bytes(b"Length1"), Obj::Int(len)),
+            ],
+            data: face.program,
+        },
+    );
+    *object_count = object_count.saturating_add(1);
+
+    // Bit 1 (0x2) serif, bit 4 (0x10) nonsymbolic, bit 6 (0x20) italic.
+    let mut flags = 16i64;
+    if serif {
+        flags |= 2;
+    }
+    if italic {
+        flags |= 32;
+    }
+    let descriptor = Obj::Dict(vec![
+        (bytes(b"Type"), Obj::Name(bytes(b"FontDescriptor"))),
+        (
+            bytes(b"FontName"),
+            Obj::Name(bytes(face.base_font.as_bytes())),
+        ),
+        (bytes(b"Flags"), Obj::Int(flags)),
+        (
+            bytes(b"FontBBox"),
+            Obj::Array(vec![
+                real(0.0),
+                real(-0.2 * upem),
+                real(upem),
+                real(0.85 * upem),
+            ]),
+        ),
+        (
+            bytes(b"ItalicAngle"),
+            real(if italic { -12.0 } else { 0.0 }),
+        ),
+        (bytes(b"Ascent"), real(0.9 * upem)),
+        (bytes(b"Descent"), real(-0.2 * upem)),
+        (bytes(b"CapHeight"), real(0.7 * upem)),
+        (bytes(b"StemV"), Obj::Int(80)),
+        (bytes(b"FontFile2"), Obj::Ref(Ref::new(file_num, 0))),
+    ]);
+
+    let font_num = take_num(b);
+    b.add_object(
+        font_num,
+        Obj::Dict(vec![
+            (bytes(b"Type"), Obj::Name(bytes(b"Font"))),
+            (bytes(b"Subtype"), Obj::Name(bytes(b"TrueType"))),
+            (
+                bytes(b"BaseFont"),
+                Obj::Name(bytes(face.base_font.as_bytes())),
+            ),
+            (bytes(b"FirstChar"), Obj::Int(0)),
+            (bytes(b"LastChar"), Obj::Int(255)),
+            (
+                bytes(b"Widths"),
+                Obj::Array(face.widths.into_iter().map(Obj::Int).collect()),
+            ),
+            (bytes(b"Encoding"), Obj::Name(bytes(b"WinAnsiEncoding"))),
+            (bytes(b"FontDescriptor"), descriptor),
+        ]),
+    );
+    *object_count = object_count.saturating_add(1);
+    Obj::Ref(Ref::new(font_num, 0))
 }
 
 /// Build an image XObject from a validated JPEG or PNG.

@@ -32,3 +32,15 @@ selis-pdf-filter = { workspace = true }
 # Read-back/render verification: generate a real JPEG fixture, re-open the
 # converted bytes in the engine and rasterize the page to check image ink.
 selis-pdf-engine = { workspace = true }
+# The render-parity test compares embedded Liberation Sans against the
+# standard-14 substitute, so the test build must actually ship that substitute
+# (feature-off builds only carry the Serif subset and paint no Helvetica ink).
+selis-font = { workspace = true, features = ["builtin-fallback-fonts"] }
+
+[features]
+# Compile in the bundled Liberation TTF programs so `Options::embed_font` can
+# emit real /FontFile2 subsets. Native builds want this; the wasm convert chunk
+# opts out (`default-features = false`) because its C ABI exposes no font choice
+# and its linked size is budget-gated.
+default = ["embed-fonts"]
+embed-fonts = []

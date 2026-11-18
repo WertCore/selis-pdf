@@ -125,7 +125,11 @@ selis-shape        = { path = "crates/selis-shape", version = "0.1.0" }
 selis-pdf-engine = { path = "crates/selis-pdf-engine", version = "0.1.0", default-features = false }
 selis-policy     = { path = "crates/selis-policy", version = "0.1.0" }
 selis-job        = { path = "crates/selis-job", version = "0.1.0" }
-selis-pdf-convert = { path = "crates/selis-pdf-convert", version = "0.1.0" }
+# Default features are off for *workspace dependents* so the wasm convert chunk
+# does not link the bundled Liberation TTFs. Building the crate itself (its
+# native tests) or using its published manifest still enables `embed-fonts`
+# through the crate's own [features] default.
+selis-pdf-convert = { path = "crates/selis-pdf-convert", version = "0.1.0", default-features = false }
 selis-pdf-tools   = { path = "crates/selis-pdf-tools", version = "0.1.0", default-features = false }
 selis-pdf-sign    = { path = "crates/selis-pdf-sign", version = "0.1.0" }
 selis-pdf-annot   = { path = "crates/selis-pdf-annot", version = "0.1.0" }

@@ -67,6 +67,7 @@ pub(crate) fn topdf(
     let opts = Options {
         page_size: size,
         title: title.map(str::to_string),
+        ..Options::default()
     };
     let bytes = match fmt {
         "md" => markdown_to_pdf(&text, &opts, &budget, &mut g),

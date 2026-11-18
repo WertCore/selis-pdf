@@ -222,6 +222,7 @@ mod tests {
         let opts = Options {
             page_size: PageSize::Letter,
             title: None,
+            ..Options::default()
         };
         let mut g = Budget::unlimited().guard_with(&FixedClock(0), CancelToken::new());
         let bytes = csv_to_pdf(&input, &opts, &Budget::unlimited(), &mut g).expect("write");
