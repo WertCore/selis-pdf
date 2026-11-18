@@ -4,7 +4,8 @@ use selis_error::Result;
 use selis_sandbox::{Budget, BudgetGuard, Resource};
 
 use crate::blocks::{
-    encode_text, measure, split_words, BackgroundSize, Block, Span, Style, TextAlign,
+    encode_text, measure, split_words, BackgroundSize, Block, BlockCss, Border, BoxEdges, Length,
+    LineHeight, Span, Style, TextAlign, TextDecoration,
 };
 use crate::image::ImageSource;
 use crate::PageSize;
@@ -64,7 +65,7 @@ pub(crate) struct Line {
 }
 
 /// A positioned piece of a line.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) enum Item {
     /// An encoded text run in a standard-14 font.
     Text {
@@ -75,7 +76,10 @@ pub(crate) enum Item {
         /// The fill colour in RGB [0,1], emitted as an `rg` operator.
         color: [f64; 3],
     },
-    /// A filled rectangle; `top` is the distance from the page top.
+    /// A filled rectangle; `top` is the distance from the page top. Used for
+    /// code/table backgrounds and for CSS `background-color` / solid borders.
+    /// The emitter draws every rectangle before any text, so these never cover
+    /// glyphs.
     Rect {
         x: f64,
         /// Distance from the page top; carried for the styled-output path
@@ -85,6 +89,15 @@ pub(crate) enum Item {
         /// Carried with `top` for the styled-output path (SL-2.CONVERT).
         #[allow(dead_code)]
         height: f64,
+        w: f64,
+        h: f64,
+        color: [f64; 3],
+    },
+    /// A `text-decoration` rule drawn *after* text (underline / line-through)
+    /// so a strike crosses the glyphs. Coordinates are page-top based.
+    Decoration {
+        x: f64,
+        top: f64,
         w: f64,
         h: f64,
         color: [f64; 3],
@@ -112,11 +125,266 @@ pub(crate) enum Item {
 }
 
 /// The effective point size of a run: an inline `font-size` overrides the
-/// block's base size, everything else falls back to it.
+/// block's base size, resolving `em`/`%` against it and `rem` against the root
+/// size. The result is clamped to [1, 72]; absent/invalid values use `base`.
+///
+/// # Budget
+///
+/// Constant work, no allocation.
+///
+/// # Malformed Input
+///
+/// Non-finite or non-positive declarations fall back to `base` after clamping.
 fn eff_size(run: &Span, base: f64) -> f64 {
     match run.size {
-        Some(size) if size.is_finite() && size > 0.0 => size,
-        _ => base,
+        Some(length) => {
+            let size = length.resolve_font(base, BODY_SIZE);
+            if size.is_finite() && size > 0.0 {
+                size.clamp(1.0, 72.0)
+            } else {
+                base
+            }
+        }
+        None => base,
+    }
+}
+
+/// The effective line-height factor of a block: an inline `line-height` wins,
+/// a unitless value is used directly and a length is divided by the computed
+/// font size. Values are clamped to [0.5, 4] so malformed CSS can never create
+/// degenerate or runaway line boxes.
+///
+/// # Budget
+///
+/// Constant work, no allocation; only the first span is read.
+///
+/// # Malformed Input
+///
+/// Non-finite, zero or negative values fall back to `default`.
+fn eff_line_factor(spans: &[Span], base: f64, default: f64, column: f64) -> f64 {
+    let height = spans.first().and_then(|span| span.line_height);
+    let factor = match height {
+        Some(LineHeight::Factor(f)) => f,
+        Some(LineHeight::Length(length)) => {
+            let resolved = length.resolve(base, BODY_SIZE, column);
+            if base > 0.0 {
+                resolved / base
+            } else {
+                default
+            }
+        }
+        None => default,
+    };
+    if factor.is_finite() && factor > 0.0 {
+        factor.clamp(0.5, 4.0)
+    } else {
+        default
+    }
+}
+
+/// A resolved block box: outer column bounds plus the spacing/fill/border that
+/// `render_block` applies around a block's text lines.
+#[derive(Debug, Clone, Copy)]
+struct BoxGeom {
+    outer_left: f64,
+    outer_right: f64,
+    margin_top: f64,
+    margin_left: f64,
+    margin_right: f64,
+    margin_bottom: f64,
+    pad_top: f64,
+    pad_left: f64,
+    pad_right: f64,
+    pad_bottom: f64,
+    border_width: f64,
+    border_color: [f64; 3],
+    background: Option<[f64; 3]>,
+}
+
+impl BoxGeom {
+    /// Resolve a block's CSS from its first span. Box properties are block
+    /// level, so every span of a block carries the same values.
+    ///
+    /// # Budget
+    ///
+    /// Constant work, no allocation; all four sides are resolved once.
+    ///
+    /// # Malformed Input
+    ///
+    /// Non-finite/negative resolved lengths are replaced with zero.
+    fn from_spans(spans: &[Span], outer_left: f64, outer_right: f64, font_size: f64) -> Self {
+        let css: BlockCss = spans.first().map(|s| s.block_css).unwrap_or_default();
+        let column = (outer_right - outer_left).max(0.0);
+        let resolve = |edges: Option<BoxEdges>| -> (f64, f64, f64, f64) {
+            let e = edges.unwrap_or_default();
+            (
+                e.top.resolve(font_size, BODY_SIZE, column),
+                e.right.resolve(font_size, BODY_SIZE, column),
+                e.bottom.resolve(font_size, BODY_SIZE, column),
+                e.left.resolve(font_size, BODY_SIZE, column),
+            )
+        };
+        let (margin_top, margin_right, margin_bottom, margin_left) = resolve(css.margin);
+        let (pad_top, pad_right, pad_bottom, pad_left) = resolve(css.padding);
+        let border: Border = css.border.unwrap_or(Border {
+            width: Length::Pt(0.0),
+            color: BLACK,
+        });
+        let border_width = border.width.resolve(font_size, BODY_SIZE, column);
+        let clean = |v: f64| if v.is_finite() && v >= 0.0 { v } else { 0.0 };
+        Self {
+            outer_left,
+            outer_right,
+            margin_top: clean(margin_top),
+            margin_left: clean(margin_left),
+            margin_right: clean(margin_right),
+            margin_bottom: clean(margin_bottom),
+            pad_top: clean(pad_top),
+            pad_right: clean(pad_right),
+            pad_bottom: clean(pad_bottom),
+            pad_left: clean(pad_left),
+            border_width: clean(border_width),
+            border_color: border.color,
+            background: css.background_color,
+        }
+    }
+
+    /// Whether any box geometry needs drawing or spacing at all.
+    ///
+    /// # Budget
+    ///
+    /// Constant work, no allocation.
+    ///
+    /// # Malformed Input
+    ///
+    /// Infallible; only already-resolved finite fields are read.
+    fn is_active(&self) -> bool {
+        self.margin_top > 0.0
+            || self.margin_right > 0.0
+            || self.margin_bottom > 0.0
+            || self.margin_left > 0.0
+            || self.pad_top > 0.0
+            || self.pad_right > 0.0
+            || self.pad_bottom > 0.0
+            || self.pad_left > 0.0
+            || self.border_width > 0.0
+            || self.background.is_some()
+    }
+
+    /// Leading/trailing vertical space around the text lines.
+    ///
+    /// # Budget
+    ///
+    /// Constant work, no allocation.
+    ///
+    /// # Malformed Input
+    ///
+    /// Infallible; fields are already cleaned to finite non-negative values.
+    fn lead(&self) -> f64 {
+        self.margin_top + self.pad_top + self.border_width
+    }
+
+    /// Trailing vertical space after the last line.
+    ///
+    /// # Budget
+    ///
+    /// Constant work, no allocation.
+    ///
+    /// # Malformed Input
+    ///
+    /// Infallible; fields are already cleaned to finite non-negative values.
+    fn tail(&self) -> f64 {
+        self.margin_bottom + self.pad_bottom + self.border_width
+    }
+
+    /// The narrowed text column inside margins, padding and border.
+    ///
+    /// # Budget
+    ///
+    /// Constant work, no allocation.
+    ///
+    /// # Malformed Input
+    ///
+    /// Infallible: an over-large inset collapses the column at `outer_left`.
+    fn text_bounds(&self) -> (f64, f64) {
+        let inset = self.margin_left + self.pad_left + self.border_width;
+        let outset = self.margin_right + self.pad_right + self.border_width;
+        (
+            self.outer_left + inset,
+            (self.outer_right - outset).max(self.outer_left),
+        )
+    }
+
+    /// Fill and border strips for one line of text. Rectangles are collected
+    /// into the text line's item list; the emitter paints them first, so text
+    /// and link boxes remain on top.
+    ///
+    /// # Budget
+    ///
+    /// At most six small rectangles per line.
+    ///
+    /// # Malformed Input
+    ///
+    /// Degenerate/negative boxes are skipped by width/height guards.
+    fn rects(&self, top: f64, height: f64, first: bool, last: bool) -> Vec<Item> {
+        let mut items = Vec::new();
+        let fill_left = self.outer_left + self.margin_left + self.border_width;
+        let fill_right = self.outer_right - self.margin_right - self.border_width;
+        let fill_top = top - self.pad_top;
+        let fill_height = height + self.pad_top + self.pad_bottom;
+        if let Some(color) = self.background {
+            if fill_right > fill_left && fill_height > 0.0 {
+                items.push(Item::Rect {
+                    x: fill_left,
+                    top: fill_top,
+                    height: fill_height,
+                    w: fill_right - fill_left,
+                    h: fill_height,
+                    color,
+                });
+            }
+        }
+        if self.border_width > 0.0 {
+            let bw = self.border_width;
+            let color = self.border_color;
+            let left = self.outer_left + self.margin_left;
+            let right = self.outer_right - self.margin_right - bw;
+            let top_edge = fill_top - bw;
+            let bottom_edge = fill_top + fill_height;
+            let side_height = bw + fill_height + bw;
+            // Left/right strips on every line, top/bottom on the first/last.
+            for x in [left, right] {
+                items.push(Item::Rect {
+                    x,
+                    top: top_edge,
+                    height: side_height,
+                    w: bw,
+                    h: side_height,
+                    color,
+                });
+            }
+            if first {
+                items.push(Item::Rect {
+                    x: left,
+                    top: top_edge,
+                    height: bw,
+                    w: (right - left).max(0.0) + bw,
+                    h: bw,
+                    color,
+                });
+            }
+            if last {
+                items.push(Item::Rect {
+                    x: left,
+                    top: bottom_edge,
+                    height: bw,
+                    w: (right - left).max(0.0) + bw,
+                    h: bw,
+                    color,
+                });
+            }
+        }
+        items
     }
 }
 
@@ -158,6 +426,8 @@ impl Layout {
 
     /// Append a line of already-wrapped runs at the cursor. `left_x` and
     /// `right_x` bound the text column; `align` positions the line within it.
+    /// `under` holds CSS box fill/border rectangles (painted before text).
+    #[allow(clippy::too_many_arguments)]
     fn push_text_line(
         &mut self,
         runs: &[Span],
@@ -166,6 +436,7 @@ impl Layout {
         right_x: f64,
         factor: f64,
         align: TextAlign,
+        under: &[Item],
     ) {
         let sized: Vec<(&Span, f64)> = runs
             .iter()
@@ -188,7 +459,7 @@ impl Layout {
         }
         .max(0.0);
         let mut x = left_x + shift;
-        let mut items: Vec<Item> = Vec::new();
+        let mut items: Vec<Item> = under.to_vec();
         for (run, size) in sized {
             if run.text.is_empty() {
                 continue;
@@ -221,13 +492,23 @@ impl Layout {
                     image: ImageSource::Raster(background.clone()),
                 });
             }
+            let color = run.color.unwrap_or(BLACK);
             items.push(Item::Text {
                 x,
                 font,
                 size,
                 bytes: encode_text(&run.text),
-                color: run.color.unwrap_or(BLACK),
+                color,
             });
+            push_decorations(
+                &mut items,
+                run.decoration,
+                x,
+                top + size_max,
+                w,
+                size,
+                color,
+            );
             if let Some(uri) = &run.href {
                 items.push(Item::LinkBox {
                     x,
@@ -296,7 +577,7 @@ pub(crate) fn lay_out(
                         };
                         bytes = bytes.saturating_add(u64::try_from(len).unwrap_or(u64::MAX));
                     }
-                    Item::Rect { .. } | Item::LinkBox { .. } => {}
+                    Item::Rect { .. } | Item::LinkBox { .. } | Item::Decoration { .. } => {}
                 }
             }
         }
@@ -473,13 +754,29 @@ fn render_table(layout: &mut Layout, head: &[Vec<Span>], rows: &[Vec<Vec<Span>>]
                         let font = run.style.font();
                         let size = eff_size(run, size_of(run.style));
                         let w = measure(font, &run.text, size);
+                        let color = run.color.unwrap_or(BLACK);
                         items.push(Item::Text {
                             x: cell_x,
                             font,
                             size,
                             bytes: encode_text(&run.text),
-                            color: run.color.unwrap_or(BLACK),
+                            color,
                         });
+                        let cell_baseline = top
+                            + TABLE_CELL_PAD
+                            + BODY_SIZE
+                            + f64::from(u32::try_from(line_index).unwrap_or(0))
+                                * BODY_SIZE
+                                * LINE_FACTOR;
+                        push_decorations(
+                            &mut items,
+                            run.decoration,
+                            cell_x,
+                            cell_baseline,
+                            w,
+                            size,
+                            color,
+                        );
                         if let Some(uri) = &run.href {
                             items.push(Item::LinkBox {
                                 x: cell_x,
@@ -665,6 +962,78 @@ fn background_box(
     (w.max(0.0), h.max(0.0))
 }
 
+/// Lay a block's spans as text lines, applying block-level CSS box geometry.
+///
+/// The box is resolved from the first span (all spans of a block share it).
+/// Margins and padding narrow the text column before wrapping and add vertical
+/// space around the lines; the fill and border strips are attached to each
+/// line's items and therefore painted behind the glyphs by the emitter. Boxes
+/// do not fragment across pages: the whole group is kept together when it fits.
+///
+/// # Budget
+///
+/// One wrapped-line vector and one small rectangle list per line, bounded by
+/// the block's text and the fixed six-rectangle box.
+///
+/// # Malformed Input
+///
+/// Never fails: empty spans produce no lines and a too-large box is clamped to
+/// the page by the ordinary pagination path.
+fn render_text_lines(
+    layout: &mut Layout,
+    spans: &[Span],
+    map_style: &dyn Fn(Style) -> Style,
+    size_of: &dyn Fn(Style) -> f64,
+    indent: f64,
+    default_factor: f64,
+    align: TextAlign,
+) {
+    let outer_left = MARGIN + indent;
+    let outer_right = layout.max_x();
+    let base = size_of(Style::Regular);
+    let geom = BoxGeom::from_spans(spans, outer_left, outer_right, base);
+    let active = geom.is_active();
+    let (text_left, text_right) = if active {
+        geom.text_bounds()
+    } else {
+        (outer_left, outer_right)
+    };
+    let factor = eff_line_factor(spans, base, default_factor, text_right - text_left);
+    let runs = wrap_spans(spans, map_style, size_of, text_left, text_left, text_right);
+    if runs.is_empty() {
+        return;
+    }
+    if active {
+        // Reserve the whole box before emitting any line so a fill is never
+        // stranded on the previous page without its text.
+        let total = (runs.len() as f64) * base * factor;
+        layout.ensure_room(geom.lead() + total + geom.tail());
+        layout.cursor += geom.lead();
+    }
+    let count = runs.len();
+    for (index, line) in runs.iter().enumerate() {
+        let under = if active {
+            let size_max = line
+                .iter()
+                .map(|run| eff_size(run, size_of(run.style)))
+                .fold(BODY_SIZE, f64::max);
+            let height = size_max * factor;
+            geom.rects(
+                layout.cursor,
+                height,
+                index == 0,
+                index.saturating_add(1) == count,
+            )
+        } else {
+            Vec::new()
+        };
+        layout.push_text_line(line, size_of, text_left, text_right, factor, align, &under);
+    }
+    if active {
+        layout.cursor += geom.tail();
+    }
+}
+
 /// Render one block at the given indent.
 fn render_block(
     layout: &mut Layout,
@@ -682,7 +1051,9 @@ fn render_block(
                 layout.cursor += size * 0.6;
             }
             let size_of = move |_s: Style| size;
-            let runs = wrap_spans(
+            let align = block_align(spans);
+            render_text_lines(
+                layout,
                 spans,
                 &|s: Style| {
                     if italicize {
@@ -692,21 +1063,10 @@ fn render_block(
                     }
                 },
                 &size_of,
-                MARGIN + indent,
-                MARGIN + indent,
-                layout.max_x(),
+                indent,
+                1.3,
+                align,
             );
-            let align = block_align(spans);
-            for line_runs in &runs {
-                layout.push_text_line(
-                    line_runs,
-                    &size_of,
-                    MARGIN + indent,
-                    layout.max_x(),
-                    1.3,
-                    align,
-                );
-            }
             layout.cursor += size * 0.3;
         }
         Block::Paragraph(spans) => {
@@ -720,25 +1080,16 @@ fn render_block(
                     BODY_SIZE
                 }
             };
-            let runs = wrap_spans(
+            let align = block_align(spans);
+            render_text_lines(
+                layout,
                 spans,
                 &|s: Style| if italicize { s.with_italic() } else { s },
                 &size_of,
-                MARGIN + indent,
-                MARGIN + indent,
-                layout.max_x(),
+                indent,
+                LINE_FACTOR,
+                align,
             );
-            let align = block_align(spans);
-            for line_runs in &runs {
-                layout.push_text_line(
-                    line_runs,
-                    &size_of,
-                    MARGIN + indent,
-                    layout.max_x(),
-                    LINE_FACTOR,
-                    align,
-                );
-            }
             layout.cursor += PARA_GAP;
         }
         Block::ListItem {
@@ -754,7 +1105,6 @@ fn render_block(
             } else {
                 "\u{2022}".to_string()
             };
-            let text_x = MARGIN + depth_indent + MARKER_COL;
             let size_of = |s: Style| {
                 if matches!(s, Style::Code) {
                     BODY_SIZE * 0.9
@@ -762,20 +1112,50 @@ fn render_block(
                     BODY_SIZE
                 }
             };
+            let geom = BoxGeom::from_spans(
+                spans,
+                MARGIN + depth_indent,
+                layout.max_x(),
+                size_of(Style::Regular),
+            );
+            let active = geom.is_active();
+            let (text_left, text_right) = if active {
+                let (left, right) = geom.text_bounds();
+                (left + MARKER_COL, right)
+            } else {
+                (MARGIN + depth_indent + MARKER_COL, layout.max_x())
+            };
+            let text_x = text_left;
+            let factor = eff_line_factor(
+                spans,
+                size_of(Style::Regular),
+                LINE_FACTOR,
+                text_right - text_left,
+            );
             let runs = wrap_spans(
                 spans,
                 &|s: Style| if italicize { s.with_italic() } else { s },
                 &size_of,
                 text_x,
                 text_x,
-                layout.max_x(),
+                text_right,
             );
+            if active {
+                let total = (runs.len() as f64) * size_of(Style::Regular) * factor;
+                layout.ensure_room(geom.lead() + total + geom.tail());
+                layout.cursor += geom.lead();
+            }
+            let line_count = runs.len();
             for (idx, line_runs) in runs.iter().enumerate() {
                 let size_max = BODY_SIZE;
-                let height = size_max * LINE_FACTOR;
+                let height = size_max * factor;
                 layout.ensure_room(height);
                 let top = layout.cursor;
-                let mut items: Vec<Item> = Vec::new();
+                let mut items: Vec<Item> = if active {
+                    geom.rects(top, height, idx == 0, idx.saturating_add(1) == line_count)
+                } else {
+                    Vec::new()
+                };
                 if idx == 0 {
                     items.push(Item::Text {
                         x: MARGIN + depth_indent,
@@ -798,8 +1178,8 @@ fn render_block(
                     .sum();
                 let shift = match align {
                     TextAlign::Left => 0.0,
-                    TextAlign::Center => (layout.max_x() - text_x - line_width) * 0.5,
-                    TextAlign::Right => layout.max_x() - text_x - line_width,
+                    TextAlign::Center => (text_right - text_x - line_width) * 0.5,
+                    TextAlign::Right => text_right - text_x - line_width,
                 }
                 .max(0.0);
                 let mut x = text_x + shift;
@@ -810,13 +1190,23 @@ fn render_block(
                     let font = run.style.font();
                     let size = eff_size(run, size_of(run.style));
                     let w = measure(font, &run.text, size);
+                    let color = run.color.unwrap_or(BLACK);
                     items.push(Item::Text {
                         x,
                         font,
                         size,
                         bytes: encode_text(&run.text),
-                        color: run.color.unwrap_or(BLACK),
+                        color,
                     });
+                    push_decorations(
+                        &mut items,
+                        run.decoration,
+                        x,
+                        top + size_max,
+                        w,
+                        size,
+                        color,
+                    );
                     if let Some(uri) = &run.href {
                         items.push(Item::LinkBox {
                             x,
@@ -835,6 +1225,9 @@ fn render_block(
                     items,
                 });
                 layout.cursor += height;
+            }
+            if active {
+                layout.cursor += geom.tail();
             }
             layout.cursor += 2.0;
         }
@@ -1029,6 +1422,50 @@ fn wrap_spans(
     lines
 }
 
+/// Append the `text-decoration` rules for one run. Underlines sit just below
+/// the baseline; strikes sit at 30% of the font size above it. The emitter
+/// paints these after text so a strike crosses the glyphs.
+///
+/// # Budget
+///
+/// At most two small items appended to the caller's vector.
+///
+/// # Malformed Input
+///
+/// Empty runs or non-positive sizes draw nothing; no panic path.
+fn push_decorations(
+    items: &mut Vec<Item>,
+    decoration: TextDecoration,
+    x: f64,
+    baseline: f64,
+    width: f64,
+    size: f64,
+    color: [f64; 3],
+) {
+    if decoration.is_empty() || width <= 0.0 || size <= 0.0 {
+        return;
+    }
+    let thickness = (size * 0.06).clamp(0.5, 2.0);
+    if decoration.underline {
+        items.push(Item::Decoration {
+            x,
+            top: baseline + size * 0.12_f64,
+            w: width,
+            h: thickness,
+            color,
+        });
+    }
+    if decoration.line_through {
+        items.push(Item::Decoration {
+            x,
+            top: baseline - size * 0.3_f64,
+            w: width,
+            h: thickness,
+            color,
+        });
+    }
+}
+
 /// Append text to the last run when its style *and* inline properties match,
 /// else start a new run so colour / size / link boundaries are preserved.
 fn push_run(cur: &mut Vec<Span>, style: Style, text: String, source: &Span) {
@@ -1043,6 +1480,11 @@ fn push_run(cur: &mut Vec<Span>, style: Style, text: String, source: &Span) {
             && last.align == source.align
             && last.background == source.background
             && last.background_size == source.background_size
+            && last.weight == source.weight
+            && last.italic == source.italic
+            && last.line_height == source.line_height
+            && last.decoration == source.decoration
+            && last.block_css == source.block_css
         {
             last.text.push_str(&text);
             return;
@@ -1054,9 +1496,14 @@ fn push_run(cur: &mut Vec<Span>, style: Style, text: String, source: &Span) {
         href: source.href.clone(),
         color: source.color,
         size: source.size,
+        weight: source.weight,
+        italic: source.italic,
+        line_height: source.line_height,
+        decoration: source.decoration,
         align: source.align,
         background: source.background.clone(),
         background_size: source.background_size,
+        block_css: source.block_css,
     });
 }
 

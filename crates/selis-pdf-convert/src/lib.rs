@@ -90,12 +90,34 @@
 //! - `color:` — `#rgb`, `#rrggbb`, `rgb(r,g,b)` (0–255) and the named colours
 //!   `black`, `white`, `red`, `green`, `blue`, `navy`, `gray`/`grey`,
 //!   `yellow`, `purple`, `orange`. Emitted as an `rg` fill operator.
-//! - `font-size:` — absolute `pt` and `px` (at 96 dpi) and a bare number
-//!   (points), clamped to [1, 72]. Relative units (`em`, `%`, `rem`,
-//!   keywords) are deliberately ignored.
+//! - `font-size:` — absolute `pt` / `px` (96 dpi) / bare number (points), or
+//!   `em`, `rem` and `%`. Relative values resolve at layout: `em` and `%`
+//!   against the inherited font size, `rem` against the 11 pt root size.
+//!   Clamped to [1, 72] pt. Keywords and viewport units are ignored.
+//! - `font-weight:` — `normal` / `bold` (also 400 / 700), selecting
+//!   Helvetica or Helvetica-Bold. `font-style:` — `normal` / `italic` /
+//!   `oblique`, selecting Helvetica-Oblique. Both override tag-derived styles
+//!   property by property (`normal` clears a bold/italic parent); `Code` runs
+//!   stay Courier.
 //! - `text-align:` — `left`, `center`, `right`, applied to paragraphs and
 //!   table cells by shifting the laid-out text runs. `align="left|center|right"`
 //!   on `<td>`/`<th>` is honoured too.
+//! - `text-decoration:` — `underline` and/or `line-through` are drawn as thin
+//!   filled rules after the glyphs (in the run's fill colour); `none` clears
+//!   an inherited decoration. Colour/style tokens such as `dotted`/`wavy` are
+//!   ignored.
+//! - `line-height:` — a positive unitless factor or a supported length,
+//!   clamped to [0.5, 4]. It changes line-box height and therefore baseline
+//!   spacing; `normal` is ignored.
+//! - `margin:` / `padding:` — 1–4 values expanded top/right/bottom/left, plus
+//!   the four `margin-*` / `padding-*` longhands. Supported units: `pt`, `px`,
+//!   `em`, `rem`, `%` (percentage of the text-column width) and bare numbers.
+//!   Negative lengths, `vh`/`vw` and `auto` are refused. Spacing narrows the
+//!   text column before wrapping; vertical margins do not collapse.
+//! - `border:` — a leading width with optional `solid` and a colour; drawn as
+//!   four thin rectangles behind the content. Only solid borders are
+//!   understood: dashed/dotted/double/… are refused in full, not approximated.
+//! - `background-color:` — the block's padding box is filled behind its text.
 //! - `background-image:` — only a single `url("data:image/…;base64,…")` token
 //!   (quoted or bare) is understood; the JPEG/PNG is painted behind that
 //!   element's text runs. Remote URLs, gradients, multiple images and unknown
@@ -111,23 +133,33 @@
 //!   applied to the whole column.
 //!
 //! Any other declaration is ignored, never guessed. Styles are inherited by
-//! nested elements with the innermost declaration winning.
+//! nested elements with the innermost declaration winning. Box properties are
+//! block-level: `<div>` / `<section>` boxes are applied to each layout block
+//! their content produces, not to a single DOM-spanning rectangle, and boxes
+//! do not fragment across pages.
 //!
-//! # Narrow `<style>` rulesheet (two-level cascade)
+//! # Narrow `<style>` rulesheet (specificity cascade)
 //!
 //! A **single** inline `<style>` block is read as a rulesheet. Supported
-//! selectors are bare element-type names only: `p`, `h1`–`h6`, `li`, `td`.
-//! Supported declarations are exactly the five above (`color`, `font-size`,
-//! `text-align`, `background-image`, `background-size`); repeated rules for one
-//! selector cascade in source order. The cascade has **two levels**: an
-//! element's own inline `style=` overrides the rulesheet value property by
-//! property, and nested elements inherit with the innermost declaration winning.
+//! selectors are simple: an element type, a class (`.x`), an ID (`#y`) and
+//! compounds of those (`p.x`, `div#main.highlight`). They are matched against
+//! each element's `class`/`id` attributes. All supported declarations above
+//! work in the rulesheet. Matching rules are applied in CSS specificity order
+//! (ID > class > type), with source order breaking ties; an element's own
+//! inline `style=` then overrides property by property, and nested elements
+//! inherit with the innermost declaration winning.
 //!
-//! Everything else is **ignored, never guessed**: classes (`.x`), IDs (`#x`),
-//! compound/descendant/universal selectors (`p.x`, `div p`, `*`), unknown
-//! element names, `@media` and every other at-rule (with their nested rules),
-//! unknown declarations, CSS comments, a second `<style>` block, and external
-//! stylesheets. This is not a general CSS engine or layout system.
+//! `@media (min-width: Npx)`, `(max-width: Npx)` and `(width: Npx)` are
+//! honoured against a **fixed 800 px viewport** (documented, not guessed from
+//! page geometry); `pt` is accepted and converted at 96 dpi. Only one width
+//! condition per query is read.
+//!
+//! Everything else is **ignored, never guessed**: descendant/child selectors
+//! (`div p`, `a > b`), universal (`*`), pseudo/attribute selectors, unknown
+//! element names, media types (`print`) and every other at-rule (with their
+//! nested rules), unknown declarations, CSS comments, a second `<style>`
+//! block, and external stylesheets. This is not a general CSS engine or layout
+//! system.
 //!
 //! # Typography
 //!
@@ -146,11 +178,14 @@
 //! arbitrary CSS backgrounds, images embedded in DOCX / XLSX / PPTX / EPUB, and
 //! inline images inside a Markdown paragraph are still not embedded. The SVG
 //! subset is the same one the standalone converter uses (no gradients, arcs,
-//! `use`, external references or scripting). CSS support is the small inline +
-//! rulesheet subset above: no selectors beyond bare element names, no real
-//! cascade beyond inline-over-rulesheet, no `@media`, relative units, floats,
-//! positioning, flex/grid or CSS-driven page margins. There are no charts, math
-//! or general HTML/SVG rendering, and no fidelity renderer. This subset
+//! `use`, external references or scripting). CSS support is the documented
+//! subset above: only simple selectors (no combinators, universal, pseudo or
+//! attribute selectors), one specificity cascade in one `<style>` block, one
+//! fixed-width `@media` condition, no CSS variables, inheritance of arbitrary
+//! properties, font embedding, floats, positioning, flex/grid, tables driven
+//! by CSS, real margin collapsing, or CSS-driven page margins. Boxes are
+//! per-layout-block and never fragment across pages. There are no charts,
+//! math or general HTML/SVG rendering, and no fidelity renderer. This subset
 //! produces honest, structurally useful PDFs with clickable links, a little
 //! inline/rulesheet styling and embedded JPEG/PNG/SVG images — not an
 //! Aspose-equivalent conversion.
@@ -847,6 +882,75 @@ mod fidelity {
             .unwrap_or_else(|| panic!("no shown text {text:?} in {pairs:?}"))
     }
 
+    /// Re-opened content-stream operators for each shown text run:
+    /// `(text, rg colour, font resource, Tf size, Tm x, Tm y)`.
+    fn text_runs(content: &str) -> Vec<(String, [f64; 3], String, f64, f64, f64)> {
+        let mut out = Vec::new();
+        let mut color = [0.0, 0.0, 0.0];
+        let mut font = String::new();
+        let mut size = 0.0f64;
+        let mut xy = (0.0f64, 0.0f64);
+        for line in content.lines() {
+            if let Some(rest) = line.strip_suffix(" rg") {
+                let nums: Vec<f64> = rest
+                    .split_whitespace()
+                    .filter_map(|s| s.parse().ok())
+                    .collect();
+                if let [r, g, b, ..] = nums.as_slice() {
+                    color = [*r, *g, *b];
+                }
+            } else if let Some(rest) = line.strip_suffix(" Tf") {
+                let mut parts = rest.split_whitespace();
+                font = parts
+                    .next()
+                    .unwrap_or("")
+                    .trim_start_matches('/')
+                    .to_string();
+                size = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+            } else if let Some(rest) = line
+                .strip_prefix("1 0 0 1 ")
+                .and_then(|s| s.strip_suffix(" Tm"))
+            {
+                let nums: Vec<f64> = rest
+                    .split_whitespace()
+                    .filter_map(|s| s.parse().ok())
+                    .collect();
+                if let [x, y, ..] = nums.as_slice() {
+                    xy = (*x, *y);
+                }
+            } else if let Some(text) = line.strip_prefix('(').and_then(|s| s.strip_suffix(") Tj")) {
+                out.push((text.to_string(), color, font.clone(), size, xy.0, xy.1));
+            }
+        }
+        out
+    }
+
+    /// Re-opened `rg` / `re f` pairs: each filled rectangle and its fill colour.
+    fn fill_rects(content: &str) -> Vec<([f64; 3], [f64; 4])> {
+        let mut out = Vec::new();
+        let mut color = [0.0, 0.0, 0.0];
+        for line in content.lines() {
+            if let Some(rest) = line.strip_suffix(" rg") {
+                let nums: Vec<f64> = rest
+                    .split_whitespace()
+                    .filter_map(|s| s.parse().ok())
+                    .collect();
+                if let [r, g, b, ..] = nums.as_slice() {
+                    color = [*r, *g, *b];
+                }
+            } else if let Some(rest) = line.strip_suffix(" re f") {
+                let nums: Vec<f64> = rest
+                    .split_whitespace()
+                    .filter_map(|s| s.parse().ok())
+                    .collect();
+                if let [x, y, w, h, ..] = nums.as_slice() {
+                    out.push((color, [*x, *y, *w, *h]));
+                }
+            }
+        }
+        out
+    }
+
     // ---- Link annotations -------------------------------------------------
 
     #[test]
@@ -955,7 +1059,7 @@ mod fidelity {
     #[test]
     fn unknown_css_is_ignored_not_guessed() {
         let bytes = from_html(
-            "<p><span style=\"color:rebeccapurple; font-size:2em; \
+            "<p><span style=\"color:rebeccapurple; font-size:2vh; \
              text-align:justify; background:yellow\">plain</span></p>",
         );
         let content = stream(&bytes);
@@ -1773,9 +1877,11 @@ mod fidelity {
     #[test]
     fn unsupported_selectors_at_rules_and_a_second_style_block_are_ignored() {
         let bytes = from_html(
-            "<style>.cls{color:#ff0000}#id{color:#00ff00}p.special{color:#0000ff}\
-             div p{color:#ffff00}@media print{p{color:#ff00ff}}unknown{color:#ff0000}\
-             p{bogus:1}</style><style>p{color:#123456}</style><p>Plain</p>",
+            "<style>div p{color:#ff0000}* {color:#00ff00}p:hover{color:#0000ff}\
+             [data-x]{color:#ffff00}@media print{p{color:#ff00ff}}\
+             @supports (color:red){p{color:#ff00ff}}unknown{color:#ff0000}\
+             p{bogus:1;color:not-a-colour;background-image:linear-gradient(red,blue)}</style>\
+             <style>p{color:#123456}</style><p>Plain</p>",
         );
         let content = stream(&bytes);
         assert_eq!(
@@ -1785,6 +1891,233 @@ mod fidelity {
         );
         assert!(content.contains("0 0 0 rg"), "body stays black: {content}");
         assert!(content.contains("Plain"));
+    }
+
+    // ---- Expanded CSS fidelity: selectors, declarations, relative units -----
+
+    #[test]
+    fn font_weight_and_style_select_the_bold_and_oblique_resources() {
+        let bytes = from_html(
+            "<style>.b{font-weight:bold}.i{font-style:italic}</style>\
+             <p class=\"b\">BOLD</p><p class=\"i\">ITAL</p><p>PLAIN</p>",
+        );
+        crate::testkit::opens_with_page_count(&bytes, 1);
+        let runs = text_runs(&stream(&bytes));
+        let by_text = |name: &str| {
+            runs.iter()
+                .find(|(text, ..)| text == name)
+                .unwrap_or_else(|| panic!("no run {name:?}: {runs:?}"))
+        };
+        assert_eq!(&by_text("BOLD").2, "F2", "Helvetica-Bold: {runs:?}");
+        assert_eq!(&by_text("ITAL").2, "F3", "Helvetica-Oblique: {runs:?}");
+        assert_eq!(&by_text("PLAIN").2, "F1", "default Helvetica: {runs:?}");
+    }
+
+    #[test]
+    fn inline_font_weight_and_style_override_tag_styling() {
+        let bytes = from_html(
+            "<p><b style=\"font-weight:normal\">UNBOLD</b> \
+             <i style=\"font-style:normal\">UNITAL</i></p>",
+        );
+        let runs = text_runs(&stream(&bytes));
+        assert!(
+            runs.iter().all(|(_, _, font, _, _, _)| font == "F1"),
+            "normal resets tag style: {runs:?}"
+        );
+    }
+
+    #[test]
+    fn id_beats_class_beats_element_in_the_reopened_content_stream() {
+        let bytes = from_html(
+            "<style>p{color:#ff0000}.cls{color:#00ff00}#top{color:#0000ff}</style>\
+             <p id=\"top\" class=\"cls\">BYID</p>\
+             <p class=\"cls\">BYCLASS</p><p>BYTYPE</p>",
+        );
+        let runs = text_runs(&stream(&bytes));
+        let color_of = |name: &str| {
+            runs.iter()
+                .find(|(text, ..)| text == name)
+                .map(|(_, color, ..)| *color)
+                .unwrap_or_else(|| panic!("no run {name:?}: {runs:?}"))
+        };
+        assert_eq!(color_of("BYID"), [0.0, 0.0, 1.0]);
+        assert_eq!(color_of("BYCLASS"), [0.0, 1.0, 0.0]);
+        assert_eq!(color_of("BYTYPE"), [1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn source_order_breaks_specificity_ties_in_pdf() {
+        let bytes = from_html(
+            "<style>.a{color:#ff0000}.b{color:#00ff00}\
+             .b{color:#0000ff}.a{color:#ffff00}</style>\
+             <p class=\"a b\">TIE</p>",
+        );
+        let runs = text_runs(&stream(&bytes));
+        // `.a` is declared last, so yellow wins over the earlier `.b`.
+        assert!(
+            runs.iter()
+                .any(|(text, color, ..)| text == "TIE" && *color == [1.0, 1.0, 0.0]),
+            "{runs:?}"
+        );
+    }
+
+    #[test]
+    fn media_width_rule_reaches_the_stream_but_print_media_does_not() {
+        let bytes = from_html(
+            "<style>@media (max-width: 900px){p{color:#ff0000}}\
+             @media print{p{font-weight:bold}}</style><p>MEDIA</p>",
+        );
+        let runs = text_runs(&stream(&bytes));
+        assert!(
+            runs.iter().any(|(text, color, font, ..)| {
+                text == "MEDIA" && *color == [1.0, 0.0, 0.0] && font == "F1"
+            }),
+            "{runs:?}"
+        );
+    }
+
+    #[test]
+    fn relative_font_size_and_percent_margin_resolve_in_pdf() {
+        let bytes = from_html(
+            "<p style=\"font-size:2em\">SIZED</p>\
+             <p style=\"margin-left:10%\">SHIFTED</p>",
+        );
+        let runs = text_runs(&stream(&bytes));
+        let sized = runs
+            .iter()
+            .find(|(text, ..)| text == "SIZED")
+            .expect("sized");
+        assert!((sized.3 - 22.0).abs() < 0.01, "2em of 11pt: {sized:?}");
+        let shifted = runs
+            .iter()
+            .find(|(text, ..)| text == "SHIFTED")
+            .expect("shifted");
+        // Letter page: 504 pt column, 10% = 50.4 pt, plus the 54 pt margin.
+        assert!(
+            (shifted.4 - 104.4).abs() < 0.1,
+            "10% column margin: {shifted:?}"
+        );
+    }
+
+    #[test]
+    fn line_height_changes_the_baseline_gap_between_lines() {
+        let body = "word ".repeat(90);
+        let gap = |factor: &str| {
+            let bytes = from_html(&format!("<p style=\"line-height:{factor}\">{body}</p>"));
+            let mut ys: Vec<f64> = text_runs(&stream(&bytes))
+                .into_iter()
+                .map(|(_, _, _, _, _, y)| y)
+                .collect();
+            ys.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+            ys.dedup_by(|a, b| (*a - *b).abs() < 0.01);
+            ys.first().copied().unwrap_or(0.0) - ys.get(1).copied().unwrap_or(0.0)
+        };
+        let tight = gap("1");
+        let loose = gap("2");
+        assert!(loose > tight + 5.0, "tight gap={tight} loose gap={loose}");
+    }
+
+    #[test]
+    fn text_decoration_draws_rules_after_the_glyphs() {
+        let bytes = from_html(
+            "<p style=\"color:#ff0000;text-decoration:underline line-through\">DECOR</p>",
+        );
+        let content = stream(&bytes);
+        let runs = text_runs(&content);
+        assert!(
+            runs.iter()
+                .any(|(text, color, ..)| text == "DECOR" && *color == [1.0, 0.0, 0.0]),
+            "{content}"
+        );
+        let red_rects: Vec<[f64; 4]> = fill_rects(&content)
+            .into_iter()
+            .filter(|(color, _)| *color == [1.0, 0.0, 0.0])
+            .map(|(_, rect)| rect)
+            .collect();
+        assert_eq!(red_rects.len(), 2, "underline + strike: {red_rects:?}");
+        for rect in &red_rects {
+            assert!(rect[3] < 2.0 && rect[3] > 0.0, "thin rule: {rect:?}");
+        }
+        let text_at = content.find("(DECOR) Tj").expect("shown text");
+        let rules_at = content.find(" re f").expect("decoration rules");
+        assert!(
+            rules_at > text_at,
+            "decorations must follow the text: {content}"
+        );
+    }
+
+    #[test]
+    fn box_fill_and_border_are_painted_behind_block_text() {
+        let bytes = from_html(
+            "<div style=\"background-color:#ff0000;border:2pt solid #0000ff;\
+             padding:4pt;margin:6pt\"><p>Inside</p></div>",
+        );
+        crate::testkit::opens_with_page_count(&bytes, 1);
+        let content = stream(&bytes);
+        let fills = fill_rects(&content);
+        assert!(
+            fills
+                .iter()
+                .any(|(color, rect)| *color == [1.0, 0.0, 0.0] && rect[2] > 100.0),
+            "{fills:?}"
+        );
+        assert!(
+            fills
+                .iter()
+                .any(|(color, rect)| *color == [0.0, 0.0, 1.0] && rect[2] <= 2.1),
+            "{fills:?}"
+        );
+        let text_at = content.find("(Inside) Tj").expect("shown text");
+        let first_fill = content.find(" re f").expect("box rectangles");
+        assert!(first_fill < text_at, "fills must precede text: {content}");
+        let runs = text_runs(&content);
+        let inside = runs
+            .iter()
+            .find(|(text, ..)| text == "Inside")
+            .expect("inside run");
+        // 54 margin + 6 margin + 2 border + 4 padding = 66 pt.
+        assert!((inside.4 - 66.0).abs() < 0.1, "narrowed column: {inside:?}");
+    }
+
+    #[test]
+    fn box_background_renders_pixels_behind_text() {
+        let bytes = from_html("<div style=\"background-color:#ff0000\"><p>Text</p></div>");
+        let budget = Budget::unlimited();
+        let session = selis_pdf_engine::Session::open(bytes, &budget, &FixedClock(0))
+            .expect("engine re-open");
+        let mut g = guard();
+        let page = session
+            .render_page_rgba(0, 72.0, &budget, &mut g)
+            .expect("rasterize");
+        assert_eq!((page.width, page.height), (612, 792));
+        let mut red = false;
+        for y in 56usize..80 {
+            for x in 56usize..200 {
+                let idx = (y * page.width as usize + x) * 4;
+                let (r, g, b) = (page.rgba[idx], page.rgba[idx + 1], page.rgba[idx + 2]);
+                if r > 180 && g < 80 && b < 80 {
+                    red = true;
+                }
+            }
+        }
+        assert!(red, "div background-color did not rasterise red");
+    }
+
+    #[test]
+    fn unsupported_units_styles_and_declarations_leave_defaults() {
+        let bytes = from_html(
+            "<p style=\"font-size:3vh;border:1px dashed red;line-height:0;\
+             margin:-4em;background-color:linear-gradient(red,blue)\">DEFAULT</p>",
+        );
+        let content = stream(&bytes);
+        let runs = text_runs(&content);
+        let run = runs
+            .iter()
+            .find(|(text, ..)| text == "DEFAULT")
+            .expect("run");
+        assert!((run.3 - 11.0).abs() < 0.01, "body size kept: {run:?}");
+        assert_eq!(run.2, "F1");
+        assert!(fill_rects(&content).is_empty(), "no box drawn: {content}");
     }
 
     #[test]

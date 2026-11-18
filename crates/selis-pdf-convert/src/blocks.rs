@@ -51,6 +51,176 @@ impl Style {
             Style::Code => Style::Code,
         }
     }
+
+    /// The style with bold removed (`font-weight: normal`). Code is untouched:
+    /// a CSS weight does not turn a preformatted run into proportional text.
+    ///
+    /// # Budget
+    ///
+    /// A constant enum match; no allocation.
+    ///
+    /// # Malformed Input
+    ///
+    /// Infallible: unknown variants are returned unchanged.
+    pub(crate) const fn without_bold(self) -> Style {
+        match self {
+            Style::Bold => Style::Regular,
+            Style::BoldItalic => Style::Italic,
+            other => other,
+        }
+    }
+
+    /// The style with italic removed (`font-style: normal`). Code is untouched.
+    ///
+    /// # Budget
+    ///
+    /// A constant enum match; no allocation.
+    ///
+    /// # Malformed Input
+    ///
+    /// Infallible: unknown variants are returned unchanged.
+    pub(crate) const fn without_italic(self) -> Style {
+        match self {
+            Style::Italic => Style::Regular,
+            Style::BoldItalic => Style::Bold,
+            other => other,
+        }
+    }
+}
+
+/// A CSS length kept unresolved until layout knows the font size and column.
+///
+/// Only `pt`, `px` (converted at 96 dpi by the parser), `em`, `rem` and `%` are
+/// recognised; `vh`/`vw` and every other unit are refused by name. A percentage
+/// is stored as a fraction (`50%` becomes `Percent(0.5)`). `em` and font-size
+/// percentages resolve against the computed font size, `rem` against the 11 pt
+/// root size, and box percentages against the text column width.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Length {
+    /// Absolute points (the parser folds `px` and bare numbers into this).
+    Pt(f64),
+    /// Multiples of the element's computed font size.
+    Em(f64),
+    /// Multiples of the root font size.
+    Rem(f64),
+    /// Fraction of the reference dimension (font size or text column).
+    Percent(f64),
+}
+
+impl Default for Length {
+    fn default() -> Self {
+        Self::Pt(0.0)
+    }
+}
+
+impl Length {
+    /// Resolve a box length against a computed font size, root size and column.
+    ///
+    /// # Budget
+    ///
+    /// Constant work, no allocation.
+    ///
+    /// # Malformed Input
+    ///
+    /// Non-finite inputs produce a non-finite result; callers clamp it before
+    /// using it for geometry.
+    pub(crate) fn resolve(self, font_size: f64, root_size: f64, column: f64) -> f64 {
+        match self {
+            Self::Pt(v) => v,
+            Self::Em(v) => v * font_size,
+            Self::Rem(v) => v * root_size,
+            Self::Percent(v) => v * column,
+        }
+    }
+
+    /// Resolve a font-relative length against the inherited font size. Used
+    /// for `font-size` itself, where a percentage is relative to the parent's
+    /// size rather than to the text column.
+    ///
+    /// # Budget
+    ///
+    /// Constant work, no allocation.
+    ///
+    /// # Malformed Input
+    ///
+    /// Non-finite inputs produce a non-finite result; `eff_size` clamps it.
+    pub(crate) fn resolve_font(self, parent_size: f64, root_size: f64) -> f64 {
+        match self {
+            Self::Pt(v) => v,
+            Self::Em(v) | Self::Percent(v) => v * parent_size,
+            Self::Rem(v) => v * root_size,
+        }
+    }
+}
+
+/// The `line-height` subset: a unitless multiplier or an explicit length.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum LineHeight {
+    /// A unitless factor of the computed font size (`1.5`).
+    Factor(f64),
+    /// A length (`1.5em`, `18px`, `120%`) resolved against the font size.
+    Length(Length),
+}
+
+/// The four sides of a `margin` or `padding` shorthand, unresolved.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub(crate) struct BoxEdges {
+    /// Top edge.
+    pub top: Length,
+    /// Right edge.
+    pub right: Length,
+    /// Bottom edge.
+    pub bottom: Length,
+    /// Left edge.
+    pub left: Length,
+}
+
+/// A solid border on a block box: width and colour. Other border styles
+/// (dashed, dotted, double, …) are not part of this subset.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Border {
+    /// Border thickness, resolved against the computed font size at layout.
+    pub width: Length,
+    /// Fill colour of the four drawn strips (black when only a width is given).
+    pub color: [f64; 3],
+}
+
+/// `text-decoration` lines to draw under or across a run of text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct TextDecoration {
+    /// Draw a rule just below the baseline.
+    pub underline: bool,
+    /// Draw a rule through the middle of the glyphs.
+    pub line_through: bool,
+}
+
+impl TextDecoration {
+    /// Whether no decoration rule needs drawing.
+    ///
+    /// # Budget
+    ///
+    /// Constant work, no allocation.
+    ///
+    /// # Malformed Input
+    ///
+    /// Infallible; only the two boolean flags are inspected.
+    pub(crate) fn is_empty(self) -> bool {
+        !self.underline && !self.line_through
+    }
+}
+
+/// Block-level CSS carried on every span a block produces, so layout can read
+/// the box properties from the first span exactly as it reads alignment.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub(crate) struct BlockCss {
+    /// Outer spacing around the box.
+    pub margin: Option<BoxEdges>,
+    /// Inner spacing between the border and the text.
+    pub padding: Option<BoxEdges>,
+    /// Solid border strips, drawn behind the text.
+    pub border: Option<Border>,
+    /// Fill colour of the block's padding box.
+    pub background_color: Option<[f64; 3]>,
 }
 
 /// Paragraph / table-cell text alignment carried on the spans of that block.
@@ -106,8 +276,16 @@ pub(crate) struct Span {
     pub href: Option<String>,
     /// Explicit fill colour as RGB in [0, 1] (inline `color:`).
     pub color: Option<[f64; 3]>,
-    /// Explicit font size in points (inline `font-size:`).
-    pub size: Option<f64>,
+    /// Explicit font size (inline / rulesheet `font-size:`), resolved in layout.
+    pub size: Option<Length>,
+    /// Bold override from `font-weight` (`true` = bold, `false` = normal).
+    pub weight: Option<bool>,
+    /// Italic override from `font-style` (`true` = italic/oblique).
+    pub italic: Option<bool>,
+    /// `line-height`, as a factor or a length resolved against the font size.
+    pub line_height: Option<LineHeight>,
+    /// `text-decoration` rules to draw for this run.
+    pub decoration: TextDecoration,
     /// Text alignment of the containing paragraph/cell, if specified.
     pub align: Option<TextAlign>,
     /// An inline `background-image: url(data:…)` decoded image, painted behind
@@ -116,6 +294,8 @@ pub(crate) struct Span {
     /// `background-size` for that image; `None` keeps the legacy stretch-to-box
     /// behaviour.
     pub background_size: Option<BackgroundSize>,
+    /// Block box fill / border / spacing, read from the first span of a block.
+    pub block_css: BlockCss,
 }
 
 /// An embedded JPEG/PNG/SVG placed as its own block (HTML `<img>` or a
