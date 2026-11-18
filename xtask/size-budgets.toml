@@ -52,6 +52,11 @@ budget = 800000
 # +9.94%). The PNG path pulls in the project's existing image decoder and flate
 # encoder — real fidelity work behind the HTML/Markdown format codes, not a new
 # dependency class. The baseline moves with it; still 440 KB under the ceiling.
+# SVG data-URI images (through the crate's existing SVG emitter, wrapped as a
+# Form XObject), `background-size`, and a narrow single-`<style>` element-
+# selector cascade added +8.0 KB to 167 778 B brotli (+5.01%). All behind the
+# HTML/Markdown/SVG format codes, no new dependency; still 432 KB under the
+# 600 000 B ceiling. The baseline moves with the slice; the 2% rule gates next.
 [[budget]]
 chunk = "convert"
 artifact = "selis_pdf_wasm_convert"
