@@ -441,8 +441,16 @@ fn qpdf_interop_oracle() {
                 return Some(p);
             }
         }
-        let candidate = std::path::PathBuf::from(r"C:\Program Files\qpdf 12.4.2\bin\qpdf.exe");
-        candidate.is_file().then_some(candidate)
+        for candidate in [
+            r"E:\softwares\pdf-tools\qpdf\qpdf.exe",
+            r"C:\Program Files\qpdf 12.4.2\bin\qpdf.exe",
+        ] {
+            let p = std::path::PathBuf::from(candidate);
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+        None
     }
 
     let Some(qpdf) = qpdf_path() else {

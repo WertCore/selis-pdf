@@ -29,6 +29,7 @@ use selis_pdf_sign::{sign_digital, DigitalOptions};
 use selis_sandbox::{Budget, FixedClock};
 
 use crate::incremental::{materialise, save_incremental, ObjectModel, ObjectMutation};
+use crate::rewrite::{save_rewritten, save_rewritten_atomic};
 use crate::signature_guard::{
     check_mutation_allowed, inspect_signatures, verify_signatures_preserved, DocMdpLevel,
 };
@@ -133,6 +134,37 @@ fn docmdp_pdf(level: i64) -> Vec<u8> {
         (8, reference),
         (9, params.as_slice()),
         (10, text_field),
+    ];
+    build_pdf(&objects)
+}
+
+/// Like [`docmdp_pdf`], but the fillable field's `/FT /Tx` lives on a parent
+/// field (object 10) and the child widget (object 11) only carries `/Parent`.
+/// This is the inherited-`/FT` shape DocMDP P=2 must recognise.
+fn docmdp_pdf_inherited_ft(level: i64) -> Vec<u8> {
+    let field: Vec<u8> =
+        b"<< /Type /Annot /Subtype /Widget /FT /Sig /T (CertSig) /V 7 0 R /P 3 0 R /Rect [0 0 10 10] >>".to_vec();
+    let sig = b"<< /Type /Sig /Filter /Adobe.PPKLite /SubFilter /adbe.pkcs7.detached /ByteRange [0 100 200 100] /Contents <00> /Reference [8 0 R] >>";
+    let reference = b"<< /TransformMethod /DocMDP /TransformParams 9 0 R /Data 7 0 R >>";
+    let params = format!("<< /P {level} >>").into_bytes();
+    let form = b"<< /Fields [6 0 R 10 0 R] /SigFlags 3 >>";
+    let parent = b"<< /FT /Tx /T (Parent) /Kids [11 0 R] >>";
+    let child = b"<< /T (Child) /Parent 10 0 R /V (old) >>";
+    let objects: Vec<(u32, &[u8])> = vec![
+        (1, b"<< /Type /Catalog /Pages 2 0 R /AcroForm 5 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Resources << >> /Contents 4 0 R /Annots [6 0 R] >>",
+        ),
+        (4, b"<< /Length 0 >>\nstream\n\nendstream"),
+        (5, form),
+        (6, field.as_slice()),
+        (7, sig),
+        (8, reference),
+        (9, params.as_slice()),
+        (10, parent),
+        (11, child),
     ];
     build_pdf(&objects)
 }
@@ -351,6 +383,82 @@ fn docmdp_levels_refuse_and_allow_the_right_operations() {
     }
 }
 
+/// A widget whose `/FT` is only on its parent field is still a fillable form
+/// field: DocMDP P=2 must allow filling it (the inherited-`/FT` gap).
+#[test]
+fn docmdp_p2_allows_form_fill_with_inherited_ft() {
+    let bud = budget();
+    let mut g = guard(&bud);
+    let src = docmdp_pdf_inherited_ft(2);
+    let model = materialise(&src, &bud, &mut g).expect("materialise P=2 inherited /FT");
+    assert_eq!(
+        inspect_signatures(&model, &bud, &mut g)
+            .expect("inspect")
+            .certification_level,
+        Some(DocMdpLevel::FillForms)
+    );
+    // Object 11 has no own /FT; it inherits /Tx from object 10 via /Parent.
+    let fill = vec![ObjectMutation::SetObject {
+        num: 11,
+        value: Obj::Dict(vec![
+            (b(b"T"), Obj::String(b(b"Child"))),
+            (b(b"V"), Obj::String(b(b"Ada"))),
+        ]),
+    }];
+    check_mutation_allowed(&model, &fill, &bud, &mut g)
+        .expect("P=2 allows a fill on a field with inherited /FT");
+    let (out, _) =
+        save_incremental(&src, &model, &fill, &bud, &mut g).expect("P=2 inherited-/FT fill saves");
+    assert_eq!(out.get(..src.len()), Some(src.as_slice()));
+}
+
+/// P=1 keeps refusing a fill even when the field's `/FT` is inherited.
+#[test]
+fn docmdp_p1_still_refuses_form_fill_with_inherited_ft() {
+    let bud = budget();
+    let mut g = guard(&bud);
+    let src = docmdp_pdf_inherited_ft(1);
+    let model = materialise(&src, &bud, &mut g).expect("materialise P=1 inherited /FT");
+    let fill = vec![ObjectMutation::SetObject {
+        num: 11,
+        value: Obj::Dict(vec![
+            (b(b"T"), Obj::String(b(b"Child"))),
+            (b(b"V"), Obj::String(b(b"Ada"))),
+        ]),
+    }];
+    let error = check_mutation_allowed(&model, &fill, &bud, &mut g)
+        .expect_err("P=1 refuses a fill with inherited /FT");
+    assert_eq!(error.code(), Code::SignatureWouldBreak);
+    let detail = error.ctx().detail.clone().unwrap_or_default();
+    assert!(detail.contains("level 1"), "{detail}");
+}
+
+/// A full rewrite of a signed document is refused: no bytes and no file.
+#[test]
+fn signed_rewrite_is_refused_with_no_output_and_no_file() {
+    let bud = budget();
+    let mut g = guard(&bud);
+    let src = sign_digital(&base_pdf(), &digital_options(), &bud, &mut g)
+        .expect("sign fixture")
+        .0;
+
+    let err = save_rewritten(&src, &bud, &mut g)
+        .expect_err("full rewrite of a signed document is refused");
+    assert_eq!(err.code(), Code::SignatureWouldBreak);
+    let detail = format!("{err:?}");
+    assert!(detail.contains("signature"), "{detail}");
+
+    let dir = std::env::temp_dir().join(format!("selis-edit07-rewrite-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let dest = dir.join("rewritten.pdf");
+    let _ = std::fs::remove_file(&dest);
+    let err2 = save_rewritten_atomic(&dest, &src, &bud, &mut g)
+        .expect_err("atomic full rewrite of a signed document is refused");
+    assert_eq!(err2.code(), Code::SignatureWouldBreak);
+    assert!(!dest.exists(), "no output file created on refusal");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// (3) Redefining the signature object itself is refused even without DocMDP.
 #[test]
 fn redefining_a_signature_object_is_refused() {
@@ -412,7 +520,9 @@ fn refusal_produces_no_output_and_no_file() {
 }
 
 /// Scriptable interop oracle: `qpdf --check` on a signed+annotated output.
-/// Skipped with a note when qpdf is not installed (Acrobat GUI is manual).
+/// Uses `$QPDF` when set, otherwise the known local install, else skips with a
+/// note (Acrobat GUI is manual). The qpdf verdict is captured and asserted,
+/// not just the process exit status.
 #[test]
 fn qpdf_check_on_signed_annotated_output() {
     fn qpdf_path() -> Option<std::path::PathBuf> {
@@ -422,8 +532,16 @@ fn qpdf_check_on_signed_annotated_output() {
                 return Some(p);
             }
         }
-        let candidate = std::path::PathBuf::from(r"C:\Program Files\qpdf 12.4.2\bin\qpdf.exe");
-        candidate.is_file().then_some(candidate)
+        for candidate in [
+            r"E:\softwares\pdf-tools\qpdf\qpdf.exe",
+            r"C:\Program Files\qpdf 12.4.2\bin\qpdf.exe",
+        ] {
+            let p = std::path::PathBuf::from(candidate);
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+        None
     }
     let Some(qpdf) = qpdf_path() else {
         eprintln!("qpdf not found; interop oracle skipped (set QPDF to its path)");
@@ -447,10 +565,18 @@ fn qpdf_check_on_signed_annotated_output() {
         .arg(&path)
         .output()
         .expect("run qpdf --check");
-    assert!(
-        checked.status.success(),
-        "qpdf --check failed: {}",
+    let verdict = format!(
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&checked.stdout),
         String::from_utf8_lossy(&checked.stderr)
+    );
+    eprintln!("qpdf --check verdict on signed+annotated output:\n{verdict}");
+    assert!(checked.status.success(), "qpdf --check failed: {verdict}");
+    // The verdict text, not only the exit code, must report a structurally
+    // clean file (qpdf writes this to stdout in this version).
+    assert!(
+        verdict.contains("No syntax or stream encoding errors found"),
+        "unexpected qpdf verdict: {verdict}"
     );
     let _ = std::fs::remove_file(&path);
 }
