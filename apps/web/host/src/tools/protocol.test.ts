@@ -69,6 +69,23 @@ const verification: Verification = {
 };
 
 describe("encodeToolRequest", () => {
+	it("encodes the fill_forms appearance-synthesis option in the options block", () => {
+		const encoded = encodeToolRequest({
+			op: "fill_forms",
+			options: {
+				fields: [{ name: "Name", value: "Ada" }],
+				synthesize_appearances: true,
+			},
+			files: [{ name: "in.pdf", bytes: new Uint8Array([0x25, 0x50, 0x44, 0x46]) }],
+		});
+		const optionsLength = readU32(encoded, 12);
+		const options = JSON.parse(
+			new TextDecoder().decode(encoded.subarray(16, 16 + optionsLength)),
+		) as Record<string, unknown>;
+		expect(options.synthesize_appearances).toBe(true);
+		expect(options.fields).toEqual([{ name: "Name", value: "Ada" }]);
+	});
+
 	it("writes the documented little-endian layout", () => {
 		const encoded = encodeToolRequest({
 			op: "split",

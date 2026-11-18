@@ -9,34 +9,10 @@
 
 #![cfg(test)]
 
-use super::{fill_from_form_data, form_fields};
+use super::{fill_forms, fill_from_form_data, form_fields};
 
-/// A minimal one-page PDF with a single-select combo and a single-select list
-/// box. `/Opt` entries are `[export, label]` pairs so the drawn text differs
-/// from the stored value.
-fn choice_fixture() -> Vec<u8> {
-    let objects: &[(u32, &[u8])] = &[
-        (1, b"<< /Type /Catalog /Pages 2 0 R /AcroForm 5 0 R >>"),
-        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
-        (
-            3,
-            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /Helvetica 8 0 R >> >> /Contents 4 0 R /Annots [6 0 R 7 0 R] >>",
-        ),
-        (4, b"<< /Length 0 >>\nstream\n\nendstream"),
-        (
-            5,
-            b"<< /Fields [6 0 R 7 0 R] /DA (/Helvetica 0 Tf 0 g) /DR << /Font << /Helvetica 8 0 R >> >> >>",
-        ),
-        (
-            6,
-            b"<< /FT /Ch /Ff 131072 /T (Combo) /V (r) /Opt [[(r) (Red Label)] [(g) (Green Label)]] /Subtype /Widget /Rect [10 10 120 30] /P 3 0 R >>",
-        ),
-        (
-            7,
-            b"<< /FT /Ch /T (List) /V (a) /Opt [[(a) (Alpha)] [(b) (Beta)]] /Subtype /Widget /Rect [10 50 120 70] /P 3 0 R >>",
-        ),
-        (8, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"),
-    ];
+/// Build a minimal one-page PDF from raw object bodies with a correct xref.
+fn build_pdf(objects: &[(u32, &[u8])]) -> Vec<u8> {
     let max = objects.iter().map(|(num, _)| *num).max().unwrap_or(0);
     let mut out = Vec::new();
     out.extend_from_slice(b"%PDF-1.4\n");
@@ -61,6 +37,59 @@ fn choice_fixture() -> Vec<u8> {
         .as_bytes(),
     );
     out
+}
+
+/// A minimal one-page PDF with a single-select combo and a single-select list
+/// box. `/Opt` entries are `[export, label]` pairs so the drawn text differs
+/// from the stored value.
+fn choice_fixture() -> Vec<u8> {
+    build_pdf(&[
+        (1, b"<< /Type /Catalog /Pages 2 0 R /AcroForm 5 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /Helvetica 8 0 R >> >> /Contents 4 0 R /Annots [6 0 R 7 0 R] >>",
+        ),
+        (4, b"<< /Length 0 >>\nstream\n\nendstream"),
+        (
+            5,
+            b"<< /Fields [6 0 R 7 0 R] /DA (/Helvetica 0 Tf 0 g) /DR << /Font << /Helvetica 8 0 R >> >> >>",
+        ),
+        (
+            6,
+            b"<< /FT /Ch /Ff 131072 /T (Combo) /V (r) /Opt [[(r) (Red Label)] [(g) (Green Label)]] /Subtype /Widget /Rect [10 10 120 30] /P 3 0 R >>",
+        ),
+        (
+            7,
+            b"<< /FT /Ch /T (List) /V (a) /Opt [[(a) (Alpha)] [(b) (Beta)]] /Subtype /Widget /Rect [10 50 120 70] /P 3 0 R >>",
+        ),
+        (8, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"),
+    ])
+}
+
+/// A one-page form with an editable multi-select list box (MultiSelect +
+/// Edit flags). Its first option has a display label, so a matched selection
+/// draws "Alpha" while a typed "custom" must draw itself.
+fn editable_multi_fixture() -> Vec<u8> {
+    build_pdf(&[
+        (1, b"<< /Type /Catalog /Pages 2 0 R /AcroForm 5 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> /Contents 4 0 R /Annots [6 0 R] >>",
+        ),
+        (4, b"<< /Length 0 >>\nstream\n\nendstream"),
+        (
+            5,
+            b"<< /Fields [6 0 R] /DA (/Helvetica 12 Tf 0 g) /DR << /Font << /Helvetica 7 0 R >> >> >>",
+        ),
+        // 2097152 (MultiSelect) + 262144 (Edit).
+        (
+            6,
+            b"<< /FT /Ch /Ff 2359296 /T (Tags) /V (a) /Opt [[(a) (Alpha)] (b)] /Subtype /Widget /Rect [10 10 140 40] /P 3 0 R >>",
+        ),
+        (7, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"),
+    ])
 }
 
 fn dict_get<'a>(
@@ -92,6 +121,104 @@ fn fill_through_cli(fixture: &[u8], xfdf: &str) -> Vec<u8> {
     let bytes = std::fs::read(&output).expect("read output");
     std::fs::remove_dir_all(&dir).ok();
     bytes
+}
+
+/// Drive the real `fill_forms` tool boundary (write gate + read-back) with a
+/// multi-value edit the XFDF importer cannot express.
+fn fill_through_tools(fixture: &[u8], options: &selis_pdf_form::FillFormsOptions) -> Vec<u8> {
+    let dir = std::env::temp_dir().join(format!("selis-multi-ap-cli-{}", std::process::id()));
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let input = dir.join("in.pdf");
+    let output = dir.join("out.pdf");
+    std::fs::write(&input, fixture).expect("write fixture");
+    fill_forms(&input.to_string_lossy(), options, &output.to_string_lossy())
+        .expect("CLI fill succeeds");
+    let bytes = std::fs::read(&output).expect("read output");
+    std::fs::remove_dir_all(&dir).ok();
+    bytes
+}
+
+/// A named field's dictionary, read back from committed output bytes.
+fn field_dict_from_bytes(
+    bytes: &[u8],
+    field_name: &str,
+) -> Vec<(selis_bytes::Bytes, selis_pdf_cos::Obj)> {
+    use selis_pdf_cos::copy::resolve_ref;
+
+    let budget = selis_sandbox::Budget::unlimited();
+    let mut g = budget.guard();
+    let startxref = selis_pdf_cos::xref::find_startxref(bytes, 4096).unwrap_or(0);
+    let doc = selis_pdf_cos::parse_revisions(bytes, startxref, &budget, &mut g).expect("parse");
+    let acro = acroform_of(bytes, &budget, &mut g);
+    let Some(selis_pdf_cos::Obj::Array(fields)) = dict_get(&acro, b"Fields") else {
+        panic!("/AcroForm has no /Fields");
+    };
+    for field in fields {
+        let selis_pdf_cos::Obj::Ref(fr) = field else {
+            continue;
+        };
+        let selis_pdf_cos::Obj::Dict(fd) = resolve_ref(bytes, &doc, *fr, &budget, &mut g).unwrap()
+        else {
+            continue;
+        };
+        let named = dict_get(&fd, b"T").and_then(|value| match value {
+            selis_pdf_cos::Obj::String(s) => Some(s.as_slice()),
+            _ => None,
+        });
+        if named.map(String::from_utf8_lossy).as_deref() == Some(field_name) {
+            return fd;
+        }
+    }
+    panic!("no field named {field_name}");
+}
+
+/// The tools-level twin of the core read-back test: a typed, unmatched value on
+/// an editable multi-select is committed as an extra `/V` entry with no `/I`
+/// index, and its text is drawn in the widget's `/AP /N` stream.
+#[test]
+fn cli_fill_draws_unmatched_typed_value_in_multi_select() {
+    let bytes = fill_through_tools(
+        &editable_multi_fixture(),
+        &selis_pdf_form::FillFormsOptions {
+            fields: vec![selis_pdf_form::FieldEdit {
+                name: "Tags".to_string(),
+                value: "a".to_string(),
+                values: vec!["custom".to_string()],
+            }],
+            synthesize_appearances: true,
+        },
+    );
+
+    // Committed bytes re-read through the public tool API.
+    let report = form_fields_from_bytes(&bytes);
+    let tags = report
+        .fields
+        .iter()
+        .find(|field| field.name == "Tags")
+        .expect("Tags field");
+    assert_eq!(tags.values, ["a", "custom"]);
+    assert_eq!(tags.value, None);
+
+    // /V keeps the multi-value array; /I carries only the matched index.
+    let field = field_dict_from_bytes(&bytes, "Tags");
+    assert_eq!(
+        dict_get(&field, b"V"),
+        Some(&selis_pdf_cos::Obj::Array(vec![
+            selis_pdf_cos::Obj::String(selis_bytes::Bytes::copy_from_slice(b"a")),
+            selis_pdf_cos::Obj::String(selis_bytes::Bytes::copy_from_slice(b"custom")),
+        ]))
+    );
+    assert_eq!(
+        dict_get(&field, b"I"),
+        Some(&selis_pdf_cos::Obj::Array(vec![selis_pdf_cos::Obj::Int(0)]))
+    );
+
+    // The appearance really paints both the matched label and the typed text.
+    let content = appearance_content(&bytes, "Tags");
+    assert!(content.contains("/Tx BMC"), "variable text: {content}");
+    assert!(content.contains("(Alpha) Tj"), "matched label: {content}");
+    assert!(content.contains("(custom) Tj"), "typed value: {content}");
 }
 
 #[test]
