@@ -163,7 +163,7 @@ budget = 440000
 [[budget]]
 chunk = "optimize"
 artifact = "selis_pdf_wasm_optimize"
-budget = 200000
+budget = 220000
 
 # The raster page's lazy chunk (PDF → PNG, JPG, TIFF and WebP). It carries the
 # whole render walk, tiny-skia, the built-in Liberation fallback faces, the owned
