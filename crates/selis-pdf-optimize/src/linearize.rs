@@ -71,6 +71,17 @@
 //! every conformance fixture. See `docs/linearization-conformance.md` and
 //! `pdf-plan/37-ASPOSE-PARITY.md` §15 for the precise, honest status.
 //!
+//! # Incremental-update input
+//!
+//! The writer takes an *already collected* object graph (see
+//! [`LinearizeInput`]), so it emits exactly one coherent revision. If the
+//! caller collected from a file with `/Prev` history, the live (newest-wins)
+//! state is preserved but the earlier revisions are intentionally **flattened**:
+//! this is what every linearizer does, and an Annex F layout cannot retain a
+//! `/Prev` chain without invalidating `/L`, `/T`, `/E`, `/H` and the page-offset
+//! table. The caller reports the number of flattened revisions; a populated
+//! digital signature is refused at the tool boundary before this writer runs.
+//!
 //! # Failure policy
 //!
 //! The writer refuses (with a typed [`LinearizeError`], surfaced as a
