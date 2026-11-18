@@ -282,12 +282,48 @@ fn is_container_value(value: &Obj) -> bool {
             .is_some_and(|t| name_is(t, b"Catalog") || name_is(t, b"Pages") || name_is(t, b"Page"))
 }
 
+/// Maximum number of `/Parent` links followed while resolving an inherited
+/// `/FT`. Mirrors the bounded field walk in `selis-pdf-form` / `selis-pdf-sign`
+/// and breaks a malicious parent cycle.
+const MAX_FIELD_PARENT_DEPTH: usize = 32;
+
+/// Resolve a field object's effective `/FT`: its own `/FT`, else the first
+/// `/FT` found by walking the `/Parent` chain. A widget frequently inherits its
+/// type from its parent field (ISO 32000-2 §12.7.3), so filling such a widget is
+/// still a form fill. This mirrors `selis-pdf-form`'s inherited-`/FT` resolution
+/// (own value wins, otherwise inherit from the parent).
+///
+/// # Budget / Malformed Input
+///
+/// Walks an already-materialised model (no extra charge) and is bounded by
+/// [`MAX_FIELD_PARENT_DEPTH`]; a cycle, a missing parent, or a non-name `/FT`
+/// simply yields no type (the caller then classifies the mutation as `Edit`).
+fn inherited_field_type(model: &ObjectModel, num: u32) -> Option<&[u8]> {
+    let mut current = num;
+    let mut seen = Vec::new();
+    for _ in 0..MAX_FIELD_PARENT_DEPTH {
+        if seen.contains(&current) {
+            return None;
+        }
+        seen.push(current);
+        let pairs = as_dict(model.get(&current)?)?;
+        if let Some(Obj::Name(name)) = dict_get(pairs, b"FT") {
+            return Some(name.as_slice());
+        }
+        match dict_get(pairs, b"Parent") {
+            Some(Obj::Ref(reference)) => current = reference.num,
+            _ => return None,
+        }
+    }
+    None
+}
+
 /// Whether `num` is a fillable (non-signature) form field in the base model.
+/// The field's own `/FT` wins; a widget that only inherits `/FT` from a parent
+/// is still recognised (the DocMDP P=2 gap this closes). A `/FT /Sig` inherited
+/// from a parent keeps the object a signature field, never a fillable one.
 fn is_form_field(model: &ObjectModel, num: u32) -> bool {
-    model.get(&num).is_some_and(|base| {
-        as_dict(base)
-            .is_some_and(|pairs| dict_get(pairs, b"FT").is_some_and(|ft| !name_is(ft, b"Sig")))
-    })
+    inherited_field_type(model, num).is_some_and(|ft| ft != b"Sig".as_slice())
 }
 
 impl ObjectMutation {
@@ -514,6 +550,47 @@ pub fn check_mutation_allowed(
                 )
             ));
         }
+    }
+    Ok(())
+}
+
+/// Refuse any operation that would rewrite the whole file when `src` already
+/// carries a digital signature. A full rewrite (EDIT.05 `save_rewritten`,
+/// including the AESV3-upgrade rewrite path) renumbers objects and re-emits
+/// every byte, so a signature's `/ByteRange` FILE offsets change and the CMS
+/// digest can no longer match. Only an incremental append preserves them.
+///
+/// # Errors
+///
+/// * `SIGNATURE_WOULD_BREAK` if [`inspect_signatures`] finds at least one
+///   existing signature; the detail names the count and points to the
+///   incremental alternative;
+/// * an `ObjUnexpected` / parse / budget error if `src` cannot be materialised.
+///
+/// # Budget
+///
+/// The charges of [`crate::incremental::materialise`] plus those of
+/// [`inspect_signatures`]. No bytes are written or returned on any path.
+///
+/// # Malformed Input
+///
+/// An unparseable source is refused by `materialise`; an encrypted source is
+/// refused by the caller before this runs (EDIT.06 owns encryption). A source
+/// with no signature objects is allowed. A malformed signature reference is
+/// ignored by `inspect_signatures`, but a well-formed signature dictionary
+/// (`/ByteRange` + `/Contents`) is still detected and refused.
+pub fn refuse_if_signed(src: &[u8], budget: &Budget, g: &mut BudgetGuard<'_>) -> Result<()> {
+    let model = crate::incremental::materialise(src, budget, g)?;
+    let finding = inspect_signatures(&model, budget, g)?;
+    if finding.signature_count > 0 {
+        return Err(err!(
+            Code::SignatureWouldBreak,
+            during = "signature-guard",
+            detail = format!(
+                "full rewrite would break {} existing digital signature(s); use an incremental save instead",
+                finding.signature_count
+            )
+        ));
     }
     Ok(())
 }

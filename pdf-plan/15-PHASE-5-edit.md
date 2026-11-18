@@ -154,17 +154,27 @@ Normative spec: `23-EDIT-MODEL-SPEC.md`. Read it before any task here.
     skipped. Tests sign a real CMS fixture with the committed PEMs, annotate and incremental-save,
     read back through the sign report, and cover all three DocMDP levels plus the signature-object
     and no-output-on-refusal cases. `qpdf --check` on the signed+annotated output is a scriptable
-    oracle, skipped when qpdf is absent. Residual gaps: Acrobat GUI validation is **manual**; the
-    guard classifies mutations from their COS shape (a caller that knowingly bundles an edit with a
-    signature creation is refused whenever any plain content/page edit is present, but field-level
-    DocMDP intent is advisory like the PDF itself); form-fill detection uses a field's own `/FT` and
-    does not yet follow `/FT` inherited from a parent field. `cargo xtask size-check` was run: the
-    whole failure is a **pre-existing** stale baseline — at the unmodified base commit
-    `selis_pdf_wasm_optimize` already measures 218 580 B brotli (+3.58% over the 211 034 B baseline).
-    EDIT.07 adds +416 B there (218 996 B) and +1 169 B to the main `selis_pdf_wasm`
-    (1 290 403 B); both are far inside their absolute budgets and the 2% rule. The budgets and
-    baseline were deliberately NOT edited (per task); accepting the stale optimize baseline is a
-    separate housekeeping decision.
+    oracle: it uses `$QPDF` if set, else the known `E:\softwares\pdf-tools\qpdf\qpdf.exe` (qpdf
+    12.4.2), else skips with a note; it now genuinely runs here and asserts the verdict text, not
+    just the exit code. Verdict: "No syntax or stream encoding errors found; the file may still
+    contain errors that qpdf cannot detect". Residual gaps: Acrobat GUI validation is **manual**;
+    the guard classifies mutations from their COS shape (a caller that knowingly bundles an edit with
+    a signature creation is refused whenever any plain content/page edit is present, but field-level
+    DocMDP intent is advisory like the PDF itself).
+  - **Gap-closure follow-up (EDIT.07):** three honest gaps are now closed. (1) Form-fill detection
+    walks the `/Parent` chain for an inherited `/FT` (mirroring `selis-pdf-form`), so DocMDP P=2
+    allows filling a widget whose `/FT` lives only on its parent; P=1 still refuses such a fill, and
+    the existing P=1/P=3 tests are unchanged. (2) The qpdf oracle is wired to the installed binary
+    and asserts its verdict (above). (3) `save_rewritten*` now refuses any signed source with
+    `SIGNATURE_WOULD_BREAK` before any bytes are built — no output, no file — which also covers the
+    AESV3-upgrade rewrite path. New tests cover the inherited-`/FT` P=2 fill, P=1 still refusing,
+    the asserted qpdf verdict and the signed-rewrite refusal (in-memory and atomic). Re-ran
+    `cargo xtask size-check` with these changes: all 14 budgets met, every wasm artifact
+    byte-identical to the checked-in baseline (main `selis_pdf_wasm` 1 290 403 B,
+    `selis_pdf_wasm_optimize` 218 996 B — delta 0 B vs baseline; `xtask` +12 B build-tool drift
+    only). The earlier EDIT.07 size note above records the pre-existing stale optimize baseline
+    (218 580 B at the unmodified base vs the old 211 034 B baseline); budgets and baseline were NOT
+    edited.
 - [ ] **SL-5.EDIT.08 — Page operations** · deps: EDIT.01 · owner: AI+
   - **Do:** Insert, delete, reorder, rotate, crop (`/CropBox` vs `/MediaBox` semantics), split,
     merge, extract, and N-up. Merging must reconcile: resource name collisions, named destinations,

@@ -867,6 +867,8 @@ pub(crate) fn build_rewritten(
 ///
 /// # Errors
 ///
+/// [`Code::SignatureWouldBreak`] if `src` already carries a digital signature
+/// (a rewrite would change every `/ByteRange`; use an incremental save),
 /// [`Code::ObjUnexpected`] for an unparseable/empty source or a missing root,
 /// [`Code::MutationInvalid`] for an encrypted source (EDIT.06 owns encryption),
 /// [`Code::VerifyFailed`] naming any verification discrepancy, and propagated
@@ -874,7 +876,9 @@ pub(crate) fn build_rewritten(
 ///
 /// # Budget
 ///
-/// Charges parse, object collection, serialisation and both verification passes.
+/// Charges parse, object collection, serialisation and both verification passes,
+/// plus the materialise + inspect charges of
+/// [`crate::signature_guard::refuse_if_signed`].
 ///
 /// # Malformed Input
 ///
@@ -916,6 +920,11 @@ pub fn save_rewritten_with_verifier(
     g: &mut BudgetGuard<'_>,
     verifier: Option<&dyn RenderTextVerifier>,
 ) -> Result<(Vec<u8>, RewriteReport)> {
+    // A rewrite renumbers objects and re-emits every byte, so every existing
+    // signature's /ByteRange offsets would change. Refuse before building any
+    // output; this also guards the AESV3-upgrade rewrite path, which goes
+    // through this same entry point.
+    crate::signature_guard::refuse_if_signed(src, budget, g)?;
     let (out, info) = build_rewritten(src, options, budget, g)?;
     let (verification, render_text) = match verifier {
         Some(v) => {
