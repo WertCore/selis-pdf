@@ -11,7 +11,10 @@ fn base_pdf() -> Vec<u8> {
     let objects: Vec<(u32, &str)> = vec![
         (1, "<< /Type /Catalog /Pages 2 0 R >>"),
         (2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
-        (3, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>"),
+        (
+            3,
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>",
+        ),
         (4, "<< /Length 4 >>\nstream\nBT\nET\nendstream"),
         (5, "<< /Title (base) >>"),
     ];
@@ -45,12 +48,21 @@ fn set_object_preserves_prefix_and_updates_model() {
     let budget = budget();
     let mut g = budget.guard();
     let model = materialise(&src, &budget, &mut g).expect("materialise");
-    let new_title = Obj::Dict(vec![(Bytes::copy_from_slice(b"Title"), Obj::String(Bytes::copy_from_slice(b"edited")))]);
-    let mutations = vec![ObjectMutation::SetObject { num: 5, value: new_title.clone() }];
+    let new_title = Obj::Dict(vec![(
+        Bytes::copy_from_slice(b"Title"),
+        Obj::String(Bytes::copy_from_slice(b"edited")),
+    )]);
+    let mutations = vec![ObjectMutation::SetObject {
+        num: 5,
+        value: new_title.clone(),
+    }];
     let expected = apply(&model, &mutations);
 
     let (out, report) = save_incremental(&src, &model, &mutations, &budget, &mut g).expect("save");
-    assert!(report.prefix_preserved, "I3: original bytes are a verbatim prefix");
+    assert!(
+        report.prefix_preserved,
+        "I3: original bytes are a verbatim prefix"
+    );
     assert_eq!(report.objects_changed, 1);
     assert_eq!(report.revisions, 2, "one appended revision");
     assert!(out.len() > src.len(), "append grows the file");
@@ -73,8 +85,14 @@ fn net_noop_mutation_returns_source_unchanged() {
     let model = materialise(&src, &budget, &mut g).expect("materialise");
     let original = model.get(&5).cloned().expect("object 5");
     let mutations = vec![
-        ObjectMutation::SetObject { num: 5, value: Obj::Int(42) },
-        ObjectMutation::SetObject { num: 5, value: original },
+        ObjectMutation::SetObject {
+            num: 5,
+            value: Obj::Int(42),
+        },
+        ObjectMutation::SetObject {
+            num: 5,
+            value: original,
+        },
     ];
     let (out, report) = save_incremental(&src, &model, &mutations, &budget, &mut g).expect("save");
     assert_eq!(out, src, "a change and its inverse emit nothing");
@@ -89,13 +107,19 @@ fn new_object_allocation_is_appended() {
     let model = materialise(&src, &budget, &mut g).expect("materialise");
     let mutations = vec![ObjectMutation::SetObject {
         num: 9,
-        value: Obj::Dict(vec![(Bytes::copy_from_slice(b"Type"), Obj::Name(Bytes::copy_from_slice(b"Custom")))]),
+        value: Obj::Dict(vec![(
+            Bytes::copy_from_slice(b"Type"),
+            Obj::Name(Bytes::copy_from_slice(b"Custom")),
+        )]),
     }];
     let (out, report) = save_incremental(&src, &model, &mutations, &budget, &mut g).expect("save");
     assert!(report.prefix_preserved);
     let mut g2 = budget.guard();
     let reopened = materialise(&out, &budget, &mut g2).expect("reopen");
-    assert!(reopened.contains_key(&9), "the new object resolves in the output");
+    assert!(
+        reopened.contains_key(&9),
+        "the new object resolves in the output"
+    );
     assert_eq!(reopened.get(&9), apply(&model, &mutations).get(&9));
 }
 
@@ -107,7 +131,10 @@ fn delete_object_is_refused_until_free_entries_land() {
     let model = materialise(&src, &budget, &mut g).expect("materialise");
     let mutations = vec![ObjectMutation::DeleteObject { num: 5 }];
     let err = save_incremental(&src, &model, &mutations, &budget, &mut g).unwrap_err();
-    assert!(format!("{err}").contains("free-entry"), "loud typed refusal: {err}");
+    assert!(
+        format!("{err}").contains("free-entry"),
+        "loud typed refusal: {err}"
+    );
 }
 
 #[test]
@@ -117,13 +144,23 @@ fn every_prior_revision_is_readable() {
     let mut g = budget.guard();
     let model = materialise(&src, &budget, &mut g).expect("materialise");
     // Two successive saves: the second must preserve BOTH revisions' bytes.
-    let m1 = vec![ObjectMutation::SetObject { num: 5, value: Obj::Int(1) }];
+    let m1 = vec![ObjectMutation::SetObject {
+        num: 5,
+        value: Obj::Int(1),
+    }];
     let (mid, _) = save_incremental(&src, &model, &m1, &budget, &mut g).expect("save 1");
     let mut g1 = budget.guard();
     let mid_model = materialise(&mid, &budget, &mut g1).expect("materialise mid");
-    let m2 = vec![ObjectMutation::SetObject { num: 5, value: Obj::Int(2) }];
-    let (final_bytes, report) = save_incremental(&mid, &mid_model, &m2, &budget, &mut g).expect("save 2");
+    let m2 = vec![ObjectMutation::SetObject {
+        num: 5,
+        value: Obj::Int(2),
+    }];
+    let (final_bytes, report) =
+        save_incremental(&mid, &mid_model, &m2, &budget, &mut g).expect("save 2");
     assert!(final_bytes[..mid.len()] == mid, "I3 across a second save");
-    assert!(final_bytes[..src.len()] == src, "original revision still a prefix");
+    assert!(
+        final_bytes[..src.len()] == src,
+        "original revision still a prefix"
+    );
     assert_eq!(report.revisions, 3, "original + two appended revisions");
 }

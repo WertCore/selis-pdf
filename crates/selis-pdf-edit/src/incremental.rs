@@ -35,9 +35,7 @@ use selis_sandbox::{Budget, BudgetGuard};
 /// Whether the newest revision declares `/Encrypt`. EDIT.06 owns encryption;
 /// this layer refuses encrypted input rather than emitting a plaintext object.
 fn is_encrypted(doc: &selis_pdf_cos::Doc) -> bool {
-    doc.revisions()
-        .last()
-        .is_some_and(|r| r.encrypt.is_some())
+    doc.revisions().last().is_some_and(|r| r.encrypt.is_some())
 }
 
 /// One object-level mutation. This is the invertible core of the spec's
@@ -98,21 +96,29 @@ pub type ObjectModel = BTreeMap<u32, Obj>;
 ///
 /// Charges the parse and each resolve. An unresolvable referenced object is a
 /// typed `Unresolvable` error.
-pub fn materialise(
-    src: &[u8],
-    budget: &Budget,
-    g: &mut BudgetGuard<'_>,
-) -> Result<ObjectModel> {
-    let startxref_kw = selis_pdf_cos::xref::find_startxref(src, 4096)
-        .ok_or_else(|| err!(Code::ObjUnexpected, during = "incremental", detail = "no startxref"))?;
+pub fn materialise(src: &[u8], budget: &Budget, g: &mut BudgetGuard<'_>) -> Result<ObjectModel> {
+    let startxref_kw = selis_pdf_cos::xref::find_startxref(src, 4096).ok_or_else(|| {
+        err!(
+            Code::ObjUnexpected,
+            during = "incremental",
+            detail = "no startxref"
+        )
+    })?;
     let doc = selis_pdf_cos::parse_revisions(src, startxref_kw, budget, g)?;
-    let last = doc
-        .len()
-        .checked_sub(1)
-        .ok_or_else(|| err!(Code::ObjUnexpected, during = "incremental", detail = "no revisions"))?;
-    let view = doc
-        .at_revision(last)
-        .ok_or_else(|| err!(Code::ObjUnexpected, during = "incremental", detail = "no view"))?;
+    let last = doc.len().checked_sub(1).ok_or_else(|| {
+        err!(
+            Code::ObjUnexpected,
+            during = "incremental",
+            detail = "no revisions"
+        )
+    })?;
+    let view = doc.at_revision(last).ok_or_else(|| {
+        err!(
+            Code::ObjUnexpected,
+            during = "incremental",
+            detail = "no view"
+        )
+    })?;
     let mut model = ObjectModel::new();
     for (num, entry) in view.xref {
         if matches!(entry, selis_pdf_cos::XrefEntry::InUse { .. })
@@ -152,11 +158,12 @@ pub fn apply(model: &ObjectModel, mutations: &[ObjectMutation]) -> ObjectModel {
 /// Compute the net changed-object set from a mutation sequence applied on top
 /// of a base model. Only the FINAL value of each touched object is emitted — an
 /// object set then deleted needs no xref entry if it did not exist in the base.
-fn changes(base: &ObjectModel, expected: &ObjectModel, mutations: &[ObjectMutation]) -> Vec<(u32, Option<Obj>)> {
-    let touched: BTreeMap<u32, ()> = mutations
-        .iter()
-        .map(|m| (m.object_number(), ()))
-        .collect();
+fn changes(
+    base: &ObjectModel,
+    expected: &ObjectModel,
+    mutations: &[ObjectMutation],
+) -> Vec<(u32, Option<Obj>)> {
+    let touched: BTreeMap<u32, ()> = mutations.iter().map(|m| (m.object_number(), ())).collect();
     let mut out = Vec::new();
     for (num, ()) in touched {
         let before = base.get(&num);
@@ -174,10 +181,14 @@ fn changes(base: &ObjectModel, expected: &ObjectModel, mutations: &[ObjectMutati
 /// revisions apart. Returns a fresh `ID` pair (or `None` if the source had no
 /// `/ID`).
 fn updated_id(rev: &selis_pdf_cos::revision::Revision, objects: &[(u32, Obj)]) -> Option<Obj> {
-    let first = rev.trailer.iter().find(|(k, _)| k.as_slice() == b"ID").and_then(|(_, v)| match v {
-        Obj::Array(items) => items.first().cloned(),
-        _ => None,
-    })?;
+    let first = rev
+        .trailer
+        .iter()
+        .find(|(k, _)| k.as_slice() == b"ID")
+        .and_then(|(_, v)| match v {
+            Obj::Array(items) => items.first().cloned(),
+            _ => None,
+        })?;
     use md5::Digest;
     let mut h = md5::Md5::new();
     for (num, value) in objects {
@@ -207,7 +218,11 @@ pub fn save_incremental(
     g: &mut BudgetGuard<'_>,
 ) -> Result<(Vec<u8>, IncrementalSaveReport)> {
     if src.is_empty() {
-        return Err(err!(Code::ObjUnexpected, during = "incremental", detail = "empty source"));
+        return Err(err!(
+            Code::ObjUnexpected,
+            during = "incremental",
+            detail = "empty source"
+        ));
     }
     let expected = apply(model, mutations);
     let changed = changes(model, &expected, mutations);
@@ -226,15 +241,28 @@ pub fn save_incremental(
         ));
     }
 
-    let startxref_kw = selis_pdf_cos::xref::find_startxref(src, 4096)
-        .ok_or_else(|| err!(Code::ObjUnexpected, during = "incremental", detail = "no startxref"))?;
+    let startxref_kw = selis_pdf_cos::xref::find_startxref(src, 4096).ok_or_else(|| {
+        err!(
+            Code::ObjUnexpected,
+            during = "incremental",
+            detail = "no startxref"
+        )
+    })?;
     let doc = selis_pdf_cos::parse_revisions(src, startxref_kw, budget, g)?;
     if is_encrypted(&doc) {
-        return Err(err!(Code::MutationInvalid, during = "incremental", detail = "encrypted; see EDIT.06"));
+        return Err(err!(
+            Code::MutationInvalid,
+            during = "incremental",
+            detail = "encrypted; see EDIT.06"
+        ));
     }
     let last = doc.len().checked_sub(1).unwrap_or(0);
     let revision = doc.revisions().get(last).ok_or_else(|| {
-        err!(Code::ObjUnexpected, during = "incremental", detail = "no revision")
+        err!(
+            Code::ObjUnexpected,
+            during = "incremental",
+            detail = "no revision"
+        )
     })?;
 
     // Carry /Root and /Info forward; update /ID. /Size and /Prev are filled by
@@ -243,7 +271,11 @@ pub fn save_incremental(
     if let Some(root) = revision.root {
         trailer.push((b"Root".to_vec(), Obj::Ref(root)));
     }
-    if let Some((_, info)) = revision.trailer.iter().find(|(k, _)| k.as_slice() == b"Info") {
+    if let Some((_, info)) = revision
+        .trailer
+        .iter()
+        .find(|(k, _)| k.as_slice() == b"Info")
+    {
         trailer.push((b"Info".to_vec(), info.clone()));
     }
 
