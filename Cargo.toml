@@ -125,6 +125,9 @@ selis-crypto  = { path = "crates/selis-crypto", version = "0.1.0", default-featu
 selis-pdf-cos      = { path = "crates/selis-pdf-cos", version = "0.1.0", default-features = false }
 selis-pdf-filter   = { path = "crates/selis-pdf-filter", version = "0.1.0" }
 selis-pdf-form     = { path = "crates/selis-pdf-form", version = "0.1.0" }
+# Native-only consent-gated form-script interpreter (SL-5.JS.02); gated off on
+# wasm32 by the crate itself, so no WASM chunk links QuickJS.
+selis-pdf-js       = { path = "crates/selis-pdf-js", version = "0.1.0" }
 selis-pdf-doc      = { path = "crates/selis-pdf-doc", version = "0.1.0" }
 selis-pdf-content  = { path = "crates/selis-pdf-content", version = "0.1.0" }
 selis-pdf-text     = { path = "crates/selis-pdf-text", version = "0.1.0" }

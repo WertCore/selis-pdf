@@ -576,6 +576,12 @@ enum Command {
         /// single-state checkbox.
         #[arg(long = "set", value_name = "NAME=VALUE")]
         set: Vec<String>,
+        /// Grant one-time consent to run this document's form JavaScript
+        /// (`/JS`, `/AA`, `/CO`) inside the budgeted sandbox (SL-5.JS.02).
+        /// Without it, a document with scripts is refused — scripts never
+        /// auto-run. Equivalent to the `SELIS_ALLOW_JS=1` environment flag.
+        #[arg(long)]
+        allow_js: bool,
         /// Emit the verification object as JSON on stdout (SL-1A.UI.02).
         #[arg(long)]
         json: bool,
@@ -1312,8 +1318,12 @@ fn run() {
             path,
             output,
             set,
+            allow_js,
             json,
-        } => finish(forms::fill(&path, &set, &output), json),
+        } => {
+            let allow = allow_js || std::env::var_os("SELIS_ALLOW_JS").is_some();
+            finish(forms::fill(&path, &set, &output, allow), json)
+        }
         Command::Stamp {
             path,
             output,

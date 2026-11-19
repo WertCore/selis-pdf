@@ -113,6 +113,14 @@ import {
 	loadTextChunk,
 	runTextOp,
 } from "./text-protocol.js";
+import { documentIdentity } from "../editor/js-policy.js";
+import {
+	type ConsentElement,
+	ScriptConsentController,
+	declinePrompter,
+	showConsentPrompt,
+	runFormScriptWithConsent,
+} from "../editor/js-consent.js";
 
 interface ConvertWasm {
 	readonly exports: {
@@ -191,11 +199,19 @@ interface FormFieldJson {
 	readonly page?: number;
 }
 
+/** A `/CO` calculation action, surfaced by the tools layer for consent gating. */
+interface FormCalcJson {
+	readonly field: string;
+	readonly script: string;
+}
+
 /** The read op's report: what the page needs to render the form. */
 interface FormFieldsJson {
 	readonly status: string;
 	readonly pages?: number;
 	readonly has_signature: boolean;
+	readonly has_scripts?: boolean;
+	readonly calculations?: readonly FormCalcJson[];
 	readonly fields: readonly FormFieldJson[];
 }
 
@@ -977,6 +993,17 @@ function init(): void {
 	 * empty until a form PDF has been read.
 	 */
 	let formFieldControls: Array<{ readonly name: string; readonly value: () => string }> = [];
+	/**
+	 * SL-5.JS.02: reader consent lives per document, in memory only. A fresh
+	 * page grants nothing; the visible dialog records a grant after an explicit
+	 * "Allow once for this document" click. The script manifest is the typed
+	 * detection signal from the tools layer (no PDF text is scraped here).
+	 */
+	const scriptConsent = new ScriptConsentController();
+	let formScriptManifest: { hasScripts: boolean; calculations: readonly FormCalcJson[] } = {
+		hasScripts: false,
+		calculations: [],
+	};
 
 	function currentTool(): ToolDef | null {
 		return selectedTool === null ? null : (TOOL_BY_ID.get(selectedTool) ?? null);
@@ -1696,6 +1723,12 @@ function init(): void {
 			if (report === null || report.status !== "ok") {
 				throw new ToolProtocolError("the fields report could not be read.");
 			}
+			// Keep the typed script signal from the same local read. The consent
+			// gate below uses it; no script is evaluated while reading fields.
+			formScriptManifest = {
+				hasScripts: report.has_scripts === true,
+				calculations: report.calculations ?? [],
+			};
 			renderFormFields(list, report);
 			const count = report.fields.length;
 			setStatus(`${count} field${count === 1 ? "" : "s"} found.`, "ok");
@@ -1725,7 +1758,12 @@ function init(): void {
 		const note = make("p", "option-note");
 		note.textContent =
 			"Nothing leaves this device: the fields are read and the filled file is written on this machine. By default values are stored in the document and viewers rebuild the appearances on open; tick the box to draw them into the PDF itself.";
-		options.append(note);
+		const jsNote = make("p", "option-note");
+		jsNote.textContent =
+			"JavaScript in this document is off by default. If it carries form scripts, you will be asked before any of them run — they never run automatically.";
+		const consentHost = make("section", "form-consent-host");
+		consentHost.id = "form-consent-host";
+		options.append(note, jsNote, consentHost);
 		addField(
 			"synthesize_appearances",
 			"Synthesize appearances",
@@ -1884,6 +1922,9 @@ function init(): void {
 		options.replaceChildren();
 		optionControls.clear();
 		optionFields.clear();
+		// A fresh card never inherits a script decision or a stale manifest.
+		scriptConsent.clear();
+		formScriptManifest = { hasScripts: false, calculations: [] };
 		if (tool.id === "fill_forms") {
 			renderFillFormsOptions(options);
 			return;
@@ -5448,6 +5489,80 @@ function fileTile(file: File, index: number, tool: ToolDef | null): HTMLLIElemen
 		resultCard.scrollIntoView({ behavior: "smooth", block: "nearest" });
 	}
 
+	/**
+	 * SL-5.JS.02: the only place the Fill Forms card may evaluate a document's
+	 * script. It asks once, visibly, for this document; a decline (or a missing
+	 * prompt host) leaves the reader's grant empty so the sandbox gate denies
+	 * and no Worker is created. Calculated values are shown as read-back rows.
+	 */
+	async function handleFormScripts(result: ToolResult): Promise<VerificationRow[]> {
+		const rows: VerificationRow[] = [];
+		if (!formScriptManifest.hasScripts) {
+			return rows;
+		}
+		const host = byId<HTMLElement>("form-consent-host");
+		if (host === null) {
+			setStatus("Done. Form JavaScript was blocked; no script ran.", "ok");
+			return [{ label: "JavaScript", value: "blocked — no prompt surface, no script was run" }];
+		}
+		const doc = documentIdentity(files[0]?.name ?? "document", "local");
+		const fields = fillFormsPayload().map((field) => ({ name: field.name, value: field.value }));
+		let granted = scriptConsent.isConsented(doc);
+		if (!granted) {
+			granted = await showConsentPrompt({
+				host: host as unknown as ConsentElement,
+				document: doc,
+				consent: scriptConsent,
+			});
+		}
+		if (!granted) {
+			rows.push({ label: "JavaScript", value: "blocked — no script was run" });
+			setStatus("Done. Form JavaScript was blocked; no script ran.", "ok");
+			return rows;
+		}
+
+		const filled =
+			result.outputs.find((output) => output.name.toLowerCase().endsWith(".pdf"))?.bytes ??
+			new Uint8Array(0);
+		let ran = false;
+		for (const calc of formScriptManifest.calculations) {
+			if (calc.script.length === 0) {
+				continue;
+			}
+			const outcome = await runFormScriptWithConsent(
+				filled,
+				{
+					script: calc.script,
+					event: { type: "calculate", targetName: calc.field, value: "" },
+					fields,
+				},
+				{
+					document: doc,
+					consent: scriptConsent,
+					prompter: declinePrompter, // already granted above; the gate still re-checks
+					hasScripts: true,
+				},
+			);
+			if (outcome.outcome.ok) {
+				ran = true;
+				if (calc.field !== "" && outcome.outcome.eventValue !== "") {
+					rows.push({ label: `JS ${calc.field}`, value: outcome.outcome.eventValue });
+				}
+				for (const update of outcome.outcome.updates) {
+					rows.push({ label: `JS ${update.name}`, value: update.value });
+				}
+			}
+		}
+		rows.unshift({
+			label: "JavaScript",
+			value: ran
+				? "allowed for this document; scripts ran in a local sandbox"
+				: "allowed, but no calculation produced a value",
+		});
+		setStatus("JavaScript was allowed for this document; calculated values are shown below.", "ok");
+		return rows;
+	}
+
 	async function run(): Promise<void> {
 		if (busy) {
 			return;
@@ -5580,6 +5695,13 @@ function fileTile(file: File, index: number, tool: ToolDef | null): HTMLLIElemen
 				);
 			}
 			document.documentElement.dataset.noUpload = "verified";
+			// SL-5.JS.02: a scripted form is gated by a visible, per-document
+			// consent decision before any script reaches the sandbox. This runs
+			// locally after the no-upload check; it adds read-back rows.
+			let scriptRows: VerificationRow[] = [];
+			if (tool.id === "fill_forms" && formScriptManifest.hasScripts) {
+				scriptRows = await handleFormScripts(result);
+			}
 			// The flatten-forms, subset and linearize cards add their own
 			// measured report rows beside the standard verification rows;
 			// other tools have none.
@@ -5596,8 +5718,10 @@ function fileTile(file: File, index: number, tool: ToolDef | null): HTMLLIElemen
 									result.verification,
 								)
 							: [];
-			showResult(result, extraRows);
-			setStatus("Done. The result was verified on this device.", "ok");
+			showResult(result, [...extraRows, ...scriptRows]);
+			if (scriptRows.length === 0) {
+				setStatus("Done. The result was verified on this device.", "ok");
+			}
 		} catch (error) {
 			const message =
 				error instanceof ToolProtocolError || error instanceof ToolInputError

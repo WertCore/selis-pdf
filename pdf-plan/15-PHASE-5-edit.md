@@ -295,6 +295,14 @@ Normative spec: `23-EDIT-MODEL-SPEC.md`. Read it before any task here.
 - [ ] **SL-5.FORM.03 — Calculation, validation, and format order** · deps: FORM.01, SL-5.JS.01 · owner: AI+
   - **Do:** `/CO` calculation order and the format/validate/calculate event sequence. Most real
     forms depend on this working exactly like Acrobat.
+  - **Partial (this slice):** `selis-pdf-form::scan_form_scripts` now reports a typed
+    `ScriptManifest` (`has_scripts` + `/CO`-ordered `CalcScript`s); `FormFieldsReport` carries it.
+    The native CLI `fill-forms --allow-js` evaluates `/CO` calculations via
+    `JsSandbox::run_authorized` (consent-gated) and merges the computed values into the fill.
+  - **Honest gap:** only the `calculate` event is evaluated; the full `validate`/`format` event
+    sequence and Acrobat-exact ordering/trigger semantics are not implemented. Browser-computed
+    values are shown as read-back rows but are **not** written back into the filled PDF (the PDF
+    keeps the values you entered); the native CLI does write computed values back.
 - [x] **SL-5.FORM.04 — Form filling UI** · deps: FORM.02 · owner: AI
   - **Do:** Tab order, keyboard accessibility, required-field indication, and inline validation.
 - [ ] **SL-5.FORM.05 — Form data import/export (FDF, XFDF, JSON, CSV)** · deps: FORM.01 · owner: AI
@@ -348,10 +356,28 @@ Normative spec: `23-EDIT-MODEL-SPEC.md`. Read it before any task here.
     `apps/web/host/src/editor/js-policy.ts`. Both default to deny, key consent on the document id,
     and expose grant/revoke/clear. `JsSandbox::run_authorized` and `runFormScript` call the gate
     *before* creating a runtime or Worker; tests prove no Worker is created without consent.
-  - **Honest gap:** the visual "enable scripting for this document" prompt is **deferred** — no
-    consent UI widget is wired into the editor, and the browser runner is not yet called from the
-    form-fill path. The policy choke point and its tests are shipped so a UI can be added without
-    weakening the default-deny guarantee.
+  - **Done (this slice — the visible prompt + wiring):**
+    - `apps/web/host/src/editor/js-consent.ts` adds `ScriptConsentController`, a dark-themed
+      dialog ("This document contains JavaScript. Allow it to run? [No] [Allow once for this
+      document]" with a required acknowledgment checkbox), `detectFormScripts`, and
+      `runFormScriptWithConsent`. The dialog is built through a typed DOM seam so it is tested
+      with a jsdom-style mock; a change event reveals the Allow button, which is inert until the
+      box is ticked, and an allow records a session grant for that one document id only.
+    - The Fill Forms card (`tools-page.ts`) reads the typed `ScriptManifest` from the field
+      report, shows the prompt after the local no-upload check, and calls `runFormScript` only
+      after an explicit grant. A decline (or a missing prompt host) leaves the grant empty, so no
+      Worker is created. Browser-computed values are surfaced as result rows.
+    - Native CLI `fill-forms`: without consent it refuses a scripted form with a typed error naming
+      `--allow-js` / `SELIS_ALLOW_JS=1`; with the explicit grant it evaluates `/CO` through
+      `JsSandbox::run_authorized`. No script ever auto-runs on either surface.
+    - Tests: jsdom-style prompt read-back, no-Worker-on-deny, real-realm computed value, and
+      per-document scope in `js-consent.test.ts`; native refusal, gate enforcement and scope in
+      `apps/cli/src/forms.rs`; script detection in `selis-pdf-form/src/scripts.rs`.
+  - **Honest gap:** the editor's own form panel (`editor-page.ts`) is not yet wired to the prompt —
+    the Fill Forms card on the tools page is. The browser detection is a conservative ASCII name
+    token scan (`/JS`, `/AA`, `/CO`) OR-ed with the tools layer's typed manifest; it is a prompting
+    signal, not a security boundary (the sandbox's forbidden-API scan and consent gate are).
+    Computed values from the browser sandbox are shown but not written back into the PDF.
 - [x] **SL-5.JS.03 — Admin policy for pre-approved origins** · deps: JS.01 · owner: AI
   - **Done:** `selis-policy::ApprovedOrigins` (Rust) + TS mirror: a list of pre-approved origins
     and document ids, empty = deny-all, with approve/revoke and `is_approved`. Combined in

@@ -38,6 +38,10 @@ selis-pdf-content = { workspace = true }
 selis-pdf-engine = { workspace = true, features = ["builtin-fallback-fonts", "rng"] }
 selis-pdf-text = { workspace = true }
 selis-policy = { workspace = true }
+# SL-5.JS.02: native form-script evaluation is consent-gated through the JS
+# sandbox; the CLI is native-only, so rquickjs is linked here and never in WASM.
+selis-pdf-js = { workspace = true }
+selis-pdf-form = { workspace = true }
 selis-job = { workspace = true }
 selis-image = { workspace = true }
 selis-pdf-convert = { workspace = true }

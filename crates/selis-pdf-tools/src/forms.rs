@@ -14,10 +14,10 @@ use crate::write_gate::{self, PRESERVE_ALL};
 use crate::{read_file, CliError, ToolResult};
 
 pub use selis_pdf_form::{
-    create_form_fields, detect_form_fields, render_xfa, AuthorFieldKind, CandidateKind,
-    CandidateReport, CreateFormOptions, CreateFormReport, FieldCandidate, FieldEdit, FieldKind,
-    FieldSpec, FillFormsOptions, FormField, FormFieldsReport, XfaRenderReport,
-    MAX_FIELD_NAME_BYTES, MAX_FIELD_VALUE_BYTES, MAX_FORM_EDITS,
+    create_form_fields, detect_form_fields, render_xfa, scan_form_scripts, AuthorFieldKind,
+    CalcScript, CandidateKind, CandidateReport, CreateFormOptions, CreateFormReport,
+    FieldCandidate, FieldEdit, FieldKind, FieldSpec, FillFormsOptions, FormField, FormFieldsReport,
+    ScriptManifest, XfaRenderReport, MAX_FIELD_NAME_BYTES, MAX_FIELD_VALUE_BYTES, MAX_FORM_EDITS,
 };
 
 impl From<selis_pdf_form::FormError> for crate::ToolError {

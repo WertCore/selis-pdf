@@ -89,12 +89,14 @@ mod formdata_tests;
 // private items of its parent).
 mod author;
 mod detect;
+mod scripts;
 mod xfa;
 
 pub use author::{
     create_form_fields, AuthorFieldKind, CreateFormOptions, CreateFormReport, FieldSpec,
 };
 pub use detect::{detect_form_fields, CandidateKind, CandidateReport, FieldCandidate};
+pub use scripts::{scan_form_scripts, CalcScript, ScriptManifest};
 pub use xfa::{render_xfa, XfaRenderReport};
 
 use std::collections::HashMap;
@@ -286,6 +288,15 @@ pub struct FormFieldsReport {
     /// True when at least one signature field exists: a subsequent full
     /// rewrite will invalidate any signature over this document.
     pub has_signature: bool,
+    /// True when the document carries form scripts (`/JS`, `/AA`, `/CO`).
+    /// A shell must not run them without the reader's explicit consent
+    /// (SL-5.JS.02, ADR-P0020).
+    #[serde(default)]
+    pub has_scripts: bool,
+    /// Calculation actions in `/CO` order, for a shell that has obtained
+    /// consent and wants to evaluate them in a sandbox.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub calculations: Vec<CalcScript>,
     /// The fields, in `/Fields` walk order (parents before children).
     pub fields: Vec<FormField>,
 }
@@ -407,10 +418,13 @@ pub fn read_form_fields(
         .ok()
         .map(|refs| u64::try_from(refs.len()).unwrap_or(u64::MAX));
     let walked = walk_records(src, &doc, budget, g)?;
+    let script_manifest = scan_form_scripts(src, budget, g)?;
     Ok(FormFieldsReport {
         status: "ok".to_string(),
         pages,
         has_signature: walked.has_signature,
+        has_scripts: script_manifest.has_scripts,
+        calculations: script_manifest.calculations,
         fields: walked
             .records
             .into_iter()
