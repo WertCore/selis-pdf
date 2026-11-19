@@ -1676,6 +1676,69 @@ impl Session {
         Ok(dl)
     }
 
+    /// Reconstruct the paragraphs of a page with a confidence (SL-5.TEXTEDIT.01).
+    ///
+    /// This is the engine-level entry point that reuses the public extraction
+    /// pipeline rather than re-implementing any of it: `page_text_display_list`
+    /// → `gather_glyphs` → Unicode recovery → `assemble` → `order_lines` →
+    /// `selis_pdf_text::infer_paragraphs`. The structure tree (when the document
+    /// is tagged) supplies both the reading order and the MCID signal that
+    /// feeds the confidence.
+    ///
+    /// # Budget
+    ///
+    /// The display-list interpretation, Unicode recovery, ordering and
+    /// paragraph grouping all run under the caller's guard; `budget` is the
+    /// same one the other text surfaces use.
+    ///
+    /// # Malformed Input
+    ///
+    /// Unresolvable fonts, absent structure trees and missing MCIDs degrade to
+    /// a geometric order and a lower confidence rather than an error — the same
+    /// posture as the extractor. A page with no recovered text yields no
+    /// paragraphs and a zero confidence.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the display-list, ordering and grouping errors (budget,
+    /// cancellation, page index).
+    pub fn infer_paragraphs(
+        &self,
+        page: usize,
+        budget: &Budget,
+        g: &mut BudgetGuard<'_>,
+    ) -> Result<(Vec<selis_pdf_text::Paragraph>, selis_pdf_text::Confidence)> {
+        let dl = self.page_text_display_list(page, budget, g)?;
+        let visible = self.page_visible_box(page);
+        let mut glyphs = selis_pdf_text::gather_glyphs(&dl, visible);
+        selis_pdf_text::apply_unicode_recovery(&mut glyphs, &mut |font, code| {
+            self.text_unicode(page, font, code, budget, g)
+        });
+        let lines = selis_pdf_text::assemble(glyphs);
+        let mcid_lines: Vec<selis_pdf_text::LineWithMcid> = lines
+            .into_iter()
+            .map(|line| {
+                let mcid = line
+                    .words
+                    .iter()
+                    .flat_map(|word| word.runs.iter())
+                    .find_map(|run| run.glyphs.first().and_then(|glyph| glyph.mcid));
+                selis_pdf_text::LineWithMcid { line, mcid }
+            })
+            .collect();
+        let mcid_order = self
+            .mcid_order(budget, g)
+            .ok()
+            .filter(|order| !order.is_empty());
+        let reading = if mcid_order.is_some() {
+            selis_pdf_text::ReadingOrder::Structure
+        } else {
+            selis_pdf_text::ReadingOrder::Geometry
+        };
+        let ordered = selis_pdf_text::order_lines(mcid_lines, mcid_order.as_deref(), g)?;
+        selis_pdf_text::infer_paragraphs(&ordered.lines, &reading, g)
+    }
+
     /// Render a page consulting whichever lazy sets are attached.
     ///
     /// The composable form of [`Session::render_page_cjk`] and
@@ -4801,6 +4864,37 @@ mod tests {
         let idx = (50 * 100 + 50) * 4;
         assert_eq!(&data[idx..idx + 3], &[0, 0, 0]);
         assert_eq!(data[idx + 3], 255);
+    }
+
+    /// SL-5.TEXTEDIT.01 read-back: a real two-paragraph PDF goes through the
+    /// whole public pipeline (display list → glyphs → recovery → assembly →
+    /// ordering → paragraph inference) and comes back as two styled paragraphs.
+    #[test]
+    fn infer_paragraphs_reads_back_a_two_paragraph_fixture() {
+        let src = include_bytes!("../../../corpus/fixtures/paragraphs/two_paragraphs.pdf");
+        let budget = Budget::profile(selis_sandbox::Surface::Viewer);
+        let clock = FixedClock(0);
+        let session = Session::open(src.to_vec(), &budget, &clock).expect("open");
+        let mut g = budget.guard_with(&clock, CancelToken::new());
+        let (paragraphs, confidence) = session
+            .infer_paragraphs(0, &budget, &mut g)
+            .expect("paragraphs");
+        assert_eq!(paragraphs.len(), 2, "the blank line breaks the page in two");
+        assert_eq!(paragraphs[0].lines.len(), 2);
+        assert_eq!(paragraphs[1].lines.len(), 2);
+        assert_eq!(
+            paragraphs[0].text, "First paragraph line one First paragraph line two",
+            "recovered text belongs to the first paragraph"
+        );
+        assert_eq!(
+            paragraphs[1].text,
+            "Second paragraph line one Second paragraph line two"
+        );
+        assert_eq!(paragraphs[0].style.size, 12.0);
+        assert!(
+            confidence.value > 0.7,
+            "a clean geometric page is confident"
+        );
     }
 
     /// The whole-page RGBA path is opaque white paper, matches the page view,
