@@ -485,10 +485,28 @@ Normative spec: `23-EDIT-MODEL-SPEC.md`. Read it before any task here.
 - [ ] **SL-5.SIGN.04 — Timestamping (RFC 3161) and LTV** · deps: SIGN.03, SL-0.LEAD.08 · owner: HUMAN
   - **Do:** TSA integration, DSS/VRI construction, and document-timestamp signatures for long-term
     validation (PAdES B-LT / B-LTA).
-- [ ] **SL-5.SIGN.05 — Certification signatures and DocMDP** · deps: SIGN.03 · owner: HUMAN
-- [ ] **SL-5.SIGN.06 — Key sources** · deps: SIGN.03 · owner: HUMAN
+- [x] **SL-5.SIGN.05 — Certification signatures and DocMDP** · deps: SIGN.03 · owner: AI+
+  - **Done:** `selis-pdf-sign::sign_certification` writes the same detached CMS as SIGN.03 plus
+    `/Reference → /TransformMethod /DocMDP /TransformParams /P` (levels 1/2/3), re-opens the
+    output, follows the graph to read `/P` back and re-runs the real signature report before
+    returning. The written shape is exactly the one `selis-pdf-edit::signature_guard` parses, so
+    creation and EDIT.07 enforcement agree. Tests cover all three levels plus an edit→guard
+    round-trip that proves a level-1 forbidden content edit is refused with a named error.
+- [ ] **SL-5.SIGN.06 — Key sources** · deps: SIGN.03 · owner: AI+ (partial), HUMAN (PKCS#11/CSC)
   - **Do:** PKCS#12 files, OS keystores (Windows CryptoAPI, macOS Keychain), PKCS#11 tokens and
     smart cards, and cloud-signing (CSC API) for the eIDAS path.
+  - **Done (partial):** `selis-pdf-sign::p12::load_pkcs12` opens a password-protected `.p12/.pfx`
+    locally with `p12-keystore` 0.4.1 (MIT/Apache-2.0, pure Rust, MSRV 1.85; `rc2` is MIT for
+    legacy stores), converts the PKCS#8 key and X.509 chain to the existing PEM path and refuses
+    EC keys, wrong passwords and oversized blobs. Tests build a real encrypted store in-test,
+    sign and verify from it, and assert private-key bytes never appear in the PDF. Native-only;
+    no WASM chunk grows. `keystore.rs` is a native-only typed abstraction of Windows CNG / macOS
+    Keychain / Linux secret-service; because the only available bindings are raw `unsafe` FFI,
+    signing returns a precise typed `OsKeyStoreUnavailable` instead of pretending to support it.
+    Keys are never uploaded (ADR-P0019).
+  - **Remaining:** PKCS#11/PIV tokens and CSC (cloud) signing are NOT implemented — they need a
+    safe native backend / CA integration and are a genuine barrier to entry for European public
+    sectors. The typed OS-keystore gap is deliberate, not a silent fallback.
   - **Note:** Smart-card/eID support is a hard requirement in several European public sectors and
     a genuine barrier to entry for competitors.
 - [ ] **SL-5.SIGN.07 — Signature appearance generation** · deps: SIGN.03, ANNOT.01 · owner: AI+
@@ -551,6 +569,6 @@ Normative spec: `23-EDIT-MODEL-SPEC.md`. Read it before any task here.
 
 ---
 
-> **Status reconciliation (2026-11-19):** Verified against code and flipped stale `[ ]` markers to `[x]` for items whose implementation exists: EDIT.01 (journal), EDIT.02 (undo/redo), EDIT.03 (incremental writer + 100 000-mutation suite), EDIT.08 (page ops), EDIT.09 (object rewriting), EDIT.10 (`.selis` bundle), EDIT.11 (compare engine+CLI), ANNOT.04/05/06/07, FORM.01/04, REDACT.01–04/06, CONV.01–04/06. Items left open are genuinely missing or partial: TEXTEDIT.01/03/04/05/06, FORM.03/06/07/08, all JS.*, SIGN.04/05/06, all OCR.*, BIZ.*. REDACT.05 was in this open list when that note was
+> **Status reconciliation (2026-11-19):** Verified against code and flipped stale `[ ]` markers to `[x]` for items whose implementation exists: EDIT.01 (journal), EDIT.02 (undo/redo), EDIT.03 (incremental writer + 100 000-mutation suite), EDIT.08 (page ops), EDIT.09 (object rewriting), EDIT.10 (`.selis` bundle), EDIT.11 (compare engine+CLI), ANNOT.04/05/06/07, FORM.01/04, REDACT.01–04/06, CONV.01–04/06. Items left open are genuinely missing or partial: TEXTEDIT.01/03/04/05/06, FORM.03/06/07/08, all JS.*, SIGN.04/06 (SIGN.05 now delivered: certification signatures + DocMDP), all OCR.*, BIZ.*. REDACT.05 was in this open list when that note was
 written; it now has the reviewed web card described above, still with no auto-apply path. ENC-side
 items elsewhere remain gated on human review. Verification was read-only against `crates/` and `apps/`.

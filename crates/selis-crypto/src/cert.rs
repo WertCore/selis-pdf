@@ -1021,8 +1021,90 @@ pub fn base64_decode(text: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// Encode DER bytes as a single RFC 7468 PEM block with the given label
+/// (e.g. `"CERTIFICATE"` or `"PRIVATE KEY"`), using LF line endings and 64
+/// characters per line.
+///
+/// # Budget / Malformed Input
+///
+/// Allocates a buffer of about `4/3 * der.len()`. Any byte string is valid
+/// DER-as-far-as-encoding-is-concerned; structural validation is the caller's
+/// job (this is the exact inverse of [`pem_body`] / [`base64_decode`]).
+#[must_use]
+pub fn pem_encode(label: &str, der: &[u8]) -> String {
+    let mut out = String::with_capacity(der.len().saturating_mul(2).saturating_add(128));
+    out.push_str("-----BEGIN ");
+    out.push_str(label);
+    out.push_str("-----\n");
+    for line in base64_encode(der).as_bytes().chunks(64) {
+        out.push_str(core::str::from_utf8(line).unwrap_or(""));
+        out.push('\n');
+    }
+    out.push_str("-----END ");
+    out.push_str(label);
+    out.push_str("-----\n");
+    out
+}
+
+/// Minimal standard-alphabet base64 encoder with `=` padding. See
+/// [`base64_decode`] for why this lives here rather than in a dependency.
+#[must_use]
+pub fn base64_encode(data: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(
+        data.len()
+            .saturating_mul(4)
+            .saturating_div(3)
+            .saturating_add(4),
+    );
+    for chunk in data.chunks(3) {
+        let b0 = usize::from(chunk[0]);
+        let b1 = chunk.get(1).copied().map(usize::from).unwrap_or(0);
+        let b2 = chunk.get(2).copied().map(usize::from).unwrap_or(0);
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        out.push(char::from(ALPHABET[(triple >> 18) & 0x3F]));
+        out.push(char::from(ALPHABET[(triple >> 12) & 0x3F]));
+        if chunk.len() > 1 {
+            out.push(char::from(ALPHABET[(triple >> 6) & 0x3F]));
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(char::from(ALPHABET[triple & 0x3F]));
+        } else {
+            out.push('=');
+        }
+    }
+    out
+}
+
 /// Charge `bytes` of PEM or DER to a guard, so a huge caller file is refused
 /// by the same budget as the parse.
 pub fn charge(g: &mut BudgetGuard<'_>, bytes: usize) -> Result<()> {
     g.charge(Resource::Bytes, u64::try_from(bytes).unwrap_or(u64::MAX))
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::{base64_encode, pem_body, pem_encode};
+
+    #[test]
+    fn pem_encode_round_trips_through_pem_body() {
+        let der = b"a DER payload with a few bytes: \x00\x01\x02\xfe\xff";
+        let pem = pem_encode("CERTIFICATE", der);
+        assert!(pem.starts_with("-----BEGIN CERTIFICATE-----\n"));
+        assert!(pem.ends_with("-----END CERTIFICATE-----\n"));
+        assert_eq!(pem_body(&pem, "CERTIFICATE").expect("decodes"), der);
+    }
+
+    #[test]
+    fn base64_encode_handles_all_pad_widths() {
+        assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_encode(b"f"), "Zg==");
+        assert_eq!(base64_encode(b"fo"), "Zm8=");
+        assert_eq!(base64_encode(b"foo"), "Zm9v");
+        assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
+    }
 }

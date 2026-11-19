@@ -15,15 +15,15 @@
 use super::*;
 use selis_sandbox::{Budget, Surface};
 
-const ROOT: &str = include_str!("../tests/fixtures/root.crt");
-const LEAF: &str = include_str!("../tests/fixtures/leaf.crt");
-const LEAF_KEY: &str = include_str!("../tests/fixtures/leaf.key");
+pub(crate) const ROOT: &str = include_str!("../tests/fixtures/root.crt");
+pub(crate) const LEAF: &str = include_str!("../tests/fixtures/leaf.crt");
+pub(crate) const LEAF_KEY: &str = include_str!("../tests/fixtures/leaf.key");
 const ROGUE: &str = include_str!("../tests/fixtures/rogue.crt");
-const EC_KEY: &str = include_str!("../tests/fixtures/ec.key");
+pub(crate) const EC_KEY: &str = include_str!("../tests/fixtures/ec.key");
 
 const SIGNING_TIME: &str = "20261104120000Z";
 /// `2026-11-04T12:00:00Z`.
-const NOW: i64 = 1_793_793_600;
+pub(crate) const NOW: i64 = 1_793_793_600;
 
 /// A minimal one-page PDF from raw object bodies, with a correct xref.
 fn build_pdf(objects: &[(u32, &[u8])], trailer_extra: &str) -> Vec<u8> {
@@ -55,7 +55,7 @@ fn build_pdf(objects: &[(u32, &[u8])], trailer_extra: &str) -> Vec<u8> {
 }
 
 /// One page, an empty content stream, optionally rotated.
-fn base_pdf(rotate: Option<i64>) -> Vec<u8> {
+pub(crate) fn base_pdf(rotate: Option<i64>) -> Vec<u8> {
     let page = match rotate {
         Some(degrees) => format!(
             "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Rotate {degrees} \
@@ -82,7 +82,7 @@ fn pem_der(pem: &str) -> Vec<u8> {
     selis_crypto::cert::pem_body(pem, "CERTIFICATE").expect("fixture PEM decodes")
 }
 
-fn digital_options(field: &str) -> DigitalOptions {
+pub(crate) fn digital_options(field: &str) -> DigitalOptions {
     DigitalOptions {
         page: 1,
         rect: [72.0, 600.0, 320.0, 690.0],
@@ -543,4 +543,77 @@ fn the_report_serialises_to_json() {
     assert!(text.contains("\"verified\":true"));
     assert!(text.contains("\"revocationChecked\":false"));
     assert!(text.contains("Signature1"));
+}
+
+#[test]
+fn certification_writes_and_reads_back_all_three_docmdp_levels() {
+    for level in [
+        DocMdpLevel::NoChanges,
+        DocMdpLevel::FillForms,
+        DocMdpLevel::FillAndAnnotate,
+    ] {
+        let src = base_pdf(None);
+        let budget = Budget::profile(Surface::Viewer);
+        let mut g = budget.guard();
+        let options = CertificationOptions {
+            doc_mdp: level,
+            signature: digital_options("CertSig"),
+        };
+        let (out, report) = sign_certification(&src, &options, &budget, &mut g).expect("certifies");
+        assert!(out.starts_with(&src), "level {}", level.p());
+        assert!(report.verified);
+        assert_eq!(report.level, level);
+        assert_eq!(report.p, level.p());
+        assert!(report.params_object > 0);
+        assert_eq!(report.signature.sub_filter, "adbe.pkcs7.detached");
+
+        let text = String::from_utf8_lossy(&out);
+        assert!(
+            text.contains("/TransformMethod /DocMDP"),
+            "level {}",
+            level.p()
+        );
+        assert!(
+            text.contains(&format!("/P {}", level.p())),
+            "level {} wrote /P",
+            level.p()
+        );
+
+        // Read-back uses the real report: the signature verifies and covers
+        // the whole produced file, not just the original prefix.
+        let read = signatures(&out, &[pem_der(ROOT)], NOW, &budget, &mut g).expect("reports");
+        assert_eq!(read.signatures.len(), 1, "level {}", level.p());
+        assert!(read.signatures[0].verified, "level {}", level.p());
+        assert!(read.signatures[0].covers_whole_document);
+        assert_eq!(read.signatures[0].field, "CertSig");
+    }
+}
+
+#[test]
+fn an_approval_signature_has_no_docmdp_reference() {
+    let src = base_pdf(None);
+    let budget = Budget::profile(Surface::Viewer);
+    let mut g = budget.guard();
+    let (out, _) =
+        sign_digital(&src, &digital_options("Signature1"), &budget, &mut g).expect("signs");
+    let text = String::from_utf8_lossy(&out);
+    assert!(!text.contains("/TransformMethod /DocMDP"));
+    assert!(!text.contains("/TransformParams"));
+}
+
+#[test]
+fn a_certification_refuses_an_ec_key_like_an_approval_signature() {
+    let src = base_pdf(None);
+    let budget = Budget::profile(Surface::Viewer);
+    let mut g = budget.guard();
+    let mut signature = digital_options("CertSig");
+    signature.key_pem = EC_KEY.to_string();
+    let options = CertificationOptions {
+        doc_mdp: DocMdpLevel::NoChanges,
+        signature,
+    };
+    assert!(matches!(
+        sign_certification(&src, &options, &budget, &mut g),
+        Err(SignError::Unsupported(_))
+    ));
 }
