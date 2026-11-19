@@ -29,6 +29,11 @@ selis-pdf-cos = { workspace = true, features = ["rng"] }
 selis-pdf-doc = { workspace = true }
 selis-pdf-tools = { workspace = true, features = ["native-fs", "security", "sign", "text"] }
 selis-pdf-edit = { workspace = true }
+# SL-5.SIGN.04: the pure DSS embedder lives in the engine; the consent-gated
+# network fetch lives ONLY here in the native binding layer. The engine never
+# links a socket. sha2 hashes the signature before an explicit opt-in.
+selis-pdf-sign = { workspace = true }
+sha2 = { workspace = true }
 selis-pdf-filter = { workspace = true }
 selis-pdf-content = { workspace = true }
 # Desktop target: ship the full twelve-face Liberation fallback set, so a
@@ -47,6 +52,3 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
-# Hash-pinning for the wild hang-regression fixtures (test-only; MIT/Apache,
-# already in [workspace.dependencies]).
-sha2 = { workspace = true }

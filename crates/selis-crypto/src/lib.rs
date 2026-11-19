@@ -38,6 +38,7 @@ pub mod der;
 pub mod der_write;
 pub mod legacy;
 pub mod pkcs7;
+pub mod timestamp;
 pub mod x509;
 
 #[cfg(test)]

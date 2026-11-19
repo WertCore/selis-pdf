@@ -21,7 +21,7 @@ pub(crate) const LEAF_KEY: &str = include_str!("../tests/fixtures/leaf.key");
 const ROGUE: &str = include_str!("../tests/fixtures/rogue.crt");
 pub(crate) const EC_KEY: &str = include_str!("../tests/fixtures/ec.key");
 
-const SIGNING_TIME: &str = "20261104120000Z";
+pub(crate) const SIGNING_TIME: &str = "20261104120000Z";
 /// `2026-11-04T12:00:00Z`.
 pub(crate) const NOW: i64 = 1_793_793_600;
 

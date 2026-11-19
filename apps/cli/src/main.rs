@@ -41,6 +41,8 @@ mod search;
 mod sign;
 mod subset_fonts;
 mod topdf;
+#[cfg(not(target_arch = "wasm32"))]
+mod tsa;
 mod unlock;
 
 // The tool implementation now lives in `selis-pdf-tools`, shared with the
@@ -675,6 +677,24 @@ enum Command {
         /// The signing time as `YYYYMMDDHHMMSSZ` (default: now, UTC).
         #[arg(long)]
         time: Option<String>,
+        /// OPT-IN: after printing a consent notice to stderr, connect to the
+        /// TSA configured by SELIS_TSA_URL and send a SHA-256 HASH of this
+        /// signature (never the document or any key) for an RFC 3161 token.
+        /// NO network access happens without this flag. Default: off.
+        #[arg(long)]
+        connect_tsa: bool,
+        /// Override the TSA URL for one invocation (still requires
+        /// --connect-tsa). `http://` only; no TLS in this build.
+        #[arg(long)]
+        tsa_url: Option<String>,
+        /// OPT-IN: after a consent notice, fetch an OCSP response from the
+        /// responder configured by SELIS_OCSP_URL for the DSS LTV data.
+        /// The certificate's AIA URL is NOT auto-discovered. Default: off.
+        #[arg(long)]
+        connect_aia: bool,
+        /// Override the OCSP responder URL (still requires --connect-aia).
+        #[arg(long)]
+        ocsp_url: Option<String>,
         /// Emit the verification object as JSON on stdout (SL-1A.UI.02).
         #[arg(long)]
         json: bool,
@@ -1338,6 +1358,10 @@ fn run() {
             reason,
             location,
             time,
+            connect_tsa,
+            tsa_url,
+            connect_aia,
+            ocsp_url,
             json,
         } => finish(
             sign::sign(
@@ -1352,6 +1376,10 @@ fn run() {
                 reason.as_deref(),
                 location.as_deref(),
                 time.as_deref(),
+                connect_tsa,
+                tsa_url.as_deref(),
+                connect_aia,
+                ocsp_url.as_deref(),
             ),
             json,
         ),

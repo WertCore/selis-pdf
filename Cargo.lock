@@ -2223,6 +2223,7 @@ dependencies = [
  "selis-pdf-edit",
  "selis-pdf-engine",
  "selis-pdf-filter",
+ "selis-pdf-sign",
  "selis-pdf-text",
  "selis-pdf-tools",
  "selis-policy",

@@ -67,6 +67,7 @@ use selis_sandbox::{Budget, BudgetGuard};
 
 pub mod certification;
 pub mod digital;
+pub mod dss;
 pub mod report;
 pub mod visual;
 
@@ -82,6 +83,7 @@ pub use certification::{
     sign_certification, CertificationOptions, CertificationReport, DocMdpLevel,
 };
 pub use digital::{sign_digital, DigitalOptions, DigitalReport};
+pub use dss::{embed_dss, signature_contents, DssOptions, DssReport, TimestampToken};
 pub use report::{
     signature_report_json, signatures, SignatureReport, SignaturesReport, TrustReport,
 };
