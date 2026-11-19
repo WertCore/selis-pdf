@@ -45,6 +45,8 @@
 
 #![forbid(unsafe_code)]
 
+/// SL-5.TEXTEDIT.07/08: adding text, images, shapes, links and page furniture.
+pub mod add_content;
 /// SL-5.TEXTEDIT.03: box/run-level editing with a mandatory no-reflow warning.
 pub mod box_edit;
 mod font;
@@ -59,6 +61,8 @@ pub mod save;
 /// SL-5.EDIT.07: signature preservation and DocMDP enforcement for saves.
 pub mod signature_guard;
 
+#[cfg(test)]
+mod add_content_tests;
 #[cfg(test)]
 mod box_edit_tests;
 #[cfg(test)]
