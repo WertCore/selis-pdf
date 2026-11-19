@@ -53,6 +53,22 @@
 //!   ([`FillInfo::has_signature`]) so every shell can disclose, before the
 //!   bytes are committed, that a full rewrite invalidates it.
 //!
+//! Beyond reading and filling, this crate now also:
+//!
+//! * **creates** AcroForm fields from a caller spec — text, checkbox, radio and
+//!   choice — on a document that has none (or appends to one that does),
+//!   building `/AcroForm`, widget annotations and `/AP` appearances, then
+//!   re-opening the bytes to assert every field's type, name and rectangle
+//!   ([`create_form_fields`], SL-5.FORM.06);
+//! * **detects** candidate fields on a flat document from content-stream
+//!   geometry (short rules, horizontal lines, small squares) with a confidence
+//!   and an optional nearby label. It is read-only and never auto-creates
+//!   ([`detect_form_fields`], SL-5.FORM.07);
+//! * **renders the static text** of a non-interactive XFA `<template>` as an
+//!   honest plain-text representation, while refusing dynamic/interactive XFA
+//!   with a precise typed reason instead of faking a layout
+//!   ([`render_xfa`], SL-5.FORM.08).
+//!
 //! The rewrite copies the object graph reachable from the catalog and
 //! `/Info` (the same GC the compress operation uses), so values are replaced
 //! inside a clean, renumbered document with no superseded bytes left behind.
@@ -66,6 +82,20 @@ pub mod formdata;
 
 #[cfg(test)]
 mod formdata_tests;
+
+// SL-5.FORM.06/07/08: field authoring, flat-document field detection and the
+// honest XFA static-text render. They are sibling modules of the read/fill
+// model so they can share its object helpers (a child module may reach the
+// private items of its parent).
+mod author;
+mod detect;
+mod xfa;
+
+pub use author::{
+    create_form_fields, AuthorFieldKind, CreateFormOptions, CreateFormReport, FieldSpec,
+};
+pub use detect::{detect_form_fields, CandidateKind, CandidateReport, FieldCandidate};
+pub use xfa::{render_xfa, XfaRenderReport};
 
 use std::collections::HashMap;
 use std::fmt;
@@ -103,6 +133,14 @@ pub enum FormError {
     /// The form carries an XFA packet; editing AcroForm dictionaries under a
     /// live XFA is refused rather than half-applied.
     Xfa,
+    /// An XFA form needs layout/scripting this crate does not implement. The
+    /// reason names the precise construct (e.g. a `<dynamic>` packet) so a
+    /// caller can disclose it instead of showing a blank form.
+    XfaDynamic(String),
+    /// An XFA render or edit was asked for on a document that has no usable
+    /// XFA packet, or whose packet is not a static template this crate can
+    /// read. Carries the precise reason.
+    XfaUnsupported(String),
     /// A limit was exceeded (too many edits, an over-long name or value).
     Limit(String),
     /// The request is invalid on its own terms (an empty field list, an empty
@@ -137,6 +175,7 @@ impl fmt::Display for FormError {
             Self::Xfa => f.write_str(
                 "this form carries an XFA packet; XFA is the authority in such a form and this tool edits AcroForm dictionaries only",
             ),
+            Self::XfaDynamic(detail) | Self::XfaUnsupported(detail) => f.write_str(detail),
             Self::ReadBack { name, wanted, read } => write!(
                 f,
                 "the value for {name:?} did not read back from the filled output (wanted {wanted:?}, read {read:?})"
