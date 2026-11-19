@@ -10,6 +10,8 @@
 pub mod cache;
 pub mod invert;
 pub mod page;
+/// SL-5.TEXTEDIT.02: model-based text edit + re-layout + re-emit.
+pub mod reflow;
 pub mod render;
 pub mod session;
 pub mod tiled;
@@ -17,6 +19,7 @@ pub mod tiled;
 pub use cache::{matrix_id, CacheKey, LruCache};
 pub use invert::{invert_colors, DEFAULT_INVERT_DPI, MAX_INVERT_DPI, MIN_INVERT_DPI};
 pub use page::{page_view, PageView};
+pub use reflow::{reflow_paragraph, NewGlyph, ReflowError, ReflowReport};
 pub use render::{
     render_display_list, render_display_list_with_stats, GlyphMapping, RenderStats,
     ResolvedFontProgram,

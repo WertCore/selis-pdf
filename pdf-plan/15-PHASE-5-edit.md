@@ -214,12 +214,38 @@ Normative spec: `23-EDIT-MODEL-SPEC.md`. Read it before any task here.
     correct groupings outrank merged/split/shifted ones (min correct 0.918, max incorrect 0.681).
     `PROVISIONAL_REFLOW_THRESHOLD = 0.80` is that set's midpoint — derived, not guessed, but provisional
     pending the real 500-page data. TEXTEDIT.03's box-level fallback should treat it as such.
-- [ ] **SL-5.TEXTEDIT.02 — Text edit + re-layout + re-emit** · deps: TEXTEDIT.01, SL-3.SHAPE.03, SL-3.FONT.11 · owner: AI+
+- [x] **SL-5.TEXTEDIT.02 — Text edit + re-layout + re-emit** · deps: TEXTEDIT.01, SL-3.SHAPE.03, SL-3.FONT.11 · owner: AI+
   - **Do:** Edit the model, re-shape and re-break the affected paragraph, re-emit that content
     region while leaving the rest of the stream byte-identical, and extend the embedded font
     subset with any new glyphs.
   - **DoD:** Editing one word in a paragraph changes only that paragraph's content region; the page
     renders identically outside the edit; a character absent from the original subset renders.
+  - **Done (pipeline):** `selis_pdf_engine::reflow::reflow_paragraph` reconstructs the paragraph
+    model with confidence, refuses below `MIN_REFLOW_CONFIDENCE` (0.80, the TEXTEDIT.01 provisional
+    threshold) pointing at the box path, locates the paragraph's show-text byte span, re-breaks the
+    replacement text with the page font's own advance table + UAX #14 opportunities
+    (`selis_shape::line_breaks`), re-emits only that region, extends the embedded TrueType subset
+    with `selis_font::subset::add_glyph` (widening `/FontFile2`, `/Widths` and `/LastChar`), and writes
+    through `selis_pdf_edit::reflow_regions` → `incremental::save_incremental`. The low-level writer
+    is independently tested in `selis-pdf-edit` (`reflow_edit_tests.rs`).
+  - **DoD evidence (all four items verified):** (a) a one-word edit on the real
+    `corpus/fixtures/paragraphs/two_paragraphs.pdf` changes only the reported byte span; the decoded
+    stream is byte-identical before and after it and the original file is a verbatim byte prefix
+    (I3). (b) `render_page_rgba` before/after, with the paragraph rectangle masked out, is
+    pixel-identical everywhere else. (c) a 'C' glyph absent from the embedded mini subset (code
+    0x43, advance 0) is added with a caller-supplied outline; after the edit the re-embedded font
+    maps 0x43 to a 400-unit advance and the page paints strictly more glyph pixels. (d) a
+    low-confidence paragraph (single-line `text.pdf`) is refused with a typed error naming
+    `edit_box` (TEXTEDIT.03). Tests: `selis-pdf-engine/tests/textedit_reflow.rs` +
+    `selis-pdf-edit/src/reflow_edit_tests.rs`.
+  - **Not claimed (honest gaps):** only simple, single-byte fonts are re-laid-out — two-byte CID /
+    `/ToUnicode` fonts are refused rather than mangled. New glyph outlines are **supplied by the
+    caller** (from a matched face via TEXTEDIT.04); this slice does not itself fetch a substitute
+    font program, and a face it cannot extend is disclosed in the refusal, never silently swapped.
+    Horizontal, top-to-bottom paragraphs only. The 0.80 threshold is still the provisional
+    synthetic-set value from TEXTEDIT.01, not the DoD's 500-page correlation. The subset extension
+    covers TrueType `/FontFile2`; CFF extension is available through the shared subset writer but
+    is not wired into this re-embed path.
 - [x] **SL-5.TEXTEDIT.03 — Box-level fallback editing** · deps: TEXTEDIT.01 · owner: AI
   - **Do:** Below the confidence threshold, offer per-line or per-run editing with explicit
     "this may not reflow" UI rather than silently mangling the page.
