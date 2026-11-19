@@ -29,6 +29,75 @@ export type {
 	SrcOpening,
 } from "./handoff.js";
 export {
+	EDIT_ACTION,
+	buildEditDeepLink,
+	parseEditDeepLink,
+} from "./deep-link.js";
+export type {
+	DeepLinkRefusal,
+	EditDeepLink,
+	EditDeepLinkResult,
+	LocalHandleKind,
+} from "./deep-link.js";
+export {
+	CAPABILITY_FALLBACKS,
+	CAPABILITY_NAMES,
+	detectCapabilities,
+	missingWithFallbacks,
+} from "./capability.js";
+export type { BrowserCapabilities, CapabilityScope } from "./capability.js";
+export {
+	DEFAULT_FLAGS,
+	FEATURE_FLAGS,
+	LocalFeatureFlags,
+	applyFlagOverrides,
+	createFeatureFlags,
+	isRolloutEnabled,
+	parseFlagOverrides,
+	rolloutBucket,
+} from "./feature-flags.js";
+export type {
+	FeatureFlag,
+	FeatureFlagStore,
+	FlagOverrideParse,
+	FlagState,
+	RolloutConfig,
+} from "./feature-flags.js";
+export {
+	EXTERNAL_HASH_CLAIM,
+	NEVER_LEFT_CLAIM,
+	NoUploadIndicator,
+	claimsNeverLeft,
+	indicatorFromRequests,
+	renderNoUploadIndicator,
+	viewFor,
+} from "./no-upload-indicator.js";
+export type {
+	ExternalHashEvent,
+	ExternalPayload,
+	ExternalPurpose,
+	IndicatorElement,
+	IndicatorElementFactory,
+	IndicatorInputs,
+	IndicatorView,
+	NoUploadState,
+} from "./no-upload-indicator.js";
+export {
+	MAX_EXTENSION_CARDS,
+	ToolExtensionRegistry,
+	browserToolExtensionElement,
+	isSafeExtensionHref,
+	renderToolExtensionPanel,
+} from "./tool-extension-surface.js";
+export type {
+	RegisterCardResult,
+	ToolExtensionAnchorElement,
+	ToolExtensionCard,
+	ToolExtensionElementFactory,
+	ToolExtensionPanelElement,
+	ToolExtensionRegistration,
+} from "./tool-extension-surface.js";
+export {
 	collectingSink,
 	planIntake,
 	runIntake,

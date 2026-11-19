@@ -1514,6 +1514,15 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
 - [ ] **SL-4.EXT.08 — Deep link into the web app for edit actions** · deps: EXT.06 · owner: AI+
   - **Do:** "Edit this" hands the document to the web app **locally** (OPFS handoff or a same-origin
     transfer), never by uploading. The funnel from free viewer to paid editor is this button.
+  - **Status (2026-11-20, partial):** the typed, DOM-free parser is done —
+    `apps/web/host/src/deep-link.ts` turns a link into `{ action: "edit", documentId, handle }`
+    (OPFS or FSA) and refuses unknown actions, malformed/over-long ids, foreign schemes, userinfo,
+    traversal, unknown handle kinds, and anything that looks like embedded document bytes
+    (`%PDF-`, `data:`, `blob:`), with a canonical builder that round-trips through the same rule.
+    `deep-link.test.ts` (10 cases) covers the accepted action/id and every refusal class. The
+    box stays open because the extension-side "Edit this" control and the actual local OPFS/same-
+    origin handoff it triggers are not wired in this worktree: the parser is the local-only seam,
+    not the funnel button. No document bytes travel in or out of a link (24-BINDINGS-SPEC §5).
 - [x] **SL-4.EXT.09 — `file://` access permission flow** · deps: EXT.02 · owner: AI+
   - **Do:** Detect that "Allow access to file URLs" is off, explain why it is needed in plain
     language, and deep-link to the toggle. Do not silently fail on local PDFs.
@@ -1521,6 +1530,20 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
   - **Do:** Firefox (MV3 with `webRequest` still available — a different interception path) and
     Safari Web Extension (requires the Xcode wrapper and an App Store submission).
   - **Note:** Safari's wrapper means an Apple Developer account (SL-0.LEAD.02) and a store review.
+  - **Status (2026-11-20, partial — portable code, NOT browser-tested):** the host now detects
+    capabilities instead of assuming Chromium: `apps/web/host/src/capability.ts` returns a typed
+    `BrowserCapabilities` result for 16 surfaces (service worker, WebAssembly, OPFS + sync handle,
+    File System Access, OffscreenCanvas, IndexedDB, Blob URLs, Web Locks, structured clone, dialog
+    modal, rAF, TextEncoder, observers, SharedArrayBuffer). Probing is presence-only — it never
+    invokes an API and contains throwing getters — and `CAPABILITY_FALLBACKS` names a portable
+    fallback for every one (FSA → `<input type=file>`/Blob, OffscreenCanvas → main-thread canvas,
+    SAB → single-threaded engine), so no Chromium-only API is required; probing also survives a
+    throwing getter. `capability.test.ts` (8 cases) covers the full, partial, empty, and hostile
+    scopes plus the no-invocation guarantee.
+    **These are Node tests of the typed seam, not Firefox or Safari runs** — neither browser is
+    available here, so no claim of browser compatibility is made. Still owed: an actual Firefox
+    MV3 `webRequest` interception path, the Safari Xcode wrapper/App Store submission, and a real
+    browser matrix on both engines.
 - [ ] **SL-4.EXT.11 — Store submissions** · deps: EXT.05, SL-0.LEAD.04 · owner: HUMAN
   - **Do:** Chrome Web Store, Edge Add-ons, AMO, App Store. Prepare privacy disclosures carefully —
     "does not collect user data" must be true and must be defensible.
@@ -1531,7 +1554,17 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
 
 - [x] **SL-4.SHIP.01 — Crash reporting with document-byte stripping** · deps: SL-0.ERR.03 · owner: AI+
   - **DoD:** A test proving no document bytes appear in a report from a deliberately crashing parse.
-- [ ] **SL-4.SHIP.02 — Feature flags + staged rollout** · deps: SL-0.WS.02 · owner: AI
+- [x] **SL-4.SHIP.02 — Feature flags + staged rollout** · deps: SL-0.WS.02 · owner: AI
+  - **Done (2026-11-20).** `apps/web/host/src/feature-flags.ts` is a typed, local-only flag
+    module: a closed set of flags, `DEFAULT_FLAGS` all off, explicit `set`/typed overrides, and
+    `parseFlagOverrides`/`applyFlagOverrides` that refuse unknown names and non-boolean values.
+    Staged rollout is deterministic local bucketing (`rolloutBucket` FNV-1a over flag + stable
+    subject, `isRolloutEnabled` with 0 → off, 100 → on, explicit opt-in winning), with invalid or
+    missing percentages failing closed. **No remote config and no fetch of any kind** — the module
+    is offline/local-only by construction (ADR-P0017). `feature-flags.test.ts` (8 cases) covers
+    default-off, explicit opt-in/out, refusal of unknown flags, bucket determinism, and rollout
+    edge cases. Gap (not a blocker for this module): no deploy-level rollout percentages are
+    configured yet and the flags are not consumed by the host boot path in this worktree.
 - [ ] **SL-4.SHIP.03 — Support: docs, FAQ, "report a rendering bug" flow** · owner: HUMAN
   - **Do:** The bug flow must let a user attach the file *with explicit consent* and must explain
     exactly what is sent. This becomes the highest-value corpus source we have.

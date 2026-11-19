@@ -638,12 +638,37 @@ operation is available identically in the CLI, the web app, and the extension.
     import. `xtask/browser/tools-page` confirms the real page fetched only same-origin resources
     and set `verified` before showing the download. Remaining: fold this into the formal
     `SL-8.BOUND.02` egress matrix and add the visible trust indicator copy/state to the UI.
+  - **Status (2026-11-20, partial — honest indicator added):** `apps/web/host/src/no-upload-indicator.ts`
+    is the visible trust indicator, bound to the real `assertNoUpload` result instead of a static
+    claim. Its four states are `watching`, `verified` (the ONLY state allowed to say "Your file
+    never left this device."), `external-hash` ("External time provider contacted — with your
+    consent.", naming the provider and the hash/identifier actually sent), and `unknown` (claim
+    withdrawn when a check fails or an external contact has no recorded consent). The consented
+    state mirrors `apps/cli/src/tsa.rs`: opt-in only, notice first, hash of the signature (or a
+    certificate-derived identifier for OCSP) — never document bytes — and an unconsented contact
+    is sticky at `unknown`, so ADR-P0017 is not weakened. `renderNoUploadIndicator` is a typed DOM
+    seam (js-consent pattern) that replaces rather than stacks claims; `no-upload-indicator.test.ts`
+    (9 cases) proves pure-local vs consented-hash vs failed-check copy, including that the
+    "never left" claim never appears in the external or unknown states. `data-no-upload=verified`
+    is preserved for the existing tools browser check. Still owed: mount this renderer into the
+    actual tools page chrome, and fold the recorder into the formal `SL-8.BOUND.02` egress matrix.
 - [ ] **SL-1A.UI.04 — Extension surface for tools** · deps: `SL-4.EXT.01`, UI.01 · owner: AI+
   - **Do:** Side panel and toolbar entry points; right-click a PDF link → run a tool; multi-file
     selection handled in the extension's own page rather than a content script.
   - **Note:** `SL-4.EXT.02` (PDF navigation interception) is *not* required for the tools release.
     The extension can ship as a tools surface first and gain the viewer at G4. That decouples the
     fiddliest extension work from the first ship.
+  - **Status (2026-11-20, partial — extension hook added):** `apps/web/host/src/tool-extension-surface.ts`
+    is the typed registration hook: `ToolExtensionRegistry.register` adds a `{id, label, href,
+    blurb?, icon?}` card and returns an unregister handle; validation refuses malformed ids,
+    collisions with built-in tool ids, duplicate registrations, more than 32 cards, and any
+    non-root-relative, foreign, traversal, or script-bearing `href`. `renderToolExtensionPanel`
+    mounts a labelled panel of real anchors through a typed DOM seam (no jsdom), so a tool card
+    can register into a panel without touching the built-in grid. `tool-extension-surface.test.ts`
+    (6 cases) pins registration/unregister, refusals, the cap, and the DOM output, and asserts the
+    built-in `TOOLS` list is unchanged. Still owed: the actual MV3 side panel and toolbar entry
+    point, right-click-a-PDF-link → run-a-tool, and the extension's own multi-file page — this is
+    the registration seam those surfaces will use, not those surfaces themselves.
 - [x] **SL-1A.UI.05 — Offline-first PWA** · deps: `SL-4.WEB.02` · owner: AI
   - **Do:** The whole toolkit works airplane-mode. Demonstrably. It is the proof of the claim.
   - **Done (SL-4.TOOLS.05, updated 2026-10-29):** the install set now carries `/tools.html`,
