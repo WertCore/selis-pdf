@@ -75,7 +75,8 @@ export type ToolOp =
 	| "flatten_forms"
 	| "subset_fonts"
 	| "linearize"
-	| "compare";
+	| "compare"
+	| "redact_patterns";
 
 /** The wire operation number for each operation. */
 const OP_CODE: Record<ToolOp, number> = {
@@ -126,6 +127,10 @@ const OP_CODE: Record<ToolOp, number> = {
 	// chunk decision. The shipped op code is 45+1 so no persisted reference to
 	// the reserved number can collide with the real operation.
 	compare: 46,
+	// Op 45 is the compare chunk, 46 is reserved for it. Redact patterns needs
+	// the engine's text ladder, so op 47 lives in its own lazy chunk and never
+	// in this engine-free tools chunk.
+	redact_patterns: 47,
 };
 
 /** One input file on the wire. */

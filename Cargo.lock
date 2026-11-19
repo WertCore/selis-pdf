@@ -2070,6 +2070,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "selis-pdf-wasm-redact-patterns"
+version = "0.1.0"
+dependencies = [
+ "selis-pdf-tools",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "selis-pdf-wasm-security"
 version = "0.1.0"
 dependencies = [

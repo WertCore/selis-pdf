@@ -15,7 +15,8 @@ export type ChunkId =
 	| "convert"
 	| "editor"
 	| "optimize"
-	| "compare";
+	| "compare"
+	| "redact-patterns";
 
 export interface ChunkEntry {
 	id: ChunkId;
@@ -35,7 +36,7 @@ export interface Manifest {
 	chunks: ChunkEntry[];
 }
 
-/** The canonical 8-chunk split (core + 7 lazy). */
+/** The canonical 9-chunk split (core + 8 lazy). */
 export const MANIFEST: Manifest = {
 	v: 1,
 	engine: "0.1.0",
@@ -58,6 +59,12 @@ export const MANIFEST: Manifest = {
 			budget: 700_000,
 			viewerAuto: false,
 		},
+		{
+			id: "redact-patterns",
+			url: "wasm/selis_pdf_wasm_redact_patterns.wasm",
+			budget: 600_000,
+			viewerAuto: false,
+		},
 	],
 };
 
@@ -68,7 +75,8 @@ export function viewerMayLoad(id: ChunkId): boolean {
 }
 
 /** Validates viewer never downloads editor (WASM.02 DoD). Throws on violation.
- * The optimise chunk is explicit-action-only for the same reason. */
+ * The optimise and redact-patterns chunks are explicit-action-only for the
+ * same reason: neither is part of the viewer's automatic fetch path. */
 export function validateViewerIsolation(manifest: Manifest = MANIFEST): void {
 	for (const e of manifest.chunks) {
 		if (e.id === "editor" && e.viewerAuto) {
@@ -79,6 +87,9 @@ export function validateViewerIsolation(manifest: Manifest = MANIFEST): void {
 		}
 		if (e.id === "compare" && e.viewerAuto) {
 			throw new Error("viewer must not auto-load the compare chunk");
+		}
+		if (e.id === "redact-patterns" && e.viewerAuto) {
+			throw new Error("viewer must not auto-load the pattern-redaction chunk");
 		}
 	}
 }
@@ -93,4 +104,5 @@ export const ALL_CHUNKS: ChunkId[] = [
 	"editor",
 	"optimize",
 	"compare",
+	"redact-patterns",
 ];

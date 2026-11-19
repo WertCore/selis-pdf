@@ -172,6 +172,20 @@ chunk = "optimize"
 artifact = "selis_pdf_wasm_optimize"
 budget = 220000
 
+# The pattern-redaction chunk (op 47): the read-only `find_candidates` scan and
+# the review-gated `apply_reviewed` apply. Unlike the engine-free tools/optimise
+# chunks it must link the engine's text ladder to recover per-character glyph
+# geometry, so it is budgeted on its own and fetched only when someone opens the
+# "Redact patterns" card. The scan output is a masked JSON review, never a PDF;
+# the apply phase refuses empty/unknown approval sets and writes nothing on a
+# verification failure. No baseline is recorded here yet — the first measured
+# size is reported by `cargo xtask size-check`; the ceiling leaves room for the
+# engine + text pipeline while the 2% rule gates the next slice.
+[[budget]]
+chunk = "redact-patterns"
+artifact = "selis_pdf_wasm_redact_patterns"
+budget = 600000
+
 # The raster page's lazy chunk (PDF → PNG, JPG, TIFF and WebP). It carries the
 # whole render walk, tiny-skia, the built-in Liberation fallback faces, the owned
 # baseline JPEG coder, the owned multi-page TIFF and the owned VP8L lossless

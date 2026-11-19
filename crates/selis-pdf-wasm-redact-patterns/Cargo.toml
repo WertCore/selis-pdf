@@ -1,0 +1,25 @@
+[package]
+name = "selis-pdf-wasm-redact-patterns"
+description = "Lazy WASM chunk: pattern redaction scan/apply with a mandatory review step (op 47)."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# No `native-fs` path reaches a real filesystem from the browser: every input
+# is a key in the in-memory tool session. The `text` feature is required —
+# the pattern scan builds one geometry-bearing text layer per page through the
+# engine's text ladder, which this chunk therefore links on purpose (unlike
+# the engine-free tools/optimize chunks).
+selis-pdf-tools = { workspace = true, features = ["text"] }
+serde = { workspace = true }
+serde_json = { workspace = true }

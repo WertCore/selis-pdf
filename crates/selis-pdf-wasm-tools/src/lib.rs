@@ -157,7 +157,9 @@ impl Op {
             // Ops 41 (subset fonts) and 43 (linearize) moved to the dedicated
             // `selis-pdf-wasm-optimize` chunk. Op 42 was never assigned. Op 45
             // (compare two PDFs) needs the rasteriser *and* the text ladder in
-            // one two-input module, which this engine-free chunk cannot link.
+            // one two-input module, and op 47 (pattern redaction) needs the
+            // engine's text ladder for its geometry — this engine-free chunk
+            // cannot link either. Both have chunks of their own.
             _ => None,
         }
     }
@@ -2018,9 +2020,10 @@ mod tests {
         );
 
         // Ops 41 (subset fonts) and 43 (linearize) now belong to the dedicated
-        // optimise chunk; 42 was never assigned. All three must be unknown here
-        // so a stale card cannot silently run the wrong module.
-        for op in [41, 42, 43] {
+        // optimise chunk; 42 was never assigned; 45 is the compare chunk and
+        // 47 the pattern-redaction chunk (both need the text ladder/engine).
+        // All must be unknown here so a stale card cannot run the wrong module.
+        for op in [41, 42, 43, 45, 47] {
             let response = run_request(&request(op, b"", &[("doc.pdf", &pdf)]));
             assert!(
                 error_text(&response).contains("unknown tool operation"),

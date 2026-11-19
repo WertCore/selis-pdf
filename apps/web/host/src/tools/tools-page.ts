@@ -37,6 +37,22 @@ import {
 	runOptimize,
 } from "./optimize-protocol.js";
 import {
+	type RedactPatternsWasm,
+	loadRedactPatterns,
+	runRedactPatterns,
+} from "./redact-patterns-protocol.js";
+import {
+	REDACT_PATTERNS_NOTE,
+	REDACT_REVIEW_NOTE,
+	approvedIdsFrom,
+	redactPatternsReportRows,
+	reviewFromResult,
+	reviewRows,
+	reviewStatus,
+	type PatternReviewJson,
+	type ReviewRow,
+} from "./redact-patterns.js";
+import {
 	ToolInputError,
 	hasImageHeader,
 	hasPdfHeader,
@@ -938,6 +954,13 @@ function init(): void {
 	let draggedFileIndex: number | null = null;
 	let busy = false;
 	let wasmPromise: Promise<ToolsWasm> | null = null;
+	/** The last masked review and its checkbox rows. No id is approved here. */
+	let redactReview: PatternReviewJson | null = null;
+	let redactReviewRows: ReviewRow[] = [];
+	let redactReviewHost: HTMLElement | null = null;
+	let redactWasm: RedactPatternsWasm | null = null;
+	let redactWireFiles: readonly WireFile[] = [];
+	const redactChecks = new Map<string, HTMLInputElement>();
 	let resultUrls: string[] = [];
 	/**
 	 * PDF outputs of the last shown result, kept byte-for-byte so "Continue
@@ -975,6 +998,15 @@ function init(): void {
 	}
 
 	function clearResult(): void {
+		// A review belongs to the exact scan that produced it. Any option or
+		// file change discards it, so a stale table can never be applied.
+		if (redactReviewHost !== null) {
+			redactReviewHost.hidden = true;
+			redactReviewHost.replaceChildren();
+		}
+		redactReview = null;
+		redactReviewRows = [];
+		redactChecks.clear();
 		for (const url of resultUrls) {
 			URL.revokeObjectURL(url);
 		}
@@ -1713,6 +1745,141 @@ function init(): void {
 		options.append(list, warning);
 	}
 
+	/**
+	 * The Redact patterns card's options. The pattern selectors only control
+	 * the read-only scan; the review table is hidden until a scan returns, and
+	 * its checkboxes all start unchecked. Nothing here can apply a redaction.
+	 */
+	function renderRedactPatternsOptions(host: HTMLElement): void {
+		redactReview = null;
+		redactReviewRows = [];
+		redactReviewHost = null;
+		redactChecks.clear();
+		redactWasm = null;
+		redactWireFiles = [];
+		const note = make("p", "option-note");
+		note.textContent = REDACT_PATTERNS_NOTE;
+		host.append(note);
+		for (const [key, label] of [
+			["pattern-ssn", "US Social Security numbers"],
+			["pattern-card", "Payment card numbers (Luhn-valid)"],
+			["pattern-email", "Email addresses"],
+		] as const) {
+			const box = addField(key, label, checkInput(key)) as HTMLInputElement;
+			box.checked = true;
+		}
+		addField(
+			"literal",
+			"Text to find (optional)",
+			textInput("literal", "text", "a name or other exact text"),
+			"Matched exactly; the search text itself is never written into the review.",
+		);
+		addField(
+			"literal-whole-word",
+			"Whole word only",
+			checkInput("literal-whole-word"),
+			"Require a word boundary on each side of the literal.",
+		);
+		const review = make("section", "redact-review");
+		review.hidden = true;
+		review.dataset.role = "redact-review";
+		redactReviewHost = review;
+		host.append(review);
+	}
+
+	/** Render the masked review table with one unchecked checkbox per candidate. */
+	function renderReviewTable(rows: readonly ReviewRow[]): void {
+		const host = redactReviewHost;
+		if (host === null) return;
+		redactChecks.clear();
+		host.replaceChildren();
+		host.hidden = false;
+		const note = make("p", "option-note");
+		note.textContent = REDACT_REVIEW_NOTE;
+		const table = make("table", "review-table");
+		const head = make("thead");
+		const headRow = make("tr");
+		for (const title of ["Approve", "ID", "Page / line", "Pattern", "Masked text", "Region"]) {
+			const cell = make("th");
+			cell.textContent = title;
+			headRow.append(cell);
+		}
+		head.append(headRow);
+		const body = make("tbody");
+		for (const row of rows) {
+			const tr = make("tr");
+			tr.dataset.candidateId = row.id;
+			const approve = make("td");
+			const checkbox = checkInput(`candidate-${row.id}`);
+			checkbox.checked = false; // explicit approval only — never auto-checked
+			checkbox.dataset.candidateId = row.id;
+			redactChecks.set(row.id, checkbox);
+			approve.append(checkbox);
+			tr.append(approve);
+			for (const value of [row.id, row.location, row.kind, row.masked, row.region]) {
+				const cell = make("td");
+				cell.textContent = value;
+				tr.append(cell);
+			}
+			body.append(tr);
+		}
+		table.append(head, body);
+		const apply = button("Apply selected", "primary-button");
+		apply.dataset.role = "redact-apply";
+		apply.addEventListener("click", () => {
+			const review = redactReview;
+			if (review === null) return;
+			const approved = approvedIdsFrom(rows, (id) => redactChecks.get(id)?.checked === true);
+			if (approved.length === 0) {
+				setStatus("Tick at least one candidate first — nothing has been redacted.", "error");
+				return;
+			}
+			void applyRedactApprovals(review, approved);
+		});
+		host.append(note, table, apply);
+	}
+
+	/** Apply ONLY the ids the reviewer ticked. No scan-and-apply path exists. */
+	async function applyRedactApprovals(
+		review: PatternReviewJson,
+		approved: readonly string[],
+	): Promise<void> {
+		const wasm = redactWasm;
+		if (wasm === null) return;
+		setBusy(true);
+		try {
+			setStatus("Applying only the approved matches locally…", "info");
+			await nextPaint();
+			const request: ToolRequest = {
+				op: "redact_patterns",
+				options: {
+					phase: "apply",
+					review,
+					approved_ids: [...approved],
+				},
+				files: redactWireFiles,
+			};
+			const result = runRedactPatterns(wasm, request);
+			await requestRecorder.assertNoUpload(redactWireFiles.map((file) => file.bytes));
+			document.documentElement.dataset.noUpload = "verified";
+			if (redactReviewHost !== null) {
+				redactReviewHost.hidden = true;
+				redactReviewHost.replaceChildren();
+			}
+			showResult(result, redactPatternsReportRows(result.verification));
+			setStatus("Done. Only the approved matches were redacted and verified on this device.", "ok");
+		} catch (error) {
+			const message =
+				error instanceof ToolProtocolError || error instanceof ToolInputError
+					? error.message
+					: "The redaction could not be finished. Your files were not uploaded.";
+			setStatus(message, "error");
+			console.error("Selis pattern redaction failed:", error);
+		} finally {
+			setBusy(false);
+		}
+	}
+
 	function renderOptions(tool: ToolDef): void {
 		options.replaceChildren();
 		optionControls.clear();
@@ -2391,6 +2558,10 @@ function init(): void {
 			const note = make("p", "option-note");
 			note.textContent = LINEARIZE_NOTE;
 			options.append(note);
+			return;
+		}
+		if (tool.id === "redact_patterns") {
+			renderRedactPatternsOptions(options);
 			return;
 		}
 		if (tool.id === "compress") {
@@ -3659,6 +3830,25 @@ function fileTile(file: File, index: number, tool: ToolDef | null): HTMLLIElemen
 			// Op 43 needs no options: one PDF in, one linearised PDF out.
 			return { op: "linearize", files: wireFiles };
 		}
+		if (tool.id === "redact_patterns") {
+			// The run button only ever starts the read-only SCAN phase. Apply is
+			// a separate click on the review table with an explicit id list.
+			const patterns: string[] = [];
+			for (const [key, name] of [
+				["pattern-ssn", "ssn"],
+				["pattern-card", "card"],
+				["pattern-email", "email"],
+			] as const) {
+				if (optionChecked(key)) patterns.push(name);
+			}
+			const literal = optionValue("literal").trim();
+			const options: Record<string, unknown> = { phase: "scan", patterns };
+			if (literal !== "") {
+				options.literal = literal;
+				options.whole_word = optionChecked("literal-whole-word");
+			}
+			return { op: "redact_patterns", options, files: wireFiles };
+		}
 		if (tool.id === "zip") {
 			return { op: "zip", files: wireFiles };
 		}
@@ -3805,6 +3995,20 @@ function fileTile(file: File, index: number, tool: ToolDef | null): HTMLLIElemen
 			});
 		}
 		return compareWasmPromise;
+	}
+
+	// Op 47 needs the engine's text ladder, so it has its own chunk. Keeping
+	// its promise separate means opening this card never downloads the tools or
+	// optimise engines, and a failed load is retried on its own.
+	let redactWasmPromise: Promise<RedactPatternsWasm> | null = null;
+	function getRedactPatternsWasm(): Promise<RedactPatternsWasm> {
+		if (redactWasmPromise === null) {
+			redactWasmPromise = loadRedactPatterns().catch((error: unknown) => {
+				redactWasmPromise = null;
+				throw error;
+			});
+		}
+		return redactWasmPromise;
 	}
 
 	let convertWasmPromise: Promise<ConvertWasm> | null = null;
@@ -5316,6 +5520,27 @@ function fileTile(file: File, index: number, tool: ToolDef | null): HTMLLIElemen
 			const wireFiles = await readWireFiles();
 			const request = buildRequest(tool, wireFiles);
 			const chunk = opsChunkForTool(tool.id);
+			if (chunk === "redact_patterns") {
+				// The review step is mandatory: this path only scans and shows a
+				// masked table. A second, explicit Apply click is the only way
+				// any redaction request can be built.
+				setStatus("Loading the local pattern-redaction engine…", "info");
+				const wasm = await getRedactPatternsWasm();
+				redactWasm = wasm;
+				redactWireFiles = wireFiles;
+				setStatus("Scanning for patterns locally…", "info");
+				await nextPaint();
+				const result = runRedactPatterns(wasm, request);
+				await requestRecorder.assertNoUpload(wireFiles.map((file) => file.bytes));
+				document.documentElement.dataset.noUpload = "verified";
+				clearResult();
+				const review = reviewFromResult(result);
+				redactReview = review;
+				redactReviewRows = reviewRows(review);
+				renderReviewTable(redactReviewRows);
+				setStatus(reviewStatus(review.candidates.length), "info");
+				return;
+			}
 			setStatus(
 				chunk === "compare"
 					? "Loading the local compare engine…"

@@ -136,6 +136,10 @@ const OPTIMIZE_WASM_RAW = "wasm32-unknown-unknown/release/selis_pdf_wasm_optimiz
 const COMPARE_WASM_OPT = "wasm32-unknown-unknown/release/selis_pdf_wasm_compare.opt.wasm";
 /** The unoptimised compare chunk, for developers who only ran `cargo build`. */
 const COMPARE_WASM_RAW = "wasm32-unknown-unknown/release/selis_pdf_wasm_compare.wasm";
+/** The pattern-redaction chunk (op 47), optimised first. Import-free. */
+const REDACT_PATTERNS_WASM_OPT = "wasm32-unknown-unknown/release/selis_pdf_wasm_redact_patterns.opt.wasm";
+/** The unoptimised pattern-redaction chunk, for a plain `cargo build`. */
+const REDACT_PATTERNS_WASM_RAW = "wasm32-unknown-unknown/release/selis_pdf_wasm_redact_patterns.wasm";
 /** The convert chunk, optimised first. Also import-free (checked below). */
 const CONVERT_WASM_OPT = "wasm32-unknown-unknown/release/selis_pdf_wasm_convert.opt.wasm";
 /** The unoptimised convert chunk, for developers who only ran `cargo build`. */
@@ -207,6 +211,17 @@ function findOptimizeEngine() {
 function findCompareEngine() {
 	for (const dir of targetDirs()) {
 		for (const name of [COMPARE_WASM_OPT, COMPARE_WASM_RAW]) {
+			const candidate = join(dir, name);
+			if (existsSync(candidate)) return candidate;
+		}
+	}
+	return null;
+}
+
+/** The first pattern-redaction chunk that exists, optimised preferred over raw. */
+function findRedactPatternsEngine() {
+	for (const dir of targetDirs()) {
+		for (const name of [REDACT_PATTERNS_WASM_OPT, REDACT_PATTERNS_WASM_RAW]) {
 			const candidate = join(dir, name);
 			if (existsSync(candidate)) return candidate;
 		}
@@ -728,6 +743,55 @@ if (compareImports.length > 0) {
 	);
 	process.exit(1);
 }
+// The pattern-redaction chunk is a tools-family engine: op 47's read-only scan
+// and review-gated apply. Only the "Redact patterns" card fetches it, and it
+// carries the same import-free contract as every other tools-protocol chunk.
+const redactPatterns = findRedactPatternsEngine();
+if (redactPatterns === null) {
+	console.error(
+		[
+			"place-assets: no pattern-redaction WASM chunk found - the Redact patterns card cannot",
+			"scan or apply without one, so this is a build failure rather than a skip. Build it first:",
+			"",
+			"  cargo build -p selis-pdf-wasm-redact-patterns --target wasm32-unknown-unknown --release",
+			"",
+			"(`cargo xtask size-check` builds it with fat LTO. Set CARGO_TARGET_DIR if the",
+			"build is redirected; this script reads it.)",
+		].join("\n"),
+	);
+	process.exit(1);
+}
+
+const redactPatternsOut = join(publicRoot, "wasm/selis_pdf_wasm_redact_patterns.wasm");
+mkdirSync(dirname(redactPatternsOut), { recursive: true });
+copyFileSync(redactPatterns, redactPatternsOut);
+const redactPatternsBytes = readFileSync(redactPatternsOut).length;
+let redactPatternsImports;
+try {
+	redactPatternsImports = WebAssembly.Module.imports(
+		new WebAssembly.Module(readFileSync(redactPatternsOut)),
+	);
+} catch (error) {
+	console.error(
+		`place-assets: the pattern-redaction chunk at ${redactPatternsOut} is not valid WebAssembly: ${error}`,
+	);
+	process.exit(1);
+}
+if (redactPatternsImports.length > 0) {
+	console.error(
+		[
+			"place-assets: the pattern-redaction chunk has host imports; scan and apply must run",
+			"with none. An import is a capability leak (clock, entropy, filesystem, network) and",
+			"breaks the no-upload guarantee. Found:",
+			...redactPatternsImports.map((entry) => `  ${entry.module}.${entry.name}`),
+			"",
+			"Rebuild it with:",
+			"  cargo build -p selis-pdf-wasm-redact-patterns --target wasm32-unknown-unknown --release",
+		].join("\n"),
+	);
+	process.exit(1);
+}
+
 
 // The convert chunk is another lazy engine: Markdown/HTML/CSV → PDF. It is lazy,
 // so the tools page never downloads it unless the user picks Convert to PDF,
@@ -995,6 +1059,10 @@ writeFileSync(
 				url: "/wasm/selis_pdf_wasm_compare.wasm",
 				bytes: compareBytes,
 			},
+			redactPatterns: {
+				url: "/wasm/selis_pdf_wasm_redact_patterns.wasm",
+				bytes: redactPatternsBytes,
+			},
 			convert: {
 				url: "/wasm/selis_pdf_wasm_convert.wasm",
 				bytes: convertBytes,
@@ -1027,6 +1095,7 @@ console.log(
 		`the engine (${engineBytes} B, from ${relative(workspaceRoot, engine)}) and the ` +
 		`tools chunk (${toolsBytes} B, 0 imports) and the optimise chunk (${optimizeBytes} B, 0 imports) ` +
 		`and the compare chunk (${compareBytes} B, 0 imports) ` +
+		`and the pattern-redaction chunk (${redactPatternsBytes} B, 0 imports) ` +
 		`and the convert chunk (${convertBytes} B, 0 imports) ` +
 		`and the raster chunk (${rasterBytes} B, 0 imports) and the html chunk (${htmlBytes} B, 0 imports) ` +
 		`and the security chunk (${securityBytes} B, 0 imports) ` +
