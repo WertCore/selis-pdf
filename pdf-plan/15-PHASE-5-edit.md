@@ -301,9 +301,20 @@ Normative spec: `23-EDIT-MODEL-SPEC.md`. Read it before any task here.
     grep the raw output bytes for the redacted strings. Any survival → error, no file produced.
   - **DoD:** A deliberately-broken redaction implementation is caught by the verifier. **Test the
     test**: this is the control that the whole claim rests on.
-- [ ] **SL-5.REDACT.05 — Pattern-based bulk redaction** · deps: REDACT.01 · owner: AI+
+- [x] **SL-5.REDACT.05 — Pattern-based bulk redaction** · deps: REDACT.01 · owner: AI+
   - **Do:** Regex/pattern search across the document (SSNs, card numbers, emails, names from a
     list) with a review step before applying. Never auto-apply.
+  - **Note (2026-11-19):** Implemented in `selis-pdf-tools/src/redact_patterns.rs` behind the
+    `text` feature, with a CLI `selis redact-patterns scan|apply`. `find_candidates` has no
+    output path and returns a masked review; `apply_reviewed` requires an explicit approved-id
+    slice (empty/unknown sets are refused) and re-derives each region from the input before
+    writing. No regex dependency: SSN (with group checks), Luhn-valid card runs, email, and
+    caller-supplied literals (substring or whole word) are implemented directly over the
+    engine's recovered text and `LayerChar` geometry. ADR-P0023 read-back re-parses the output
+    and checks extracted text + raw bytes; a survivor is a typed `VERIFY_FAILED` with no file.
+    Verified by 9 unit tests including a "verifier is not vacuous" control and a control that
+    proves a substring sharing one show operation fails loudly. Web/WASM protocol op is
+    deferred — no web card is claimed.
 - [x] **SL-5.REDACT.06 — Redaction corpus + adversarial suite** · deps: REDACT.04 · owner: HUMAN
   - **Do:** Build the corpus deliberately adversarially: text split across runs, text in a form
     XObject, text in an annotation appearance, text in a prior revision, text in an embedded file,

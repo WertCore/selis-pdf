@@ -687,6 +687,10 @@ and extraction tests, and a lazy raster chunk under budget. No raster claim befo
 - [ ] **Searchable PDF export** — OCR text layer + original image; verify extracted text.
 - [ ] **Auto-redact PII** — detection may be text/regex; committing redaction is removal with
       a render preview, never an overlay.
+  - **Note (2026-11-19):** Detection + mandatory-review redaction now exists in the
+    `selis-pdf-tools` library and the `selis redact-patterns scan|apply` CLI (SL-5.REDACT.05).
+    This web-parity row stays open: there is no web card or WASM protocol op, and "auto" must
+    never be read as auto-apply — a human-approved id list is required before any write.
 - [ ] **Manual redaction** — rectangle picker on rendered pages + removal verification pass.
 - [ ] **Handwriting / thumbmark** — ink capture to vector or image overlay, preview, flatten.
 

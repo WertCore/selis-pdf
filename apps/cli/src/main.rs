@@ -173,6 +173,35 @@ mod tools {
         selis_pdf_tools::redact(path, rects, output).map_err(CliError::from)
     }
 
+    /// SL-5.REDACT.05: read-only scan. The review is written to `output` (or
+    /// stdout) and NEVER triggers a redaction. Candidate text is masked.
+    pub(crate) fn redact_patterns_scan(
+        path: &str,
+        patterns: &[selis_pdf_tools::Pattern],
+        output: Option<&str>,
+    ) -> CliResult<()> {
+        let review = selis_pdf_tools::find_candidates(path, patterns).map_err(CliError::from)?;
+        let json = review.to_json().map_err(CliError::from)?;
+        if let Some(file) = output {
+            return super::write_file(file, &json);
+        }
+        println!("{}", String::from_utf8_lossy(&json));
+        Ok(())
+    }
+
+    /// SL-5.REDACT.05: apply only the ids the caller names explicitly.
+    pub(crate) fn redact_patterns_apply(
+        path: &str,
+        review_path: &str,
+        ids: &[String],
+        output: &str,
+    ) -> CliResult<Verification> {
+        let bytes = std::fs::read(review_path)
+            .map_err(|e| CliError(format!("cannot read review {review_path}: {e}")))?;
+        let review = selis_pdf_tools::PatternReview::from_json(&bytes).map_err(CliError::from)?;
+        selis_pdf_tools::apply_reviewed(path, &review, ids, output).map_err(CliError::from)
+    }
+
     pub(crate) fn rotate(
         path: &str,
         angle: i64,
@@ -1067,6 +1096,59 @@ enum Command {
         #[arg(short, long)]
         output: String,
     },
+    /// Pattern-based bulk redaction. `scan` is read-only and produces a
+    /// masked review; `apply` needs an explicit `--ids` list. Nothing is
+    /// ever auto-applied (SL-5.REDACT.05).
+    RedactPatterns {
+        #[command(subcommand)]
+        action: RedactPatternsCommand,
+    },
+}
+
+/// The two phases of pattern redaction. Kept as nested subcommands so it is
+/// impossible to "scan with an output path" — scanning only writes the review.
+#[derive(Subcommand)]
+enum RedactPatternsCommand {
+    /// Scan a PDF and emit a masked review of candidate PII matches.
+    Scan {
+        /// The input PDF.
+        path: String,
+        /// Recognise US Social Security numbers.
+        #[arg(long)]
+        ssn: bool,
+        /// Recognise Luhn-valid payment-card digit runs.
+        #[arg(long)]
+        card: bool,
+        /// Recognise email addresses.
+        #[arg(long)]
+        email: bool,
+        /// A literal string to find (repeatable), e.g. a name from a list.
+        #[arg(long = "literal", value_name = "TEXT")]
+        literals: Vec<String>,
+        /// A literal that must appear as a whole word (repeatable).
+        #[arg(long = "literal-word", value_name = "TEXT")]
+        literal_words: Vec<String>,
+        /// Write the review JSON to a file instead of stdout.
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+    /// Apply ONLY the explicitly approved candidate ids from a review.
+    Apply {
+        /// The input PDF the review was built from.
+        path: String,
+        /// The review JSON produced by `redact-patterns scan`.
+        #[arg(long, value_name = "FILE")]
+        review: String,
+        /// Comma-separated candidate ids to approve (required, no default).
+        #[arg(long = "ids", value_name = "ID,ID", required = true)]
+        ids: Vec<String>,
+        /// The output PDF. Nothing is written if verification fails.
+        #[arg(short, long)]
+        output: String,
+        /// Emit the verification object as JSON on stdout.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// SL-1.ENC.04 requires the plain-language statement that permission bits
@@ -1307,6 +1389,67 @@ fn run() {
                 .collect();
             finish(tools::redact(&path, &parsed, &output), json)
         }
+        Command::RedactPatterns { action } => match action {
+            RedactPatternsCommand::Scan {
+                path,
+                ssn,
+                card,
+                email,
+                literals,
+                literal_words,
+                output,
+            } => {
+                use selis_pdf_tools::Pattern;
+                let mut patterns: Vec<Pattern> = Vec::new();
+                if ssn {
+                    patterns.push(Pattern::Ssn);
+                }
+                if card {
+                    patterns.push(Pattern::Card);
+                }
+                if email {
+                    patterns.push(Pattern::Email);
+                }
+                for text in literals {
+                    patterns.push(Pattern::Literal {
+                        text,
+                        whole_word: false,
+                    });
+                }
+                for text in literal_words {
+                    patterns.push(Pattern::Literal {
+                        text,
+                        whole_word: true,
+                    });
+                }
+                if patterns.is_empty() {
+                    return Err(CliError(
+                        "give at least one pattern (--ssn, --card, --email, --literal, --literal-word)"
+                            .to_string(),
+                    ));
+                }
+                tools::redact_patterns_scan(&path, &patterns, output.as_deref())
+            }
+            RedactPatternsCommand::Apply {
+                path,
+                review,
+                ids,
+                output,
+                json,
+            } => {
+                let approved: Vec<String> = ids
+                    .iter()
+                    .flat_map(|part| part.split(','))
+                    .map(str::trim)
+                    .filter(|part| !part.is_empty())
+                    .map(str::to_string)
+                    .collect();
+                finish(
+                    tools::redact_patterns_apply(&path, &review, &approved, &output),
+                    json,
+                )
+            }
+        },
         Command::Rotate {
             path,
             angle,

@@ -51,6 +51,9 @@ pub mod overlay;
 pub mod privacy;
 #[cfg(feature = "native-fs")]
 mod progress;
+/// SL-5.REDACT.05 pattern-based bulk redaction with a mandatory review step.
+#[cfg(feature = "text")]
+pub mod redact_patterns;
 pub mod repair;
 /// SL-1A.WRITE.08 full render+text verification. Compiled with the `text`
 /// feature in production, and in every test build (the engine is an
@@ -94,6 +97,11 @@ pub use metadata::{metadata_report, MetadataReport};
 pub use outline::{set_outline, OutlineEntry, OutlineOptions};
 pub use overlay::add_image_watermark;
 pub use privacy::{privacy_report, PrivacyFinding, PrivacyReport};
+#[cfg(feature = "text")]
+pub use redact_patterns::{
+    apply_reviewed, find_candidates, find_candidates_with, Candidate, Pattern, PatternKind,
+    PatternRedactError, PatternReview, ScanOptions, DEFAULT_PADDING, REVIEW_SCHEMA,
+};
 #[cfg(any(feature = "text", test))]
 pub use rewrite_verify::{
     save_rewritten_verified, save_rewritten_verified_atomic, verify_render_text,

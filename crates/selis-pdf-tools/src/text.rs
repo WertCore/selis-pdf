@@ -79,8 +79,10 @@ pub struct TextSplit {
 ///
 /// This is the same ladder `selis extract` and the HTML chunk drive. Keeping it
 /// here means the text tools cannot drift from them: one gather, one recovery,
-/// one ordering.
-fn page_lines(
+/// one ordering. `redact_patterns` builds its geometry-bearing text layer from
+/// this same pair so a candidate can never be found in text the viewer did not
+/// recover.
+pub(crate) fn page_lines(
     session: &Session,
     page: usize,
     budget: &Budget,
