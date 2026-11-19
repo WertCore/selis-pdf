@@ -65,8 +65,12 @@ pub const MAX_ANNOTS_PER_PAGE: usize = 2_000;
 pub const MAX_COMMENT_CHARS: usize = 4_000;
 /// The most characters an author name may carry.
 pub const MAX_AUTHOR_CHARS: usize = 256;
-/// The most points one ink mark may carry.
+/// The most points one ink mark may carry, in total across all its strokes.
 pub const MAX_INK_POINTS: usize = 20_000;
+/// The most separate strokes one ink annotation may carry.
+pub const MAX_INK_PATHS: usize = 256;
+/// The most points one stroke of an ink annotation may carry.
+pub const MAX_INK_POINTS_PER_PATH: usize = 20_000;
 /// The most text quads one markup may cover.
 pub const MAX_QUADS: usize = 4_000;
 
@@ -133,8 +137,14 @@ pub struct AnnotSpec {
     pub contents: String,
     /// Who left the markup.
     pub author: String,
-    /// The points of a drawn mark, in user space.
+    /// The points of a single-stroke drawn mark, in user space. Kept as the
+    /// convenient one-line form; [`Self::paths`] is the general, multi-stroke
+    /// form and takes precedence when it is non-empty.
     pub points: Vec<(f64, f64)>,
+    /// The separate strokes of a drawn mark, in user space. Each inner vector
+    /// becomes one array in the PDF `/InkList`. Pressure and tilt are not part
+    /// of this model: geometry is pressure-agnostic by design (ANNOT.03).
+    pub paths: Vec<Vec<(f64, f64)>>,
     /// The width of a stroke, in points.
     pub width: f64,
     /// The annotation this one replies to, as its position in the page's
@@ -155,6 +165,7 @@ impl AnnotSpec {
             contents: String::new(),
             author: String::new(),
             points: Vec::new(),
+            paths: Vec::new(),
             width: 1.0,
             reply_to: None,
         }
@@ -186,6 +197,9 @@ pub struct PageAnnotation {
     /// The annotation's name (`/NM`), when it carries one. XFDF replies
     /// reference their parent by this name.
     pub name: Option<String>,
+    /// The points of each stroke of an ink annotation, in `/InkList` order.
+    /// A stroke's point count is its length. Empty for every other subtype.
+    pub ink_points: Vec<Vec<(f64, f64)>>,
 }
 
 /// What a write produced, beyond the bytes.
@@ -197,6 +211,28 @@ pub struct AnnotReport {
     pub kind: &'static str,
     /// How many annotations the page carries afterwards.
     pub annots: usize,
+    /// The input size in bytes.
+    pub bytes_in: u64,
+    /// The output size in bytes.
+    pub bytes_out: u64,
+}
+
+/// What an appearance regeneration produced, beyond the bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppearanceReport {
+    /// How many pages were walked.
+    pub pages: usize,
+    /// How many annotations were examined.
+    pub annotations: usize,
+    /// How many appearance streams were actually regenerated.
+    pub regenerated: usize,
+    /// Whether the document's AcroForm carries `/NeedAppearances true`, i.e.
+    /// asks a viewer to rebuild **widget** appearances. This flag is reported,
+    /// never cleared here: widget appearance synthesis belongs to the FORM
+    /// layer (`selis-pdf-form`, via `synthesize_appearances`), and clearing it
+    /// without writing those widget appearances would be a silent lie. See
+    /// [`regenerate_appearances`].
+    pub need_appearances: bool,
     /// The input size in bytes.
     pub bytes_in: u64,
     /// The output size in bytes.
@@ -303,11 +339,25 @@ pub fn annotate(
         ));
     }
 
+    // An ink mark's rectangle is derived from its strokes so it always bounds
+    // every point (with room for the stroke width). Other kinds keep the
+    // caller's rectangle.
+    let paths = if spec.kind == AnnotKind::Ink {
+        ink_paths(spec)
+    } else {
+        Vec::new()
+    };
+    let rect = if spec.kind == AnnotKind::Ink {
+        ink_rect(&paths, spec.width)?
+    } else {
+        spec.rect
+    };
+
     // The appearance stream, then the annotation that points at it.
     let base = next_object_number(&doc);
     let ap_num = base;
     let annot_num = base.saturating_add(1);
-    let (appearance, resources) = appearance_stream(spec)?;
+    let (appearance, resources) = appearance_stream(spec, rect)?;
     let ap = Obj::Stream {
         dict: vec![
             (
@@ -318,7 +368,7 @@ pub fn annotate(
                 Bytes::copy_from_slice(b"Subtype"),
                 Obj::Name(Bytes::copy_from_slice(b"Form")),
             ),
-            (Bytes::copy_from_slice(b"BBox"), rect_array(spec.rect)),
+            (Bytes::copy_from_slice(b"BBox"), rect_array(rect)),
             (Bytes::copy_from_slice(b"Resources"), resources),
             (
                 Bytes::copy_from_slice(b"Length"),
@@ -337,7 +387,7 @@ pub fn annotate(
             Bytes::copy_from_slice(b"Subtype"),
             Obj::Name(Bytes::copy_from_slice(spec.kind.subtype().as_bytes())),
         ),
-        (Bytes::copy_from_slice(b"Rect"), rect_array(spec.rect)),
+        (Bytes::copy_from_slice(b"Rect"), rect_array(rect)),
         (Bytes::copy_from_slice(b"C"), colour_array(spec.colour)),
         (Bytes::copy_from_slice(b"F"), Obj::Int(FLAG_PRINT)),
         (Bytes::copy_from_slice(b"P"), Obj::Ref(page_ref)),
@@ -365,7 +415,9 @@ pub fn annotate(
         annot.push((Bytes::copy_from_slice(b"T"), text_string(&spec.author)));
     }
     if spec.kind == AnnotKind::Ink {
-        annot.push((Bytes::copy_from_slice(b"InkList"), ink_list(&spec.points)));
+        // /InkList is an array of strokes, each an array of x/y numbers.
+        annot.push((Bytes::copy_from_slice(b"InkList"), ink_list(&paths)));
+        annot.push((Bytes::copy_from_slice(b"BS"), border(spec.width)));
     }
     // A name is what an XFDF reply references. Write one on every mark so
     // a conversation exported from this document stays a conversation.
@@ -506,6 +558,7 @@ pub fn list_annotations(
         let state = name_of(&pairs, b"State");
         let state_model = name_of(&pairs, b"StateModel");
         let name = text_of(&pairs, b"NM").into();
+        let ink_points = ink_paths_of(&pairs);
         out.push(PageAnnotation {
             subtype,
             rect,
@@ -517,6 +570,7 @@ pub fn list_annotations(
             state,
             state_model,
             name,
+            ink_points,
         });
     }
     Ok(out)
@@ -837,9 +891,382 @@ pub fn update_annotation(
     ))
 }
 
-/// The appearance stream for a markup, and the resources it draws with.
-fn appearance_stream(spec: &AnnotSpec) -> Result<(Vec<u8>, Obj)> {
-    let rect = spec.rect;
+/// Regenerate the appearance streams of annotations that are missing one or
+/// carry a stale one, and return the verified incremental revision.
+///
+/// An appearance is **stale** when its `/AP /N` is absent, unreadable, empty,
+/// or a Form XObject whose `/BBox` no longer matches the annotation's `/Rect`
+/// (the case after a move). Subtypes this crate does not draw — widgets and
+/// unknown `/Subtype`s — are left untouched: they are not markup this engine
+/// can honestly regenerate.
+///
+/// Every regenerated stream is built by the same [`appearance_stream`] path
+/// the writer uses, so the bytes are deterministic and match a freshly written
+/// mark. Each annotation's `/AP` is repointed at a fresh Form XObject; the
+/// write is one incremental revision whose original bytes remain a verbatim
+/// prefix, and the result is re-opened and checked stream by stream before it
+/// is returned. Any failure is a typed error, never a silent "looks fine".
+///
+/// # `/NeedAppearances`
+///
+/// A document's AcroForm may carry `/NeedAppearances true`, asking a viewer to
+/// rebuild **widget** appearances. That flag is reported in
+/// [`AppearanceReport::need_appearances`] and is deliberately left set: widget
+/// appearance synthesis belongs to `selis-pdf-form` (its
+/// `FillFormsOptions::synthesize_appearances` path), and clearing the flag here
+/// without writing those widget appearances would claim work that was not
+/// done. This function only ever regenerates markup annotations; it never sets
+/// `/NeedAppearances` to make a viewer do markup work either, because it writes
+/// real `/AP` streams instead.
+///
+/// # Budget
+///
+/// The caller's budget bounds the parse, the walk and the bytes written.
+///
+/// # Malformed Input
+///
+/// A document that cannot be parsed, or that is encrypted, is refused with
+/// `OBJ_UNEXPECTED`. A supported markup subtype whose rectangle cannot be read
+/// or whose geometry fails validation is a typed error, not a skipped mark.
+pub fn regenerate_appearances(
+    src: &[u8],
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<(Vec<u8>, AppearanceReport)> {
+    let (doc, pages) = open(src, budget, g)?;
+    let need_appearances = acroform_needs_appearances(src, &doc, budget, g)?;
+    let bytes_in = u64::try_from(src.len()).unwrap_or(u64::MAX);
+    let report_base = |examined, regenerated, bytes_out| AppearanceReport {
+        pages: pages.len(),
+        annotations: examined,
+        regenerated,
+        need_appearances,
+        bytes_in,
+        bytes_out,
+    };
+
+    let mut objects: Vec<(u32, Obj)> = Vec::new();
+    // (annotation number, appearance number, rect, appearance bytes) — the
+    // contract checked against the re-opened output below.
+    let mut expected: Vec<(u32, u32, [f64; 4], Vec<u8>)> = Vec::new();
+    let mut next_num = next_object_number(&doc);
+    let mut examined = 0usize;
+    let mut regenerated = 0usize;
+
+    for &page_ref in &pages {
+        let page_obj = resolve_ref(src, &doc, page_ref, budget, g).map_err(|e| {
+            err!(
+                Code::ObjUnexpected,
+                during = "annot-regen",
+                detail = format!("a page cannot be read: {e}")
+            )
+        })?;
+        let Obj::Dict(page_dict) = page_obj else {
+            return Err(err!(
+                Code::ObjUnexpected,
+                during = "annot-regen",
+                detail = "a page is not a dictionary"
+            ));
+        };
+        for annot_ref in annotation_refs(src, &doc, &page_dict, budget, g)? {
+            examined = examined.saturating_add(1);
+            let Ok(Obj::Dict(pairs)) = resolve_ref(src, &doc, annot_ref, budget, g) else {
+                continue;
+            };
+            let Some(kind) =
+                name_of(&pairs, b"Subtype").and_then(|subtype| AnnotKind::from_subtype(&subtype))
+            else {
+                // Widgets and subtypes we cannot draw are not markup to us.
+                continue;
+            };
+            let rect = array4_of(&pairs, b"Rect").ok_or_else(|| {
+                err!(
+                    Code::ObjUnexpected,
+                    during = "annot-regen",
+                    detail = format!("annotation {annot_ref:?} has no readable /Rect")
+                )
+            })?;
+            if ap_is_current(src, &doc, &pairs, rect, budget, g)? {
+                continue;
+            }
+
+            // Rebuild the spec from what the annotation says, then draw it
+            // through the exact path the writer uses.
+            let paths = ink_paths_of(&pairs);
+            let mut spec =
+                AnnotSpec::new(kind, 1, rect, colour_of(&pairs).unwrap_or([0.0, 0.0, 0.0]));
+            spec.quads = quads_of(&pairs);
+            spec.contents = text_of(&pairs, b"Contents");
+            spec.author = text_of(&pairs, b"T");
+            spec.width = border_width_of(&pairs);
+            spec.paths = paths.clone();
+            validate(&spec).map_err(|e| {
+                err!(
+                    Code::ObjUnexpected,
+                    during = "annot-regen",
+                    detail = format!("annotation {annot_ref:?} cannot be regenerated: {e}")
+                )
+            })?;
+            let rect = if kind == AnnotKind::Ink {
+                ink_rect(&paths, spec.width)?
+            } else {
+                spec.rect
+            };
+            let (appearance, resources) = appearance_stream(&spec, rect)?;
+
+            let ap_num = next_num;
+            next_num = next_num.saturating_add(1);
+            let ap = Obj::Stream {
+                dict: vec![
+                    (
+                        Bytes::copy_from_slice(b"Type"),
+                        Obj::Name(Bytes::copy_from_slice(b"XObject")),
+                    ),
+                    (
+                        Bytes::copy_from_slice(b"Subtype"),
+                        Obj::Name(Bytes::copy_from_slice(b"Form")),
+                    ),
+                    (Bytes::copy_from_slice(b"BBox"), rect_array(rect)),
+                    (Bytes::copy_from_slice(b"Resources"), resources),
+                    (
+                        Bytes::copy_from_slice(b"Length"),
+                        Obj::Int(i64::try_from(appearance.len()).unwrap_or(i64::MAX)),
+                    ),
+                ],
+                data: Bytes::copy_from_slice(&appearance),
+            };
+
+            let mut updated = pairs.clone();
+            set_entry(
+                &mut updated,
+                b"AP",
+                Obj::Dict(vec![(
+                    Bytes::copy_from_slice(b"N"),
+                    Obj::Ref(Ref::new(ap_num, 0)),
+                )]),
+            );
+            set_entry(&mut updated, b"Rect", rect_array(rect));
+            if kind == AnnotKind::Ink {
+                set_entry(&mut updated, b"InkList", ink_list(&paths));
+                set_entry(&mut updated, b"BS", border(spec.width));
+            }
+
+            objects.push((ap_num, ap));
+            objects.push((annot_ref.num, Obj::Dict(updated)));
+            expected.push((annot_ref.num, ap_num, rect, appearance));
+            regenerated = regenerated.saturating_add(1);
+        }
+    }
+
+    if objects.is_empty() {
+        return Ok((src.to_vec(), report_base(examined, 0, bytes_in)));
+    }
+
+    let out = write_incremental_update(src, &objects, &carried_trailer(&doc)?, budget, g).map_err(
+        |e| {
+            err!(
+                Code::ObjUnexpected,
+                during = "annot-regen",
+                detail = format!("the incremental revision failed: {e}")
+            )
+        },
+    )?;
+    if out.get(..src.len()) != Some(src) {
+        return Err(err!(
+            Code::ObjUnexpected,
+            during = "annot-regen",
+            detail = "the original bytes are not a verbatim prefix"
+        ));
+    }
+
+    // Read-back: every regenerated annotation must now point at a Form
+    // XObject with the rectangle we wrote and the exact bytes we drew.
+    let (check_doc, _) = open(&out, budget, g)?;
+    for (annot_num, ap_num, rect, appearance) in &expected {
+        let annot_obj =
+            resolve_ref(&out, &check_doc, Ref::new(*annot_num, 0), budget, g).map_err(|e| {
+                err!(
+                    Code::ObjUnexpected,
+                    during = "annot-regen-verify",
+                    detail = format!("a regenerated annotation cannot be read: {e}")
+                )
+            })?;
+        let Obj::Dict(pairs) = annot_obj else {
+            return Err(err!(
+                Code::ObjUnexpected,
+                during = "annot-regen-verify",
+                detail = "a regenerated annotation is not a dictionary"
+            ));
+        };
+        let wanted = Obj::Dict(vec![(
+            Bytes::copy_from_slice(b"N"),
+            Obj::Ref(Ref::new(*ap_num, 0)),
+        )]);
+        if pairs
+            .iter()
+            .find(|(key, _)| key.as_slice() == b"AP")
+            .map(|(_, value)| value)
+            != Some(&wanted)
+        {
+            return Err(err!(
+                Code::ObjUnexpected,
+                during = "annot-regen-verify",
+                detail = "a regenerated annotation does not carry the new /AP"
+            ));
+        }
+        let ap_obj =
+            resolve_ref(&out, &check_doc, Ref::new(*ap_num, 0), budget, g).map_err(|e| {
+                err!(
+                    Code::ObjUnexpected,
+                    during = "annot-regen-verify",
+                    detail = format!("a regenerated appearance cannot be read: {e}")
+                )
+            })?;
+        let Obj::Stream { dict, data } = ap_obj else {
+            return Err(err!(
+                Code::ObjUnexpected,
+                during = "annot-regen-verify",
+                detail = "a regenerated appearance is not a stream"
+            ));
+        };
+        if array4_of(&dict, b"BBox") != Some(*rect) || data.as_slice() != appearance.as_slice() {
+            return Err(err!(
+                Code::ObjUnexpected,
+                during = "annot-regen-verify",
+                detail = "a regenerated appearance does not match what was drawn"
+            ));
+        }
+    }
+
+    let bytes_out = u64::try_from(out.len()).unwrap_or(u64::MAX);
+    Ok((out, report_base(examined, regenerated, bytes_out)))
+}
+
+/// Does an annotation already carry a current appearance stream?
+fn ap_is_current(
+    src: &[u8],
+    doc: &selis_pdf_cos::Doc,
+    pairs: &[(Bytes, Obj)],
+    rect: [f64; 4],
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<bool> {
+    let Some(ap) = pairs
+        .iter()
+        .find(|(key, _)| key.as_slice() == b"AP")
+        .and_then(|(_, value)| match value {
+            Obj::Dict(entries) => Some(entries),
+            _ => None,
+        })
+    else {
+        return Ok(false);
+    };
+    let Some(normal) = ap
+        .iter()
+        .find(|(key, _)| key.as_slice() == b"N")
+        .map(|(_, value)| value)
+    else {
+        return Ok(false);
+    };
+    let current = match normal {
+        Obj::Stream { dict, data } => stream_matches(dict, data, rect),
+        Obj::Ref(reference) => match resolve_ref(src, doc, *reference, budget, g) {
+            Ok(Obj::Stream { dict, data }) => stream_matches(&dict, &data, rect),
+            _ => false,
+        },
+        _ => false,
+    };
+    Ok(current)
+}
+
+/// A Form XObject is current when it has bytes and its `/BBox` still matches
+/// the annotation's rectangle (within the 3-decimal precision this crate
+/// writes).
+fn stream_matches(dict: &[(Bytes, Obj)], data: &selis_bytes::Bytes, rect: [f64; 4]) -> bool {
+    if data.is_empty() {
+        return false;
+    }
+    let Some(bbox) = array4_of(dict, b"BBox") else {
+        return false;
+    };
+    (0..4).all(|i| (bbox[i] - rect[i]).abs() <= 0.01)
+}
+
+/// Whether the document's AcroForm asks readers to regenerate widget
+/// appearances (`/NeedAppearances true`). Direct and indirect `/AcroForm`
+/// values are both handled.
+fn acroform_needs_appearances(
+    src: &[u8],
+    doc: &selis_pdf_cos::Doc,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<bool> {
+    let view = doc
+        .at_revision(doc.len().saturating_sub(1))
+        .ok_or_else(|| {
+            err!(
+                Code::ObjUnexpected,
+                during = "annot-regen-form",
+                detail = "the document has no revisions"
+            )
+        })?;
+    let root = view.root.ok_or_else(|| {
+        err!(
+            Code::ObjUnexpected,
+            during = "annot-regen-form",
+            detail = "the document has no /Root"
+        )
+    })?;
+    let Obj::Dict(catalog) = resolve_ref(src, doc, root, budget, g).map_err(|e| {
+        err!(
+            Code::ObjUnexpected,
+            during = "annot-regen-form",
+            detail = format!("the catalog cannot be read: {e}")
+        )
+    })?
+    else {
+        return Ok(false);
+    };
+    let Some(form) = catalog
+        .iter()
+        .find(|(key, _)| key.as_slice() == b"AcroForm")
+        .map(|(_, value)| value)
+    else {
+        return Ok(false);
+    };
+    let dict = match form {
+        Obj::Dict(entries) => entries.clone(),
+        Obj::Ref(reference) => match resolve_ref(src, doc, *reference, budget, g) {
+            Ok(Obj::Dict(entries)) => entries,
+            _ => return Ok(false),
+        },
+        _ => return Ok(false),
+    };
+    Ok(dict
+        .iter()
+        .any(|(key, value)| key.as_slice() == b"NeedAppearances" && *value == Obj::Bool(true)))
+}
+
+/// The border width an annotation asks for, defaulting to 1 point.
+fn border_width_of(pairs: &[(Bytes, Obj)]) -> f64 {
+    pairs
+        .iter()
+        .find(|(key, _)| key.as_slice() == b"BS")
+        .and_then(|(_, value)| match value {
+            Obj::Dict(entries) => entries
+                .iter()
+                .find(|(key, _)| key.as_slice() == b"W")
+                .and_then(|(_, width)| number(width)),
+            _ => None,
+        })
+        .filter(|width| width.is_finite() && *width >= 0.0)
+        .unwrap_or(1.0)
+}
+
+/// The appearance stream for a markup, drawn into `rect`, and the resources it
+/// draws with. `rect` is the annotation rectangle; for ink it is derived from
+/// the strokes by [`ink_rect`] so nothing is clipped.
+fn appearance_stream(spec: &AnnotSpec, rect: [f64; 4]) -> Result<(Vec<u8>, Obj)> {
     let (x0, y0, x1, y1) = (rect[0], rect[1], rect[2], rect[3]);
     let width = x1 - x0;
     let height = y1 - y0;
@@ -923,15 +1350,20 @@ fn appearance_stream(spec: &AnnotSpec) -> Result<(Vec<u8>, Obj)> {
             ));
         }
         AnnotKind::Ink => {
+            // One subpath per stroke, round caps and joins. The caller supplies
+            // plain x/y points: geometry is pressure-agnostic by design, so
+            // the same strokes appear in every viewer (ANNOT.03).
             content.push_str(&format!("{} w\n1 J\n1 j\n", num(spec.width.max(0.5))));
-            let mut points = spec.points.iter();
-            if let Some((px, py)) = points.next() {
-                content.push_str(&format!("{} {} m\n", num(*px), num(*py)));
-                for (x, y) in points {
-                    content.push_str(&format!("{} {} l\n", num(*x), num(*y)));
+            for path in ink_paths(spec) {
+                let mut points = path.iter();
+                if let Some((px, py)) = points.next() {
+                    content.push_str(&format!("{} {} m\n", num(*px), num(*py)));
+                    for (x, y) in points {
+                        content.push_str(&format!("{} {} l\n", num(*x), num(*y)));
+                    }
+                    content.push_str("S\n");
                 }
             }
-            content.push_str("S\n");
         }
         AnnotKind::Square => {
             content.push_str(&format!("{} w\n", num(spec.width.max(0.5))));
@@ -1001,11 +1433,60 @@ fn validate(spec: &AnnotSpec) -> Result<()> {
             detail = "the author name is too long"
         ));
     }
-    if spec.points.len() > MAX_INK_POINTS {
+    if !spec.width.is_finite() || spec.width < 0.0 {
+        return Err(err!(
+            Code::MutationInvalid,
+            during = "annot-validate",
+            detail = "the stroke width is not a finite, non-negative width"
+        ));
+    }
+    let paths = ink_paths(spec);
+    if paths.len() > MAX_INK_PATHS {
+        return Err(err!(
+            Code::MutationInvalid,
+            during = "annot-validate",
+            detail = "the drawn mark has too many strokes"
+        ));
+    }
+    let mut total = 0usize;
+    for path in &paths {
+        if path.is_empty() {
+            return Err(err!(
+                Code::MutationInvalid,
+                during = "annot-validate",
+                detail = "an ink stroke is empty"
+            ));
+        }
+        if path.len() > MAX_INK_POINTS_PER_PATH {
+            return Err(err!(
+                Code::MutationInvalid,
+                during = "annot-validate",
+                detail = "one stroke of the drawn mark has too many points"
+            ));
+        }
+        total = total.saturating_add(path.len());
+        for (x, y) in path {
+            if !x.is_finite() || !y.is_finite() {
+                return Err(err!(
+                    Code::MutationInvalid,
+                    during = "annot-validate",
+                    detail = "the drawn mark contains a non-finite point"
+                ));
+            }
+        }
+    }
+    if total > MAX_INK_POINTS {
         return Err(err!(
             Code::MutationInvalid,
             during = "annot-validate",
             detail = "the drawn mark has too many points"
+        ));
+    }
+    if spec.kind == AnnotKind::Ink && total == 0 {
+        return Err(err!(
+            Code::MutationInvalid,
+            during = "annot-validate",
+            detail = "an ink annotation needs at least one point"
         ));
     }
     for colour in spec.colour {
@@ -1294,9 +1775,14 @@ fn quads_of(pairs: &[(Bytes, Obj)]) -> Vec<[f64; 4]> {
         if quad.len() < 8 {
             break;
         }
+        // The writer stores the four vertices counterclockwise from the
+        // upper left (x0,y1 x1,y1 x0,y0 x1,y0). Read the same order back into
+        // the [x0,y0,x1,y1] rectangle this crate uses everywhere else, or a
+        // regenerated appearance would drift from the original mark.
+        let indices = [0usize, 5, 2, 1];
         let mut values = [0.0f64; 4];
         let mut ok = true;
-        for (index, slot) in values.iter_mut().enumerate() {
+        for (slot, index) in values.iter_mut().zip(indices) {
             match number(&quad[index]) {
                 Some(value) => *slot = value,
                 None => ok = false,
@@ -1327,14 +1813,119 @@ fn quad_points(quads: &[[f64; 4]]) -> Obj {
     Obj::Array(items)
 }
 
-/// The `/InkList` array: the points of each stroke.
-fn ink_list(points: &[(f64, f64)]) -> Obj {
-    let mut items = Vec::with_capacity(points.len() * 2);
-    for (x, y) in points {
-        items.push(real(*x));
-        items.push(real(*y));
+/// The strokes of a drawn mark: `paths` when supplied, otherwise the legacy
+/// single `points` line wrapped as one stroke.
+fn ink_paths(spec: &AnnotSpec) -> Vec<Vec<(f64, f64)>> {
+    if !spec.paths.is_empty() {
+        return spec.paths.clone();
     }
-    Obj::Array(items)
+    if !spec.points.is_empty() {
+        return vec![spec.points.clone()];
+    }
+    Vec::new()
+}
+
+/// The rectangle that tightly bounds every stroke, grown by half the stroke
+/// width (and a point) so no mark is clipped by its own appearance. An empty
+/// stroke set is refused by [`validate`] before this is reached.
+fn ink_rect(paths: &[Vec<(f64, f64)>], width: f64) -> Result<[f64; 4]> {
+    let pad = (width / 2.0).max(1.0);
+    let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+    for (x, y) in paths.iter().flatten() {
+        x0 = x0.min(*x);
+        y0 = y0.min(*y);
+        x1 = x1.max(*x);
+        y1 = y1.max(*y);
+    }
+    if !x0.is_finite() || !y0.is_finite() || !x1.is_finite() || !y1.is_finite() {
+        return Err(err!(
+            Code::MutationInvalid,
+            during = "annot-ink",
+            detail = "the drawn mark has no finite points"
+        ));
+    }
+    Ok([x0 - pad, y0 - pad, x1 + pad, y1 + pad])
+}
+
+/// The `/BS` border style of an ink stroke: solid, with round caps and joins.
+fn border(width: f64) -> Obj {
+    Obj::Dict(vec![
+        (
+            Bytes::copy_from_slice(b"Type"),
+            Obj::Name(Bytes::copy_from_slice(b"Border")),
+        ),
+        (Bytes::copy_from_slice(b"W"), real(width.max(0.5))),
+        (
+            Bytes::copy_from_slice(b"S"),
+            Obj::Name(Bytes::copy_from_slice(b"S")),
+        ),
+        (Bytes::copy_from_slice(b"LC"), Obj::Int(1)),
+        (Bytes::copy_from_slice(b"LJ"), Obj::Int(1)),
+    ])
+}
+
+/// The `/InkList` array: an array of strokes, each an array of x/y numbers.
+fn ink_list(paths: &[Vec<(f64, f64)>]) -> Obj {
+    Obj::Array(
+        paths
+            .iter()
+            .map(|path| {
+                let mut items = Vec::with_capacity(path.len().saturating_mul(2));
+                for (x, y) in path {
+                    items.push(real(*x));
+                    items.push(real(*y));
+                }
+                Obj::Array(items)
+            })
+            .collect(),
+    )
+}
+
+/// The strokes a document's `/InkList` carries, read back from an annotation.
+/// Accepts both the spec's array-of-arrays and the older flat single-stroke
+/// form, so documents written before multi-stroke support still read back.
+fn ink_paths_of(pairs: &[(Bytes, Obj)]) -> Vec<Vec<(f64, f64)>> {
+    let Some(value) = pairs
+        .iter()
+        .find(|(key, _)| key.as_slice() == b"InkList")
+        .map(|(_, value)| value)
+    else {
+        return Vec::new();
+    };
+    let Obj::Array(items) = value else {
+        return Vec::new();
+    };
+    if items
+        .first()
+        .is_some_and(|first| matches!(first, Obj::Array(_)))
+    {
+        return items
+            .iter()
+            .filter_map(|item| match item {
+                Obj::Array(values) => Some(points_of(values)),
+                _ => None,
+            })
+            .collect();
+    }
+    // A flat legacy list of numbers: one stroke.
+    if items.first().is_some_and(|first| number(first).is_some()) {
+        return vec![points_of(items)];
+    }
+    Vec::new()
+}
+
+/// The x/y points of one stroke array, in order.
+fn points_of(values: &[Obj]) -> Vec<(f64, f64)> {
+    let mut out = Vec::with_capacity(values.len().saturating_div(2));
+    let mut index = 0usize;
+    while index + 1 < values.len() {
+        let (Some(x), Some(y)) = (number(&values[index]), number(&values[index + 1])) else {
+            break;
+        };
+        out.push((x, y));
+        index = index.saturating_add(2);
+    }
+    out
 }
 
 /// A rectangle as the PDF array it is written as.

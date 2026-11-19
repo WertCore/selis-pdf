@@ -14,6 +14,8 @@
 
 use super::*;
 
+use selis_pdf_cos::copy::resolve_ref;
+use selis_pdf_cos::Obj;
 use selis_sandbox::Budget;
 
 /// A one-page PDF with a single line of text, from raw object bodies.
@@ -373,4 +375,324 @@ fn a_page_with_no_annotations_carries_none() {
     let src = build_pdf();
     let annotations = read(&src, 1).expect("the annotations");
     assert!(annotations.is_empty());
+}
+
+/// A one-page PDF with extra catalog entries, a page `/Annots` array, and
+/// extra objects — enough to plant pre-existing annotations and an AcroForm.
+fn build_pdf_with(
+    catalog_extra: &str,
+    page_annots: &str,
+    extra_objects: &[(u32, Vec<u8>)],
+) -> Vec<u8> {
+    let content = b"BT /F1 12 Tf 10 100 Td (Hello World) Tj ET\n";
+    let mut stream = format!("<< /Length {} >>\nstream\n", content.len()).into_bytes();
+    stream.extend_from_slice(content);
+    stream.extend_from_slice(b"\nendstream");
+    let mut objects: Vec<(u32, Vec<u8>)> = vec![
+        (
+            1,
+            format!("<< /Type /Catalog /Pages 2 0 R{catalog_extra} >>").into_bytes(),
+        ),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (
+            3,
+            format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >>{page_annots} >>"
+            )
+            .into_bytes(),
+        ),
+        (4, stream),
+        (5, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_vec()),
+    ];
+    objects.extend_from_slice(extra_objects);
+    let max = objects.iter().map(|(n, _)| *n).max().unwrap_or(0);
+    let mut out = b"%PDF-1.7\n".to_vec();
+    let mut offsets = vec![0u64; max as usize + 1];
+    for (num, body) in &objects {
+        offsets[*num as usize] = out.len() as u64;
+        out.extend_from_slice(format!("{num} 0 obj\n").as_bytes());
+        out.extend_from_slice(body);
+        out.extend_from_slice(b"\nendobj\n");
+    }
+    let xref_at = out.len() as u64;
+    out.extend_from_slice(format!("xref\n0 {}\n", max + 1).as_bytes());
+    out.extend_from_slice(b"0000000000 65535 f \n");
+    for i in 1..=max {
+        out.extend_from_slice(format!("{:010} 00000 n \n", offsets[i as usize]).as_bytes());
+    }
+    out.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref_at}\n%%EOF\n",
+            max + 1
+        )
+        .as_bytes(),
+    );
+    out
+}
+
+/// The raw `/AP /N` appearance bytes of annotation `index` on `page`.
+fn ap_content(src: &[u8], page: u32, index: usize) -> Vec<u8> {
+    let budget = Budget::unlimited();
+    let mut g = budget.guard();
+    let startxref = selis_pdf_cos::xref::find_startxref(src, 4096).unwrap_or(0);
+    let doc = selis_pdf_cos::parse_revisions(src, startxref, &budget, &mut g).expect("the parse");
+    let pages = page_refs(src, &doc, &budget, &mut g).expect("the pages");
+    let page_ref = page_reference(&pages, page).expect("the page");
+    let Obj::Dict(page_dict) = resolve_ref(src, &doc, page_ref, &budget, &mut g).expect("page obj")
+    else {
+        panic!("the page is not a dictionary")
+    };
+    let refs = annotation_refs(src, &doc, &page_dict, &budget, &mut g).expect("the refs");
+    let Obj::Dict(pairs) = resolve_ref(src, &doc, refs[index], &budget, &mut g).expect("annot obj")
+    else {
+        panic!("the annotation is not a dictionary")
+    };
+    let ap_ref = pairs
+        .iter()
+        .find(|(key, _)| key.as_slice() == b"AP")
+        .and_then(|(_, value)| match value {
+            Obj::Dict(entries) => entries
+                .iter()
+                .find(|(key, _)| key.as_slice() == b"N")
+                .and_then(|(_, value)| match value {
+                    Obj::Ref(reference) => Some(*reference),
+                    _ => None,
+                }),
+            _ => None,
+        })
+        .expect("an /AP /N reference");
+    let Obj::Stream { data, .. } =
+        resolve_ref(src, &doc, ap_ref, &budget, &mut g).expect("the appearance")
+    else {
+        panic!("the appearance is not a stream")
+    };
+    data.to_vec()
+}
+
+fn ink_spec(paths: Vec<Vec<(f64, f64)>>) -> AnnotSpec {
+    let mut spec = AnnotSpec::new(AnnotKind::Ink, 1, [0.0, 0.0, 0.0, 0.0], INK_COLOUR);
+    spec.paths = paths;
+    spec
+}
+
+// ---------------------------------------------------------------------------
+// SL-5.ANNOT.03 — ink and stylus geometry
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ink_strokes_round_trip_with_their_point_counts() {
+    let src = build_pdf();
+    let mut spec = ink_spec(vec![
+        vec![(10.0, 10.0), (30.0, 35.0), (60.0, 12.0)],
+        vec![(15.0, 60.0), (25.0, 70.0)],
+        vec![(80.0, 80.0)],
+    ]);
+    spec.width = 2.5;
+    let (out, _) = run(&src, &spec).expect("the ink");
+    let bytes = String::from_utf8_lossy(&out).to_string();
+    assert!(bytes.contains("/Subtype /Ink"), "the mark is ink: {bytes}");
+    assert!(
+        bytes.contains("/BS"),
+        "the border style is written: {bytes}"
+    );
+    // /InkList is an array of strokes (an array of arrays), not one flat list.
+    assert!(bytes.contains("/InkList [["), "strokes are nested: {bytes}");
+    let found = read(&out, 1).expect("the read");
+    assert_eq!(found.len(), 1);
+    let counts: Vec<usize> = found[0].ink_points.iter().map(Vec::len).collect();
+    assert_eq!(
+        counts,
+        vec![3, 2, 1],
+        "each stroke's point count reads back"
+    );
+    assert!((found[0].ink_points[0][1].1 - 35.0).abs() < 0.01);
+    assert!((found[0].ink_points[2][0].0 - 80.0).abs() < 0.01);
+}
+
+#[test]
+fn an_ink_rectangle_bounds_every_point_and_carries_a_border() {
+    let src = build_pdf();
+    let spec = ink_spec(vec![vec![(10.0, 10.0), (60.0, 40.0)]]);
+    let (out, _) = run(&src, &spec).expect("the ink");
+    let found = read(&out, 1).expect("the read");
+    let rect = found[0].rect;
+    assert!(
+        rect[0] < 10.0 && rect[1] < 10.0,
+        "the rect grows to the lower-left: {rect:?}"
+    );
+    assert!(
+        rect[2] > 60.0 && rect[3] > 40.0,
+        "the rect grows to the upper-right: {rect:?}"
+    );
+    let bytes = String::from_utf8_lossy(&out).to_string();
+    assert!(
+        bytes.contains("/W 1"),
+        "a default border width is written: {bytes}"
+    );
+    assert!(
+        bytes.contains("/S /S"),
+        "solid strokes are written: {bytes}"
+    );
+}
+
+#[test]
+fn the_legacy_single_point_line_still_writes_one_stroke() {
+    let src = build_pdf();
+    let mut spec = AnnotSpec::new(AnnotKind::Ink, 1, [0.0, 0.0, 0.0, 0.0], INK_COLOUR);
+    spec.points = vec![(10.0, 10.0), (20.0, 20.0)];
+    let (out, _) = run(&src, &spec).expect("the ink");
+    let found = read(&out, 1).expect("the read");
+    assert_eq!(found[0].ink_points.len(), 1);
+    assert_eq!(found[0].ink_points[0].len(), 2);
+}
+
+#[test]
+fn empty_non_finite_and_oversized_strokes_are_refused() {
+    let src = build_pdf();
+    assert!(
+        run(&src, &ink_spec(Vec::new())).is_err(),
+        "no strokes at all"
+    );
+    assert!(
+        run(&src, &ink_spec(vec![Vec::new()])).is_err(),
+        "an empty stroke"
+    );
+    assert!(
+        run(&src, &ink_spec(vec![vec![(f64::NAN, 1.0)]])).is_err(),
+        "a NaN point"
+    );
+    assert!(
+        run(&src, &ink_spec(vec![vec![(1.0, f64::INFINITY)]])).is_err(),
+        "an infinite point"
+    );
+    let too_many_paths: Vec<Vec<(f64, f64)>> =
+        (0..=MAX_INK_PATHS).map(|i| vec![(i as f64, 0.0)]).collect();
+    assert!(
+        run(&src, &ink_spec(too_many_paths)).is_err(),
+        "more than {MAX_INK_PATHS} strokes"
+    );
+    let too_many_points: Vec<(f64, f64)> = (0..=MAX_INK_POINTS_PER_PATH)
+        .map(|i| (i as f64, 0.0))
+        .collect();
+    assert!(
+        run(&src, &ink_spec(vec![too_many_points])).is_err(),
+        "more than {MAX_INK_POINTS_PER_PATH} points in one stroke"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// SL-5.ANNOT.02 — appearance regeneration and /NeedAppearances
+// ---------------------------------------------------------------------------
+
+fn regenerate(src: &[u8]) -> Result<(Vec<u8>, AppearanceReport)> {
+    let budget = Budget::unlimited();
+    let mut g = budget.guard();
+    regenerate_appearances(src, &budget, &mut g)
+}
+
+#[test]
+fn a_current_appearance_is_not_touched() {
+    let src = build_pdf();
+    let (written, _) = run(&src, &highlight()).expect("the highlight");
+    let (out, report) = regenerate(&written).expect("the regeneration");
+    assert_eq!(report.regenerated, 0, "nothing was stale");
+    assert_eq!(report.annotations, 1);
+    assert_eq!(report.pages, 1);
+    assert!(!report.need_appearances);
+    assert_eq!(out, written, "an untouched document is returned verbatim");
+}
+
+#[test]
+fn a_missing_appearance_is_regenerated_and_verified() {
+    let annot = b"<< /Type /Annot /Subtype /Highlight /Rect [10 90 120 112] /C [1 0.92 0.23] /QuadPoints [10 112 120 112 10 90 120 90] >>".to_vec();
+    let src = build_pdf_with("", " /Annots [6 0 R]", &[(6, annot)]);
+    let found = read(&src, 1).expect("the read");
+    assert_eq!(found.len(), 1, "the annotation is in the source");
+    let (out, report) = regenerate(&src).expect("the regeneration");
+    assert_eq!(report.regenerated, 1, "one appearance was rebuilt");
+    assert_eq!(
+        out.get(..src.len()),
+        Some(&src[..]),
+        "the original bytes are a verbatim prefix"
+    );
+    assert!(
+        !ap_content(&out, 1, 0).is_empty(),
+        "an /AP now carries bytes"
+    );
+    let after = read(&out, 1).expect("the read back");
+    assert_eq!(after.len(), 1);
+    assert_eq!(after[0].subtype, "Highlight");
+}
+
+#[test]
+fn a_stale_appearance_is_rebuilt_with_the_new_geometry() {
+    let src = build_pdf();
+    let (written, _) = run(&src, &highlight()).expect("the highlight");
+    let moved_rect = [100.0, 40.0, 210.0, 62.0];
+    let budget = Budget::unlimited();
+    let mut g = budget.guard();
+    let (moved, _) = update_annotation(&written, 1, 0, Some(moved_rect), None, &budget, &mut g)
+        .expect("the move");
+    assert_eq!(
+        ap_content(&moved, 1, 0),
+        ap_content(&written, 1, 0),
+        "the AP was not moved with the rectangle"
+    );
+
+    // A fresh write of the moved geometry is the deterministic oracle.
+    let mut fresh = highlight();
+    fresh.rect = moved_rect;
+    fresh.quads = vec![[100.0, 40.0, 210.0, 62.0]];
+    let (expected, _) = run(&src, &fresh).expect("the fresh write");
+
+    let (out, report) = regenerate(&moved).expect("the regeneration");
+    assert_eq!(report.regenerated, 1, "the stale AP was rebuilt");
+    assert_eq!(
+        out.get(..src.len()),
+        Some(&src[..]),
+        "the original bytes stay a verbatim prefix across revisions"
+    );
+    assert_eq!(
+        ap_content(&out, 1, 0),
+        ap_content(&expected, 1, 0),
+        "regeneration is byte-identical to a fresh write (render parity)"
+    );
+    let found = read(&out, 1).expect("the read back");
+    assert!((found[0].rect[0] - 100.0).abs() < 0.01);
+}
+
+#[test]
+fn a_need_appearances_form_is_reported_and_left_intact() {
+    let catalog = " /AcroForm << /NeedAppearances true /Fields [] >>";
+    let src = build_pdf_with(catalog, "", &[]);
+    let (out, report) = regenerate(&src).expect("the regeneration");
+    assert!(report.need_appearances, "the flag is reported");
+    assert_eq!(report.regenerated, 0);
+    let bytes = String::from_utf8_lossy(&out).to_string();
+    assert!(
+        bytes.contains("/NeedAppearances true"),
+        "the flag is not cleared: {bytes}"
+    );
+}
+
+#[test]
+fn an_indirect_need_appearances_form_is_reported() {
+    let src = build_pdf_with(
+        " /AcroForm 6 0 R",
+        "",
+        &[(6, b"<< /NeedAppearances true /Fields [] >>".to_vec())],
+    );
+    let (_, report) = regenerate(&src).expect("the regeneration");
+    assert!(report.need_appearances, "an indirect /AcroForm is followed");
+}
+
+#[test]
+fn a_markup_with_unreadable_geometry_is_a_typed_error() {
+    // A two-number /Rect parses as PDF but cannot be regenerated honestly.
+    let annot = b"<< /Type /Annot /Subtype /Highlight /Rect [10 90] /QuadPoints [10 112 120 112 10 90 120 90] >>".to_vec();
+    let src = build_pdf_with("", " /Annots [6 0 R]", &[(6, annot)]);
+    let budget = Budget::unlimited();
+    let mut g = budget.guard();
+    let err = regenerate_appearances(&src, &budget, &mut g).expect_err("the refusal");
+    assert_eq!(err.code(), Code::ObjUnexpected);
 }
