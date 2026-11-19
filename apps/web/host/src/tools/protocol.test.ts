@@ -152,6 +152,18 @@ describe("encodeToolRequest", () => {
 		expect(readU32(encoded, 12)).toBe(0);
 	});
 
+	it("encodes redact_patterns as op 47 and carries its phase options", () => {
+		const encoded = encodeToolRequest({
+			op: "redact_patterns",
+			options: { phase: "scan", patterns: ["ssn"] },
+			files: [{ name: "doc.pdf", bytes: new Uint8Array([0x25, 0x50, 0x44, 0x46]) }],
+		});
+		expect(readU32(encoded, 8)).toBe(47);
+		expect(new TextDecoder().decode(encoded.subarray(16, 16 + readU32(encoded, 12)))).toBe(
+			'{"phase":"scan","patterns":["ssn"]}',
+		);
+	});
+
 	it("encodes repair at 22", () => {
 		const files = [{ name: "a.pdf", bytes: new Uint8Array([0x25]) }];
 		expect(readU32(encodeToolRequest({ op: "repair", files }), 8)).toBe(22);
@@ -182,9 +194,9 @@ describe("encodeToolRequest", () => {
 			{ name: "a.pdf", bytes: new Uint8Array([0x25]) },
 			{ name: "b.pdf", bytes: new Uint8Array([0x25]) },
 		];
-		expect(readU32(encodeToolRequest({ op: "batch", options: { tool: "compress" }, files }), 8)).toBe(
-			28,
-		);
+		expect(
+			readU32(encodeToolRequest({ op: "batch", options: { tool: "compress" }, files }), 8),
+		).toBe(28);
 	});
 
 	it("rejects an empty file list and malformed operations before calling the guest", () => {
@@ -222,7 +234,9 @@ describe("decodeToolResponse", () => {
 			outputs: [{ name: "doc-subset.pdf", kind: "pdf", pages: 2, bytes: 4, verdict: "ok" }],
 		};
 		const result = decodeToolResponse(
-			response(0, JSON.stringify(message), [{ name: "doc-subset.pdf", bytes: [0x25, 0x50, 0x44, 0x46] }]),
+			response(0, JSON.stringify(message), [
+				{ name: "doc-subset.pdf", bytes: [0x25, 0x50, 0x44, 0x46] },
+			]),
 		);
 		expect(result.verification.fonts_subset).toBe(2);
 		expect(result.verification.glyphs_kept).toBe(37);
@@ -348,9 +362,7 @@ describe("decodeToolResponse", () => {
 			outputs: [{ name: "doc.pdf", kind: "pdf", pages: 2, bytes: 4, verdict: "ok" }],
 		};
 		const result = decodeToolResponse(
-			response(0, JSON.stringify(message), [
-				{ name: "doc.pdf", bytes: [0x25, 0x50, 0x44, 0x46] },
-			]),
+			response(0, JSON.stringify(message), [{ name: "doc.pdf", bytes: [0x25, 0x50, 0x44, 0x46] }]),
 		);
 		expect(result.batch).toBeUndefined();
 	});
@@ -359,7 +371,13 @@ describe("decodeToolResponse", () => {
 		const message = {
 			...verification,
 			outputs: [{ name: "doc.pdf", kind: "pdf", pages: 2, bytes: 4, verdict: "ok" }],
-			batch: { tool: "compress", total: 2, ok: 2, failed: 0, files: [{ input: "a.pdf", name: "doc.pdf", status: "ok" }] },
+			batch: {
+				tool: "compress",
+				total: 2,
+				ok: 2,
+				failed: 0,
+				files: [{ input: "a.pdf", name: "doc.pdf", status: "ok" }],
+			},
 		};
 		expect(() =>
 			decodeToolResponse(
@@ -374,7 +392,13 @@ describe("decodeToolResponse", () => {
 		const rowless = {
 			...verification,
 			outputs: [{ name: "doc.pdf", kind: "pdf", pages: 2, bytes: 4, verdict: "ok" }],
-			batch: { tool: "compress", total: 1, ok: 1, failed: 0, files: [{ input: "a.pdf", name: null, status: "ok" }] },
+			batch: {
+				tool: "compress",
+				total: 1,
+				ok: 1,
+				failed: 0,
+				files: [{ input: "a.pdf", name: null, status: "ok" }],
+			},
 		};
 		expect(() =>
 			decodeToolResponse(

@@ -25,6 +25,15 @@ describe("SL-4.WASM.02 — code splitting", () => {
 		expect(optimize.viewerAuto).toBe(false);
 	});
 
+	it("the pattern-redaction chunk is manifest-registered and explicit-action-only", () => {
+		const chunk = MANIFEST.chunks.find((c) => c.id === "redact-patterns");
+		if (!chunk) throw new Error("manifest missing redact-patterns chunk");
+		expect(chunk.url).toBe("wasm/selis_pdf_wasm_redact_patterns.wasm");
+		expect(chunk.budget).toBe(600_000);
+		expect(chunk.viewerAuto).toBe(false);
+		expect(MANIFEST.chunks).toHaveLength(8);
+	});
+
 	it("viewer session never downloads the editor chunk (loader invariant)", async () => {
 		const fetchFn = vi.fn(async () => new ArrayBuffer(10));
 		const loader = new ChunkLoader({ fetchFn, profile: "viewer" });

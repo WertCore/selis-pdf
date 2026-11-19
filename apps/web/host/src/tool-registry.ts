@@ -61,6 +61,7 @@ export type ToolId =
 	| "edit_text"
 	| "fill_forms"
 	| "flatten_forms"
+	| "redact_patterns"
 	| "unlock"
 	| "protect"
 	| "clear_permissions"
@@ -304,7 +305,8 @@ export const TOOLS: readonly ToolDef[] = [
 		group: "metadata",
 		mark: "⚠",
 		title: "Privacy scan",
-		blurb: "Find revisions, metadata trails, hidden layers, embedded files, JavaScript, and external links.",
+		blurb:
+			"Find revisions, metadata trails, hidden layers, embedded files, JavaScript, and external links.",
 		note: "A read-only report; nothing is changed or removed. Review each risk yourself before sharing the file.",
 		verb: "Scan for risks",
 		multiple: false,
@@ -657,6 +659,20 @@ export const TOOLS: readonly ToolDef[] = [
 		multiple: false,
 		accepts: "pdf",
 		related: ["fill_forms"],
+	},
+	{
+		id: "redact_patterns",
+		slug: "redact-patterns",
+		group: "security",
+		mark: "◎",
+		title: "Redact patterns",
+		blurb:
+			"Find SSNs, card numbers, emails and named text, review the masked hits, then redact only the ones you approve.",
+		note: "A two-step redaction: scan for patterns, review the masked candidates, then apply only the ones you tick. Nothing is redacted until you approve it, and a match the writer cannot cleanly remove fails loudly with no file.",
+		verb: "Scan for patterns",
+		multiple: false,
+		accepts: "pdf",
+		related: ["edit_text", "privacy"],
 	},
 	{
 		id: "unlock",

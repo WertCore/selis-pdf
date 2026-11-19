@@ -7,7 +7,15 @@
  * for `xtask/size-budgets.toml` and the Rust `Manifest::canonical()`.
  */
 
-export type ChunkId = "core" | "jpx" | "cjk" | "ocr" | "convert" | "editor" | "optimize";
+export type ChunkId =
+	| "core"
+	| "jpx"
+	| "cjk"
+	| "ocr"
+	| "convert"
+	| "editor"
+	| "optimize"
+	| "redact-patterns";
 
 export interface ChunkEntry {
 	id: ChunkId;
@@ -27,7 +35,7 @@ export interface Manifest {
 	chunks: ChunkEntry[];
 }
 
-/** The canonical 7-chunk split (core + 6 lazy). */
+/** The canonical 8-chunk split (core + 7 lazy). */
 export const MANIFEST: Manifest = {
 	v: 1,
 	engine: "0.1.0",
@@ -44,6 +52,12 @@ export const MANIFEST: Manifest = {
 			budget: 200_000,
 			viewerAuto: false,
 		},
+		{
+			id: "redact-patterns",
+			url: "wasm/selis_pdf_wasm_redact_patterns.wasm",
+			budget: 600_000,
+			viewerAuto: false,
+		},
 	],
 };
 
@@ -54,7 +68,8 @@ export function viewerMayLoad(id: ChunkId): boolean {
 }
 
 /** Validates viewer never downloads editor (WASM.02 DoD). Throws on violation.
- * The optimise chunk is explicit-action-only for the same reason. */
+ * The optimise and redact-patterns chunks are explicit-action-only for the
+ * same reason: neither is part of the viewer's automatic fetch path. */
 export function validateViewerIsolation(manifest: Manifest = MANIFEST): void {
 	for (const e of manifest.chunks) {
 		if (e.id === "editor" && e.viewerAuto) {
@@ -62,6 +77,9 @@ export function validateViewerIsolation(manifest: Manifest = MANIFEST): void {
 		}
 		if (e.id === "optimize" && e.viewerAuto) {
 			throw new Error("viewer must not auto-load the optimise chunk");
+		}
+		if (e.id === "redact-patterns" && e.viewerAuto) {
+			throw new Error("viewer must not auto-load the pattern-redaction chunk");
 		}
 	}
 }
@@ -75,4 +93,5 @@ export const ALL_CHUNKS: ChunkId[] = [
 	"convert",
 	"editor",
 	"optimize",
+	"redact-patterns",
 ];

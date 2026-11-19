@@ -23,7 +23,7 @@ describe("registry shape", () => {
 	it("holds every card the grid renders", () => {
 		// The browser harness names the same count. A change here without the
 		// harness and the offline precache changing is a tool nobody exercises.
-		expect(TOOLS.length).toBe(50);
+		expect(TOOLS.length).toBe(51);
 		expect(TOOL_PAGE_SLUGS.length).toBe(TOOLS.length);
 	});
 
@@ -133,6 +133,22 @@ describe("the flatten-forms card", () => {
 		expect(card?.minimum).toBeUndefined();
 		expect(card?.related).toContain("fill_forms");
 		expect(TOOL_PAGE_SLUGS).toContain("flatten-pdf-forms");
+	});
+});
+
+describe("the redact-patterns card", () => {
+	it("is a single-PDF, local-only security card whose review step is mandatory", () => {
+		const card = TOOL_BY_ID.get("redact_patterns");
+		expect(card).toBeDefined();
+		expect(card?.slug).toBe("redact-patterns");
+		expect(TOOL_BY_SLUG.get("redact-patterns")).toBe(card);
+		expect(card?.group).toBe("security");
+		expect(card?.accepts).toBe("pdf");
+		expect(card?.multiple).toBe(false);
+		expect(card?.verb).toBe("Scan for patterns");
+		expect(card?.note).toContain("Nothing is redacted until you approve it");
+		expect(card?.related).toContain("privacy");
+		expect(TOOL_PAGE_SLUGS).toContain("redact-patterns");
 	});
 });
 

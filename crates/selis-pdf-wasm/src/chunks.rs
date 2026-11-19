@@ -30,6 +30,9 @@ pub enum ChunkId {
     /// Optimise: font subset (op 41) + linearise (op 43), moved out of the
     /// tools chunk so the common tools page does not download the writer.
     Optimize,
+    /// Pattern redaction (op 47): read-only scan + reviewed apply. Needs the
+    /// engine's text ladder, so it is a separate explicit-action-only chunk.
+    RedactPatterns,
 }
 
 impl ChunkId {
@@ -44,6 +47,7 @@ impl ChunkId {
             ChunkId::Editor => "selis_pdf_wasm_editor",
             ChunkId::Cjk => "selis_pdf_wasm_cjk",
             ChunkId::Optimize => "selis_pdf_wasm_optimize",
+            ChunkId::RedactPatterns => "selis_pdf_wasm_redact_patterns",
         }
     }
 
@@ -58,6 +62,7 @@ impl ChunkId {
             ChunkId::Convert => "convert",
             ChunkId::Editor => "editor",
             ChunkId::Optimize => "optimize",
+            ChunkId::RedactPatterns => "redact-patterns",
         }
     }
 
@@ -74,6 +79,7 @@ impl ChunkId {
             ChunkId::Convert => false,
             ChunkId::Editor => false,
             ChunkId::Optimize => false, // only the two optimise cards fetch it
+            ChunkId::RedactPatterns => false, // only the redact-patterns card fetches it
         }
     }
 }
@@ -163,6 +169,13 @@ impl Manifest {
                     viewer_auto: false,
                     integrity: None,
                 },
+                ChunkEntry {
+                    id: ChunkId::RedactPatterns,
+                    url: "wasm/selis_pdf_wasm_redact_patterns.wasm".to_string(),
+                    budget: 600_000,
+                    viewer_auto: false,
+                    integrity: None,
+                },
             ],
         }
     }
@@ -190,6 +203,9 @@ impl Manifest {
             if e.id == ChunkId::Optimize && e.viewer_auto {
                 return Err("viewer must not auto-load the optimise chunk");
             }
+            if e.id == ChunkId::RedactPatterns && e.viewer_auto {
+                return Err("viewer must not auto-load the pattern-redaction chunk");
+            }
         }
         Ok(())
     }
@@ -206,6 +222,7 @@ mod tests {
         assert!(m.validate_viewer_isolation().is_ok());
         assert!(!m.viewer_may_load(ChunkId::Editor));
         assert!(!m.viewer_may_load(ChunkId::Optimize));
+        assert!(!m.viewer_may_load(ChunkId::RedactPatterns));
         assert!(m.viewer_may_load(ChunkId::Core));
         assert!(m.viewer_may_load(ChunkId::Jpx));
     }
@@ -217,6 +234,11 @@ mod tests {
         assert_eq!(ChunkId::Editor.artifact(), "selis_pdf_wasm_editor");
         assert_eq!(ChunkId::Optimize.artifact(), "selis_pdf_wasm_optimize");
         assert_eq!(ChunkId::Optimize.name(), "optimize");
+        assert_eq!(
+            ChunkId::RedactPatterns.artifact(),
+            "selis_pdf_wasm_redact_patterns"
+        );
+        assert_eq!(ChunkId::RedactPatterns.name(), "redact-patterns");
     }
 
     #[test]
@@ -230,7 +252,7 @@ mod tests {
     #[test]
     fn optimize_chunk_is_manifest_but_not_viewer_auto() {
         let m = Manifest::canonical();
-        assert_eq!(m.chunks.len(), 7);
+        assert_eq!(m.chunks.len(), 8);
         let optimize = m
             .chunks
             .iter()
@@ -239,6 +261,19 @@ mod tests {
         assert_eq!(optimize.url, "wasm/selis_pdf_wasm_optimize.wasm");
         assert_eq!(optimize.budget, 200_000);
         assert!(!optimize.viewer_auto);
+    }
+
+    #[test]
+    fn pattern_redaction_chunk_is_manifest_but_not_viewer_auto() {
+        let m = Manifest::canonical();
+        let chunk = m
+            .chunks
+            .iter()
+            .find(|e| e.id == ChunkId::RedactPatterns)
+            .expect("redact-patterns");
+        assert_eq!(chunk.url, "wasm/selis_pdf_wasm_redact_patterns.wasm");
+        assert_eq!(chunk.budget, 600_000);
+        assert!(!chunk.viewer_auto);
     }
 
     #[test]

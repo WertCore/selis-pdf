@@ -313,8 +313,16 @@ Normative spec: `23-EDIT-MODEL-SPEC.md`. Read it before any task here.
     engine's recovered text and `LayerChar` geometry. ADR-P0023 read-back re-parses the output
     and checks extracted text + raw bytes; a survivor is a typed `VERIFY_FAILED` with no file.
     Verified by 9 unit tests including a "verifier is not vacuous" control and a control that
-    proves a substring sharing one show operation fails loudly. Web/WASM protocol op is
-    deferred — no web card is claimed.
+    proves a substring sharing one show operation fails loudly.
+  - **Web card (2026-11-19):** the "Redact patterns" card now exists on the tools page, on
+    op 47 in its own lazy `selis-pdf-wasm-redact-patterns` chunk (the `text` feature means it
+    cannot share the engine-free tools/optimise chunks). The browser flow is two-phase and the
+    review step is **mandatory**: `scan` returns the masked `PatternReview` as a JSON report and
+    the UI renders one checkbox per candidate (unchecked by default) beside its masked text and
+    region; `apply` is only ever called with the ids the user explicitly checked. There is no
+    scan-and-apply function on the wire or in the UI, so **no auto-apply is possible**. If a
+    match shares one show operation with other text, the ADR-P0023 read-back fails loudly with
+    `VERIFY_FAILED` and no file is offered.
 - [x] **SL-5.REDACT.06 — Redaction corpus + adversarial suite** · deps: REDACT.04 · owner: HUMAN
   - **Do:** Build the corpus deliberately adversarially: text split across runs, text in a form
     XObject, text in an annotation appearance, text in a prior revision, text in an embedded file,
@@ -411,4 +419,6 @@ Normative spec: `23-EDIT-MODEL-SPEC.md`. Read it before any task here.
 
 ---
 
-> **Status reconciliation (2026-11-19):** Verified against code and flipped stale `[ ]` markers to `[x]` for items whose implementation exists: EDIT.01 (journal), EDIT.02 (undo/redo), EDIT.03 (incremental writer + 100 000-mutation suite), EDIT.08 (page ops), EDIT.09 (object rewriting), EDIT.10 (`.selis` bundle), EDIT.11 (compare engine+CLI), ANNOT.04/05/06/07, FORM.01/04, REDACT.01–04/06, CONV.01–04/06. Items left open are genuinely missing or partial: TEXTEDIT.01/03/04/05/06, FORM.03/06/07/08, all JS.*, SIGN.04/05/06, all OCR.*, BIZ.*, REDACT.05. ENC-side items elsewhere remain gated on human review. Verification was read-only against `crates/` and `apps/`.
+> **Status reconciliation (2026-11-19):** Verified against code and flipped stale `[ ]` markers to `[x]` for items whose implementation exists: EDIT.01 (journal), EDIT.02 (undo/redo), EDIT.03 (incremental writer + 100 000-mutation suite), EDIT.08 (page ops), EDIT.09 (object rewriting), EDIT.10 (`.selis` bundle), EDIT.11 (compare engine+CLI), ANNOT.04/05/06/07, FORM.01/04, REDACT.01–04/06, CONV.01–04/06. Items left open are genuinely missing or partial: TEXTEDIT.01/03/04/05/06, FORM.03/06/07/08, all JS.*, SIGN.04/05/06, all OCR.*, BIZ.*. REDACT.05 was in this open list when that note was
+written; it now has the reviewed web card described above, still with no auto-apply path. ENC-side
+items elsewhere remain gated on human review. Verification was read-only against `crates/` and `apps/`.

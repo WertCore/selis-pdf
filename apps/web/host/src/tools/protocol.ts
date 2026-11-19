@@ -74,7 +74,8 @@ export type ToolOp =
 	| "fill_form_data"
 	| "flatten_forms"
 	| "subset_fonts"
-	| "linearize";
+	| "linearize"
+	| "redact_patterns";
 
 /** The wire operation number for each operation. */
 const OP_CODE: Record<ToolOp, number> = {
@@ -121,6 +122,10 @@ const OP_CODE: Record<ToolOp, number> = {
 	subset_fonts: 41,
 	linearize: 43,
 	flatten_forms: 44,
+	// Op 45 is the compare chunk, 46 is reserved for it. Redact patterns needs
+	// the engine's text ladder, so op 47 lives in its own lazy chunk and never
+	// in this engine-free tools chunk.
+	redact_patterns: 47,
 };
 
 /** One input file on the wire. */
