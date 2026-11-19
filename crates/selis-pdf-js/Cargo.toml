@@ -1,0 +1,17 @@
+[package]
+name = "selis-pdf-js"
+description = "Budgeted, consent-gated form-script interpreter with a whitelisted Acrobat JS subset (SL-5.JS.01/02/03, ADR-P0020)."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+selis-error = { workspace = true }
+selis-policy = { workspace = true }
+rquickjs = { workspace = true }

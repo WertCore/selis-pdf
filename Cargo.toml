@@ -92,6 +92,21 @@ clap        = { version = "4", features = ["derive"] }
 # audits (supply-chain/config.toml [imports.bytecodealliance]).
 wasmtime = { version = "48.0.3", default-features = false, features = ["cranelift", "runtime", "wat"] }
 
+# Budgeted form-script interpreter (SL-5.JS.01/02/03, ADR-P0020). rquickjs
+# 0.11.0 is MIT and wraps QuickJS (MIT): both permissive and actively
+# maintained (DelSkayn, releases through 2026), a small (~200 KB of C) deterministic
+# engine with a safe Rust binding. Crucially the DEFAULT feature set has no
+# module loader, no dynamic native modules, no threads, no clock, no filesystem
+# and no network — there is no host capability to reach, so the Acrobat subset
+# we install is the entire surface (ADR-P0020). 0.11.0 is the last release whose
+# rust-version is 1.85 (0.13/0.14 require 1.87), matching the workspace MSRV.
+# EXACT pin, crates.io only (ADR-P0021). `loader`, `dyn-load`, `futures` and
+# `parallel` are deliberately NOT enabled. wasm32-unknown-unknown has no
+# pre-generated QuickJS bindings in this release: it needs `bindgen` + libclang
+# + a wasm-targeting C toolchain, none available here — selis-pdf-js is therefore
+# a documented NATIVE-ONLY slice (see its README), not a claimed wasm sandbox.
+rquickjs = { version = "=0.11.0" }
+
 # Test-only
 proptest    = "1"
 

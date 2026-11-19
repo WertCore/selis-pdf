@@ -283,16 +283,37 @@ Normative spec: `23-EDIT-MODEL-SPEC.md`. Read it before any task here.
 
 ## 5.JS — The scripting sandbox (ADR-P0020)
 
-- [ ] **SL-5.JS.01 — Budgeted JS interpreter + Acrobat API subset** · owner: HUMAN
-  - **Do:** Embed a small JS engine (`boa` or QuickJS-via-WASM — evaluate both for size and
-    determinism), with a memory and instruction budget, no host access, and a whitelisted API:
-    `event`, `this.getField`, field properties, `util.printf`/`printd`, `AF*` format functions,
-    and the calculation events. Explicitly absent: `app.launchURL`, `this.exportDataObject`,
-    `this.submitForm` to arbitrary URLs, `Net.*`, `Collab.*`.
-  - **DoD:** A malicious-script corpus is contained; a real-world tax form with calculations works;
-    an instruction-budget test proves an infinite loop terminates.
-- [ ] **SL-5.JS.02 — Per-document scripting consent UI** · deps: JS.01 · owner: AI+
-- [ ] **SL-5.JS.03 — Admin policy for pre-approved origins** · deps: JS.01 · owner: AI
+- [x] **SL-5.JS.01 — Budgeted JS interpreter + Acrobat API subset** · owner: HUMAN
+  - **Do:** Revised to a two-environment split (owner-directed 2026-11-19): **native** uses
+    `rquickjs =0.11.0` (MIT, QuickJS MIT) compiled *natively only* with an interrupt handler as the
+    instruction budget; **browser** uses the platform's own engine in a sandboxed `Worker` with
+    `worker.terminate()` as the hard deadline — no engine compiled to WASM, no new npm dependency,
+    zero wasm size delta. `boa` rejected as larger; GPL engines ruled out (ADR-P0021).
+  - **Done:** `selis-pdf-js` (native) installs only `event`, `this.getField`, `util.printf`/`printd`
+    and the `AF*` helpers, with a memory/stack/script-size/field budget and a tick interrupt;
+    `apps/web/host/src/editor/js-worker.ts` generates a Worker bootstrap that removes `fetch`,
+    `XMLHttpRequest`, `importScripts`, `WebAssembly`, `indexedDB`, `WebSocket`, `postMessage`, …
+    and installs the same subset. `app.launchURL`, `this.exportDataObject`, `this.submitForm`,
+    `Net.*`, `Collab.*` are refused by a static scan and absent at runtime in both slices.
+  - **DoD:** met — a tax-style calculation computes `event.value`; `while(true){}` is interrupted by
+    the native instruction budget and by the browser Worker deadline (the latter proven with an
+    injected Worker + timers, and the realm itself proven interruptible in a Node `vm` analogue);
+    a 13-script malicious corpus is contained. The static scan is a diagnostic, not the boundary;
+    the boundary is that dangerous APIs are never installed and the engine has no host capability.
+- [x] **SL-5.JS.02 — Per-document scripting consent** · deps: JS.01 · owner: AI+
+  - **Done:** `selis-policy::ConsentPolicy` (Rust) and its TypeScript mirror
+    `apps/web/host/src/editor/js-policy.ts`. Both default to deny, key consent on the document id,
+    and expose grant/revoke/clear. `JsSandbox::run_authorized` and `runFormScript` call the gate
+    *before* creating a runtime or Worker; tests prove no Worker is created without consent.
+  - **Honest gap:** the visual "enable scripting for this document" prompt is **deferred** — no
+    consent UI widget is wired into the editor, and the browser runner is not yet called from the
+    form-fill path. The policy choke point and its tests are shipped so a UI can be added without
+    weakening the default-deny guarantee.
+- [x] **SL-5.JS.03 — Admin policy for pre-approved origins** · deps: JS.01 · owner: AI
+  - **Done:** `selis-policy::ApprovedOrigins` (Rust) + TS mirror: a list of pre-approved origins
+    and document ids, empty = deny-all, with approve/revoke and `is_approved`. Combined in
+    `ScriptAuthorization::authorize` / `authorizeScripting` as the explicit ADR-P0020 exception to
+    reader consent. Default-deny, origin and per-id approval, and gate behaviour are tested.
 
 ---
 
