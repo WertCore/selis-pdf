@@ -414,14 +414,38 @@ fn execute_inner(
                             height,
                             rgba8,
                         }) => {
-                            let p0 = gstate.ctm.apply(Point::new(0.0, 0.0));
-                            let p1 = gstate.ctm.apply(Point::new(1.0, 1.0));
+                            // A unit square maps to the image's placement under
+                            // the CTM. Use ALL FOUR corners, not just the two
+                            // diagonals: for a 45-degree rotation a+c / b+d can
+                            // vanish, making the two-corner box degenerate (the
+                            // image writes correctly but does not paint in our
+                            // own renderer). This mirrors the inline-image path
+                            // (page::unit_square_aabb) and normalises quarter
+                            // turns and negative scales too.
+                            let corners = [
+                                gstate.ctm.apply(Point::new(0.0, 0.0)),
+                                gstate.ctm.apply(Point::new(1.0, 0.0)),
+                                gstate.ctm.apply(Point::new(0.0, 1.0)),
+                                gstate.ctm.apply(Point::new(1.0, 1.0)),
+                            ];
+                            let mut rect = Rect::new(
+                                f64::INFINITY,
+                                f64::INFINITY,
+                                f64::NEG_INFINITY,
+                                f64::NEG_INFINITY,
+                            );
+                            for point in &corners {
+                                rect.x0 = rect.x0.min(point.x);
+                                rect.y0 = rect.y0.min(point.y);
+                                rect.x1 = rect.x1.max(point.x);
+                                rect.y1 = rect.y1.max(point.y);
+                            }
                             let state = ResolvedState::from(&*gstate);
                             dl.push(Op::Image {
                                 rgba8,
                                 width,
                                 height,
-                                rect: Rect::new(p0.x, p0.y, p1.x, p1.y),
+                                rect,
                                 state,
                             });
                             g.charge_one(selis_sandbox::Resource::Objects)?;
@@ -1110,6 +1134,47 @@ mod tests {
         } else {
             panic!("expected fill");
         }
+    }
+
+    /// An XObject image's placement rect must use all four CTM corners. Under
+    /// a 45-degree transform the two diagonal corners can coincide (a+c and
+    /// b+d vanish), so the old two-corner rect was degenerate and the image
+    /// did not paint in our renderer.
+    #[test]
+    fn xobject_image_placement_uses_all_four_ctm_corners() {
+        let image_do = |_name: &Bytes, _key: Option<&Bytes>| {
+            Some(DoTarget::Image {
+                width: 1,
+                height: 1,
+                rgba8: Bytes::copy_from_slice(&[255, 0, 0, 255]),
+            })
+        };
+        // 45 degrees: cos=sin=~0.707. The diagonal (0,0)→(1,1) maps along the
+        // x-axis, so a two-corner box would be flat in y.
+        let c = std::f64::consts::FRAC_1_SQRT_2;
+        let stream = format!("{c} {c} -{c} {c} 0 0 cm /Im0 Do").into_bytes();
+        let mut g = guard();
+        let dl = execute(
+            &stream,
+            &const_width,
+            &no_cid,
+            &image_do,
+            &no_ext_gstate,
+            &mut g,
+        )
+        .expect("execute");
+        let rect = dl
+            .ops
+            .iter()
+            .find_map(|op| match op {
+                Op::Image { rect, .. } => Some(*rect),
+                _ => None,
+            })
+            .expect("an image op");
+        assert!(
+            rect.width() > 0.5 && rect.height() > 0.5,
+            "the placement must be a non-degenerate box, got {rect:?}"
+        );
     }
 
     /// A `BI`…`EI` inline image is extracted into an `Op::InlineImage` with
