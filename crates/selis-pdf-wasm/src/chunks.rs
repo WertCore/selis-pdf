@@ -1,12 +1,15 @@
 //! Chunk manifest (SL-4.WASM.02).
 //!
 //! The WASM binding is split into a **core viewer bundle** (`selis-pdf-wasm`:
-//! COS + render + text, ≤ 3 MB brotli) and six **lazily-loaded chunks**.
+//! COS + render + text, ≤ 3 MB brotli) and seven **lazily-loaded chunks**.
 //! Each chunk is a separate `cdylib` (separate `.wasm` module, not dead code
 //! in one binary). The JS loader fetches a chunk only when the document or
 //! UI actually needs it; a viewer session that never edits never downloads the
 //! editor bytes. The `optimize` chunk (font subset op 41, linearise op 43) is
-//! likewise never fetched by a card that does not invoke one of those ops.
+//! likewise never fetched by a card that does not invoke one of those ops, and
+//! the `compare` chunk (op 46, two inputs) is fetched only by the compare card:
+//! it links the rasteriser and the text ladder, so it could not live in the
+//! engine-free tools chunk.
 
 use serde::{Deserialize, Serialize};
 
@@ -30,6 +33,10 @@ pub enum ChunkId {
     /// Optimise: font subset (op 41) + linearise (op 43), moved out of the
     /// tools chunk so the common tools page does not download the writer.
     Optimize,
+    /// Compare: op 46, a two-input render-and-text diff that emits a JSON
+    /// report. It links the rasteriser and the text ladder, so it has its own
+    /// budget and only the compare card fetches it.
+    Compare,
 }
 
 impl ChunkId {
@@ -44,6 +51,7 @@ impl ChunkId {
             ChunkId::Editor => "selis_pdf_wasm_editor",
             ChunkId::Cjk => "selis_pdf_wasm_cjk",
             ChunkId::Optimize => "selis_pdf_wasm_optimize",
+            ChunkId::Compare => "selis_pdf_wasm_compare",
         }
     }
 
@@ -58,6 +66,7 @@ impl ChunkId {
             ChunkId::Convert => "convert",
             ChunkId::Editor => "editor",
             ChunkId::Optimize => "optimize",
+            ChunkId::Compare => "compare",
         }
     }
 
@@ -74,6 +83,7 @@ impl ChunkId {
             ChunkId::Convert => false,
             ChunkId::Editor => false,
             ChunkId::Optimize => false, // only the two optimise cards fetch it
+            ChunkId::Compare => false,  // only the compare card fetches it
         }
     }
 }
@@ -106,7 +116,7 @@ pub struct Manifest {
 }
 
 impl Manifest {
-    /// The canonical manifest for the 7-chunk split (core + 6 lazy).
+    /// The canonical manifest for the 8-chunk split (core + 7 lazy).
     #[must_use]
     pub fn canonical() -> Self {
         let engine = env!("CARGO_PKG_VERSION").to_string();
@@ -163,6 +173,13 @@ impl Manifest {
                     viewer_auto: false,
                     integrity: None,
                 },
+                ChunkEntry {
+                    id: ChunkId::Compare,
+                    url: "wasm/selis_pdf_wasm_compare.wasm".to_string(),
+                    budget: 700_000,
+                    viewer_auto: false,
+                    integrity: None,
+                },
             ],
         }
     }
@@ -190,6 +207,9 @@ impl Manifest {
             if e.id == ChunkId::Optimize && e.viewer_auto {
                 return Err("viewer must not auto-load the optimise chunk");
             }
+            if e.id == ChunkId::Compare && e.viewer_auto {
+                return Err("viewer must not auto-load the compare chunk");
+            }
         }
         Ok(())
     }
@@ -206,6 +226,7 @@ mod tests {
         assert!(m.validate_viewer_isolation().is_ok());
         assert!(!m.viewer_may_load(ChunkId::Editor));
         assert!(!m.viewer_may_load(ChunkId::Optimize));
+        assert!(!m.viewer_may_load(ChunkId::Compare));
         assert!(m.viewer_may_load(ChunkId::Core));
         assert!(m.viewer_may_load(ChunkId::Jpx));
     }
@@ -217,6 +238,8 @@ mod tests {
         assert_eq!(ChunkId::Editor.artifact(), "selis_pdf_wasm_editor");
         assert_eq!(ChunkId::Optimize.artifact(), "selis_pdf_wasm_optimize");
         assert_eq!(ChunkId::Optimize.name(), "optimize");
+        assert_eq!(ChunkId::Compare.artifact(), "selis_pdf_wasm_compare");
+        assert_eq!(ChunkId::Compare.name(), "compare");
     }
 
     #[test]
@@ -228,9 +251,9 @@ mod tests {
     }
 
     #[test]
-    fn optimize_chunk_is_manifest_but_not_viewer_auto() {
+    fn optimize_and_compare_chunks_are_manifest_but_not_viewer_auto() {
         let m = Manifest::canonical();
-        assert_eq!(m.chunks.len(), 7);
+        assert_eq!(m.chunks.len(), 8);
         let optimize = m
             .chunks
             .iter()
@@ -239,6 +262,14 @@ mod tests {
         assert_eq!(optimize.url, "wasm/selis_pdf_wasm_optimize.wasm");
         assert_eq!(optimize.budget, 200_000);
         assert!(!optimize.viewer_auto);
+        let compare = m
+            .chunks
+            .iter()
+            .find(|e| e.id == ChunkId::Compare)
+            .expect("compare");
+        assert_eq!(compare.url, "wasm/selis_pdf_wasm_compare.wasm");
+        assert_eq!(compare.budget, 700_000);
+        assert!(!compare.viewer_auto);
     }
 
     #[test]

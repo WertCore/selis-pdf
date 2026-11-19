@@ -23,7 +23,7 @@ describe("registry shape", () => {
 	it("holds every card the grid renders", () => {
 		// The browser harness names the same count. A change here without the
 		// harness and the offline precache changing is a tool nobody exercises.
-		expect(TOOLS.length).toBe(50);
+		expect(TOOLS.length).toBe(51);
 		expect(TOOL_PAGE_SLUGS.length).toBe(TOOLS.length);
 	});
 
@@ -83,6 +83,22 @@ describe("registry shape", () => {
 			expect(tool.note.trim(), tool.id).not.toBe("");
 		}
 		expect(SITE_ORIGIN).toBe("https://pdf.selis.com");
+	});
+});
+
+describe("the compare card", () => {
+	it("is registered as a two-PDF, local-only card that runs in its own chunk", () => {
+		const card = TOOL_BY_ID.get("compare");
+		expect(card).toBeDefined();
+		expect(card?.slug).toBe("compare-pdfs");
+		expect(TOOL_BY_SLUG.get("compare-pdfs")).toBe(card);
+		expect(card?.group).toBe("organise");
+		expect(card?.accepts).toBe("pdf");
+		expect(card?.multiple).toBe(true);
+		expect(card?.minimum).toBe(2);
+		expect(card?.related).toContain("merge");
+		expect(card?.blurb).toContain("on this device");
+		expect(TOOL_PAGE_SLUGS).toContain("compare-pdfs");
 	});
 });
 

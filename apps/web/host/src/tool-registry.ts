@@ -20,6 +20,7 @@
 export type ToolId =
 	| "merge"
 	| "mix"
+	| "compare"
 	| "split"
 	| "rotate"
 	| "crop"
@@ -70,7 +71,7 @@ export type ToolId =
 	| "workflow";
 
 /**
- * The sections the card grid is organised into. Fifty cards in one flat
+ * The sections the card grid is organised into. Fifty-one cards in one flat
  * list is not a menu, it is a wall: the groups are named after what a reader
  * has come to *do*, in the order the operations build on each other — arrange
  * the pages, change what they are, mark them up, then decide who may open
@@ -176,6 +177,20 @@ export const TOOLS: readonly ToolDef[] = [
 		verb: "Mix pages",
 		multiple: true,
 		related: ["merge"],
+	},
+	{
+		id: "compare",
+		slug: "compare-pdfs",
+		group: "organise",
+		mark: "≟",
+		title: "Compare PDFs",
+		blurb: "Check whether two PDFs look and read the same, page by page, on this device.",
+		note: "Each page of both documents is rendered at the same resolution and compared sample for sample; the extracted text is compared across each whole document. The report says which pages differ and by how much. Nothing is rewritten, and neither file leaves this device.",
+		verb: "Compare PDFs",
+		multiple: true,
+		minimum: 2,
+		accepts: "pdf",
+		related: ["merge", "mix"],
 	},
 	{
 		id: "split",

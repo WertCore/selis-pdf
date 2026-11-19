@@ -266,7 +266,7 @@ const FAT_LTO_ARGS: &[&str] = &[
 /// Build every wasm-producing target and measure the brotli size of the
 /// optimised module of each resulting artifact. Returns artifact name →
 /// brotli bytes. SL-4.WASM.02: the chunk split (core + the lazy tool/page chunks,
-/// including `optimize`)
+/// including `optimize` and `compare`)
 /// plus the `xtask` canary are each built explicitly so the gate never
 /// silently passes a missing chunk (every budget row must be measured).
 fn measure_artifacts() -> Result<BTreeMap<String, u64>, String> {
@@ -285,6 +285,7 @@ fn measure_artifacts() -> Result<BTreeMap<String, u64>, String> {
         "selis-pdf-wasm-security",
         "selis-pdf-wasm-sign",
         "selis-pdf-wasm-text",
+        "selis-pdf-wasm-compare",
         "xtask",
     ];
     for pkg in WASM_PACKAGES {

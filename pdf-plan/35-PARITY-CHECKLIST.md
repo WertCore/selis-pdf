@@ -614,8 +614,8 @@ and extraction tests, and a lazy raster chunk under budget. No raster claim befo
       `selis-pdf-wasm-tools`, the tools protocol/registry/tools-page carry `flatten_forms`, and the
       pure `flatten-forms.ts` note/rows are covered by `flatten-forms.test.ts`. The flatten card is
       a single-PDF security card (`/flatten-pdf-forms/`) and runs entirely on the device.
-- [ ] **Compare two PDFs** — pixel and text diff with render determinism.
-      *Implemented (core + CLI; web card deferred):* `selis-pdf-tools::compare_pdfs` (behind the
+- [x] **Compare two PDFs** — pixel and text diff with render determinism.
+      *Implemented (core + CLI + web card on a dedicated chunk):* `selis-pdf-tools::compare_pdfs` (behind the
       `text` feature, which links both the renderer and the text ladder) renders each page of both
       documents through the same engine at the same DPI and compares them sample for sample — so the
       verdict is deterministic — and compares the whole-document extracted text alongside. The report
@@ -627,19 +627,17 @@ and extraction tests, and a lazy raster chunk under budget. No raster claim befo
       Evidence: 5 engine/core tests (identical blanks equal, white-vs-black pixel difference with the
       text halves still equal, a differing page count detected, serialization, bad-dpi refused),
       2 CLI tests (a file vs itself is identical; a file vs its inverted copy is not), `cargo fmt`
-      clean. **Deferred — browser card (measured 2026-11-19):** op 45 is deliberately NOT wired into
-      any shipped chunk, and this row stays open. The text chunk is the natural home for an engine
-      tool, but its ABI is single-input `selis_text_run` with `SLTX` framing (ops 1–8), not the
-      two-input tools protocol; serving compare there would mean a new two-input export plus a
-      distinct host loader. More decisively, compare renders every page, so calling
-      `selis_pdf_tools::compare_pdfs` pulls the tiny-skia raster pipeline into the text chunk: a fat-LTO
-      `wasm-opt -O3` probe measured its brotli size rise from **320,596 B to 574,705 B**, past the
-      400,000 B text budget and far beyond the 2% baseline-regression gate (320,759 B baseline).
-      Putting it in the tools chunk is likewise forbidden: that chunk must not link the engine and
-      sits at 424k/440k with ~16k of headroom. The raster chunk already has the renderer but not the
-      text ladder and is single-input. A correct web card therefore needs a dedicated two-input
-      render+text chunk (new ABI, new budget row) — real work that cannot be faked by a partial wire.
-      The CLI delivers the feature today.
+      clean. **Web card landed on a dedicated chunk (2026-11-19):** the measurement that deferred this
+      row stands — a fat-LTO `wasm-opt -O3` probe adding `compare_pdfs` to the text chunk rose from
+      **320,596 B to 574,705 B** brotli, past its 400,000 B budget and the 2% baseline gate; the
+      engine-free tools chunk sits at 424k/440k and cannot host it. The fix is therefore a new lazy
+      chunk, not a squeezed one: `selis-pdf-wasm-compare` (`/wasm/selis_pdf_wasm_compare.wasm`) is a
+      separate import-free `cdylib` with its own `selis_compare_*` ABI, its own 700,000 B budget row,
+      and op **46** (45 stays reserved). It links both engine halves only when the reader opens
+      `/compare-pdfs/`. The two PDFs travel as in-memory keys `in/0` and `in/1`; the guest returns a
+      `selis-compare/1` JSON report as a downloadable output, which the pure `compare.ts` module
+      turns into the card's rows. Host protocol, registry, chunk routing, asset placement, both
+      manifests and the size gate are all wired and tested; generated tool pages go 50 → 51.
 - [x] **Fingerprinting report** — producer/creator, IDs, timestamps, fonts, image hashes,
       incremental revisions; structural part may ship before the raster part.
       *Implemented (structural part):* `selis-pdf-tools::fingerprint_report` owns the export shape
@@ -1167,4 +1165,4 @@ implemented in the same budget slice that added the three OOXML→PDF directions
 
 ---
 
-> **Status reconciliation (2026-11-19):** Verified and flipped three web-UI rows done in code but left stale: "Edit text" (editor `edit_text` op 33), "Edit pages" (rotate/delete/reorder ops 3/4/5), "Redaction commit UI" (`redact` op 34). The "Flatten forms" web card is now live on op 44 (`/flatten-pdf-forms/`). Rows still genuinely open: "Compare two PDFs" web card (engine/CLI done; op 45 deliberately not wired — adding the render+text path to the text chunk measures 574,705 B brotli vs a 400,000 B budget, and the engine-free tools chunk cannot host it), images/vectors editing. XFDF export and accessibility report are done in code (not tracked by a `[ ]` row here).
+> **Status reconciliation (2026-11-19):** Verified and flipped three web-UI rows done in code but left stale: "Edit text" (editor `edit_text` op 33), "Edit pages" (rotate/delete/reorder ops 3/4/5), "Redaction commit UI" (`redact` op 34). The "Flatten forms" web card is now live on op 44 (`/flatten-pdf-forms/`). The "Compare two PDFs" web card is now live too, on op **46** in its own lazy `selis-pdf-wasm-compare` chunk (`/compare-pdfs/`) — the 574,705 B text-chunk probe and the engine-free tools chunk are exactly why it needed a dedicated chunk rather than a squeezed op. Rows still genuinely open: images/vectors editing. XFDF export and accessibility report are done in code (not tracked by a `[ ]` row here).
