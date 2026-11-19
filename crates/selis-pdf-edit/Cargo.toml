@@ -31,6 +31,9 @@ selis-pdf-doc = { workspace = true }
 # cycle.
 selis-pdf-sign = { workspace = true }
 selis-pdf-filter = { workspace = true }
+# SL-5.TEXTEDIT.05: decode a replacement PNG/JPEG and encode extracted images
+# as PNG. The dependency points one way (selis-image does not depend on edit).
+selis-image = { workspace = true }
 selis-log = { workspace = true }
 md-5 = { workspace = true }
 

@@ -1869,6 +1869,7 @@ dependencies = [
  "selis-error",
  "selis-font",
  "selis-geom",
+ "selis-image",
  "selis-io",
  "selis-log",
  "selis-pdf-cos",

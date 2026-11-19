@@ -50,6 +50,8 @@ pub mod box_edit;
 mod font;
 pub mod incremental;
 pub mod journal;
+/// SL-5.TEXTEDIT.05/06: object-level image and vector editing.
+pub mod objects;
 pub mod rewrite;
 pub mod save;
 /// SL-5.EDIT.07: signature preservation and DocMDP enforcement for saves.
@@ -63,6 +65,8 @@ mod encrypted_tests;
 mod incremental_tests;
 #[cfg(test)]
 mod journal_tests;
+#[cfg(test)]
+mod objects_tests;
 #[cfg(test)]
 mod property_tests;
 mod reflow;
