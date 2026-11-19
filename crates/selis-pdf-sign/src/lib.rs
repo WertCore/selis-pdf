@@ -10,7 +10,15 @@
 //!   own `/ByteRange`, with the visible block as its appearance;
 //! * a **report** ([`signatures`]) — every signature dictionary in the newest
 //!   revision, each checked against the bytes it names, with a chain verdict
-//!   that ends at anchors the caller supplied.
+//!   that ends at anchors the caller supplied;
+//! * a **certification signature** ([`sign_certification`]) — the same detached
+//!   CMS signature plus a `/Reference → /TransformParams → /P` DocMDP chain
+//!   (SL-5.SIGN.05), which `selis-pdf-edit`'s guard reads back and enforces on
+//!   later incremental saves;
+//! * **key sources** (SL-5.SIGN.06) — a password-protected PKCS#12/PFX file
+//!   ([`p12::load_pkcs12`], native only) and a typed native OS-keystore
+//!   abstraction ([`keystore`]). Both convert to the same in-memory PEM/key
+//!   path; no key byte is ever written to the PDF or sent anywhere.
 //!
 //! The honesty rules this crate is built around:
 //!
@@ -26,8 +34,9 @@
 //!   There is no built-in root store, and self-signed is not a verdict;
 //! * revocation is **not checked** — [`SignatureReport::revocation_checked`]
 //!   is always `false`, and the UI says so;
-//! * signing keys never leave the process: the crate takes PEM text, parses
-//!   it, uses it, and never writes it anywhere.
+//! * signing keys never leave the process: the crate takes PEM text (or a
+//!   local PKCS#12 file plus a password), parses it, uses it, and never writes
+//!   it anywhere — not into the PDF, not into a request, not into a log.
 //!
 //! Signing is RSA only (PKCS#1 v1.5, SHA-256). An EC key is refused by name:
 //! ECDSA signing needs entropy for the nonce, and the browser chunk that
@@ -56,13 +65,22 @@ use selis_pdf_cos::obj::{Obj, Ref};
 use selis_pdf_cos::Doc;
 use selis_sandbox::{Budget, BudgetGuard};
 
+pub mod certification;
 pub mod digital;
 pub mod report;
 pub mod visual;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub mod keystore;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod p12;
+
 #[cfg(test)]
 mod tests;
 
+pub use certification::{
+    sign_certification, CertificationOptions, CertificationReport, DocMdpLevel,
+};
 pub use digital::{sign_digital, DigitalOptions, DigitalReport};
 pub use report::{
     signature_report_json, signatures, SignatureReport, SignaturesReport, TrustReport,
@@ -101,6 +119,10 @@ pub enum SignError {
     ReadBack(String),
     /// The key, certificate or algorithm is not something this build signs.
     Unsupported(String),
+    /// A native OS keystore backend is not compiled into this build. The
+    /// detail names the store and why no safe backend is available
+    /// (SL-5.SIGN.06); browser builds never reach this variant.
+    OsKeyStoreUnavailable(String),
 }
 
 impl fmt::Display for SignError {
@@ -120,6 +142,7 @@ impl fmt::Display for SignError {
                 "the signature did not read back from the bytes produced: {detail}"
             ),
             Self::Unsupported(detail) => write!(f, "{detail}"),
+            Self::OsKeyStoreUnavailable(detail) => write!(f, "OS keystore not available: {detail}"),
         }
     }
 }

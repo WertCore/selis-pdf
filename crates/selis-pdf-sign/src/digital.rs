@@ -28,6 +28,7 @@ use selis_pdf_cos::doc_writer::write_incremental_update;
 use selis_pdf_cos::{Doc, Obj, Ref};
 use selis_sandbox::{Budget, BudgetGuard};
 
+use crate::certification::DocMdpLevel;
 use crate::visual::{content_stream, VisualLine, VisualOptions};
 use crate::{
     bytes, carried_trailer, dict_get, dict_set, invalid, malformed, next_object_number, resolve,
@@ -112,6 +113,22 @@ pub struct DigitalReport {
 pub fn sign_digital(
     src: &[u8],
     options: &DigitalOptions,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<(Vec<u8>, DigitalReport), SignError> {
+    sign_impl(src, options, None, budget, g)
+}
+
+/// The one writer behind [`sign_digital`] and
+/// [`crate::sign_certification`]. `doc_mdp` adds the two extra objects and the
+/// `/Reference` entry that turn an approval signature into a certification
+/// signature; everything else — byte-range patching, CMS build, read-back —
+/// is shared so the two APIs cannot drift.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn sign_impl(
+    src: &[u8],
+    options: &DigitalOptions,
+    doc_mdp: Option<DocMdpLevel>,
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
 ) -> Result<(Vec<u8>, DigitalReport), SignError> {
@@ -236,6 +253,10 @@ pub fn sign_digital(
     let appearance_num = base.saturating_add(1);
     let field_num = base.saturating_add(2);
     let new_acroform_num = base.saturating_add(3);
+    // Certification-only objects. Allocated above `new_acroform_num`, so they
+    // cannot collide with an existing object (`base` is past every revision).
+    let reference_num = base.saturating_add(4);
+    let params_num = base.saturating_add(5);
 
     let signature_ref = Obj::Ref(Ref::new(signature_num, 0));
     let appearance_ref = Obj::Ref(Ref::new(appearance_num, 0));
@@ -275,6 +296,18 @@ pub fn sign_digital(
     }
     if let Some(location) = options.location.as_deref().filter(|text| !text.is_empty()) {
         signature_dict.push((bytes(b"Location"), Obj::String(bytes(location.as_bytes()))));
+    }
+    if doc_mdp.is_some() {
+        // ISO 32000-2 §12.8.2.2: a certification signature carries one
+        // `/Reference` whose `/TransformMethod /DocMDP` and
+        // `/TransformParams /P` declare the permitted changes. The exact shape
+        // here is the one `selis-pdf-edit::signature_guard` parses (an array
+        // of dictionaries, with the params as a separate indirect object), so
+        // creation and enforcement agree on one structure.
+        signature_dict.push((
+            bytes(b"Reference"),
+            Obj::Array(vec![Obj::Ref(Ref::new(reference_num, 0))]),
+        ));
     }
 
     let appearance_dict = vec![
@@ -370,6 +403,24 @@ pub fn sign_digital(
         (field_num, Obj::Dict(field_dict)),
         (target.reference.num, Obj::Dict(page_dict)),
     ];
+    if let Some(level) = doc_mdp {
+        objects.push((
+            reference_num,
+            Obj::Dict(vec![
+                (bytes(b"Type"), Obj::Name(bytes(b"SigRef"))),
+                (bytes(b"TransformMethod"), Obj::Name(bytes(b"DocMDP"))),
+                (bytes(b"TransformParams"), Obj::Ref(Ref::new(params_num, 0))),
+                (bytes(b"Data"), Obj::Ref(Ref::new(signature_num, 0))),
+            ]),
+        ));
+        objects.push((
+            params_num,
+            Obj::Dict(vec![
+                (bytes(b"Type"), Obj::Name(bytes(b"TransformParams"))),
+                (bytes(b"P"), Obj::Int(level.p())),
+            ]),
+        ));
+    }
     match acroform {
         Some(Obj::Ref(reference)) => {
             let form = resolve(src, &doc, Obj::Ref(reference), budget, g)?;

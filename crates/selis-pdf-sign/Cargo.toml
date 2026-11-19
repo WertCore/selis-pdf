@@ -21,6 +21,11 @@ rsa = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
+# SL-5.SIGN.06: PKCS#12 key source. Native-only so no WASM chunk grows
+# (ADR-P0011); `p12-keystore` 0.4.1 is MIT OR Apache-2.0, pure Rust, MSRV 1.85.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+p12-keystore = { workspace = true }
+
 [dev-dependencies]
 # The fixtures are committed PEMs; tests never need an entropy source.
 rsa = { workspace = true }

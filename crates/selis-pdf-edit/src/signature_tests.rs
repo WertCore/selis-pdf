@@ -580,3 +580,57 @@ fn qpdf_check_on_signed_annotated_output() {
     );
     let _ = std::fs::remove_file(&path);
 }
+
+/// SIGN.05 ↔ EDIT.07 round-trip: a certification signature written by the
+/// sign crate is read by the save guard, and the guard refuses exactly the
+/// mutations the declared `/P` level forbids. This closes the loop between
+/// creation and enforcement on the *real* written object graph (the earlier
+/// tests use a hand-built CMS placeholder).
+#[test]
+fn created_docmdp_signatures_are_enforced_by_the_save_guard() {
+    use selis_pdf_sign::{sign_certification, CertificationOptions, DocMdpLevel as CreatedLevel};
+
+    let bud = budget();
+    for (created, expected) in [
+        (CreatedLevel::NoChanges, DocMdpLevel::NoChanges),
+        (CreatedLevel::FillForms, DocMdpLevel::FillForms),
+        (CreatedLevel::FillAndAnnotate, DocMdpLevel::FillAndAnnotate),
+    ] {
+        let mut g = guard(&bud);
+        let signed = sign_certification(
+            &base_pdf(),
+            &CertificationOptions {
+                doc_mdp: created,
+                signature: digital_options(),
+            },
+            &bud,
+            &mut g,
+        )
+        .expect("a real certification signature is written")
+        .0;
+
+        let model = materialise(&signed, &bud, &mut g).expect("materialise certified PDF");
+        let finding = inspect_signatures(&model, &bud, &mut g).expect("inspect certified PDF");
+        assert_eq!(finding.certification_level, Some(expected));
+        assert!(finding.signature_count >= 1);
+
+        // A content-stream edit is forbidden at every certified level.
+        let content = find_content(&model);
+        let edit = vec![ObjectMutation::SetObject {
+            num: content,
+            value: Obj::Stream {
+                dict: vec![(b(b"Length"), Obj::Int(2))],
+                data: b(b"q\n"),
+            },
+        }];
+        let error = check_mutation_allowed(&model, &edit, &bud, &mut g)
+            .expect_err("the save guard refuses a content edit on a certified document");
+        assert_eq!(error.code(), Code::SignatureWouldBreak);
+        let detail = error.ctx().detail.clone().unwrap_or_default();
+        assert!(
+            detail.contains(&format!("level {}", expected.p())),
+            "{detail}"
+        );
+        assert!(detail.contains("content/page edit"), "{detail}");
+    }
+}

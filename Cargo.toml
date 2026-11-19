@@ -77,6 +77,17 @@ sha2        = { version = "0.10", features = ["oid"] }
 rsa  = { version = "0.9", default-features = false, features = ["pem", "u64_digit"] }
 p256 = { version = "0.13", default-features = false, features = ["ecdh", "ecdsa", "pkcs8", "pem"] }
 
+# SL-5.SIGN.06 key sources (PKCS#12 / PFX). `p12-keystore` 0.4.1 is
+# MIT OR Apache-2.0, pure Rust, MSRV 1.85 (matches the workspace), and
+# maintained (releases through 2026). Its default `pbes1` feature brings
+# `rc2` (MIT), `des` and `cbc` so legacy RC2/3DES protected .p12 files open as
+# well as modern PBES2/AES-256 ones; there is no network or C ABI. We convert
+# the parsed PKCS#8 key / X.509 certs to the PEM path `sign_digital` already
+# uses, so the signing engine itself is unchanged. EXACT pin, crates.io only
+# (ADR-P0021). Native-only: the dependency and its module are gated to
+# `cfg(not(target_arch = "wasm32"))` so no WASM chunk grows (ADR-P0011).
+p12-keystore = { version = "=0.4.1" }
+
 # CLI
 clap        = { version = "4", features = ["derive"] }
 
