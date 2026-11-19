@@ -1,0 +1,7 @@
+open = "ok"
+pages = 1
+
+[annotation]
+triage = "diff>=25"
+verdict = "OurBug"
+note = "Type0/Identity-H ToUnicode bfrange explicit-array form was dropped; fixed SL-3.TEXT.19, see apps/cli/tests/text19_bfrange_array.rs"

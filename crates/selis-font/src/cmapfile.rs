@@ -12,8 +12,10 @@
 //!   mapping;
 //! * `beginbfchar` / `endbfchar` — `<code> <unicode>` pairs (a `/ToUnicode`
 //!   CMap, consumed by text extraction in SL-3.TEXT.02/SHAPE.04);
-//! * `beginbfrange` / `endbfrange` — `<start> <end> <unicode>` triples (the
-//!   explicit-destination array form is skipped);
+//! * `beginbfrange` / `endbfrange` — both the `<start> <end> <unicode>` base
+//!   form and the explicit-destination array form `<start> <end> [<u1> <u2>
+//!   ...]>` (§9.7.5.2; SL-3.TEXT.19 — dropping the array form loses every
+//!   character in the block);
 //! * `/WMode n def` — the writing mode (0 horizontal, 1 vertical);
 //! * `usecmap /Name` — a reference to another CMap, surfaced for the caller
 //!   to resolve.
@@ -53,6 +55,8 @@ pub struct CMap {
     pub bf_chars: Vec<(u32, u32)>,
     /// `beginbfrange` code range → Unicode base mappings.
     pub bf_ranges: Vec<BfRange>,
+    /// `beginbfrange` explicit-destination array mappings.
+    pub bf_arrays: Vec<BfArray>,
     /// The writing mode (`/WMode`): 0 horizontal, 1 vertical.
     pub wmode: u8,
     /// A `usecmap /Name` reference, if any.
@@ -69,6 +73,16 @@ pub struct BfRange {
     pub last: u32,
     /// The Unicode of `first`.
     pub unicode: u32,
+}
+
+/// One `beginbfrange` entry with an explicit destination array: code
+/// `first + i` maps to `items[i]` (§9.7.5.2).
+#[derive(Debug, Clone, PartialEq)]
+pub struct BfArray {
+    /// The first character code in the range.
+    pub first: u32,
+    /// The Unicode destinations, one per code in order.
+    pub items: Vec<u32>,
 }
 
 impl CMap {
@@ -93,12 +107,20 @@ impl CMap {
     /// The Unicode for a character code, from a `/ToUnicode` CMap
     /// (`beginbfchar`/`beginbfrange`), or `None`.
     ///
-    /// Single `beginbfchar` mappings win; otherwise the enclosing
-    /// `beginbfrange`.
+    /// Single `beginbfchar` mappings win; then an explicit-destination
+    /// `beginbfrange` array; then the enclosing base-value `beginbfrange`.
     #[must_use]
     pub fn unicode_map(&self, code: u32) -> Option<u32> {
         if let Some((_, uni)) = self.bf_chars.iter().find(|(c, _)| *c == code) {
             return Some(*uni);
+        }
+        for a in &self.bf_arrays {
+            if code >= a.first {
+                let idx = usize::try_from(code.saturating_sub(a.first)).unwrap_or(usize::MAX);
+                if let Some(uni) = a.items.get(idx) {
+                    return Some(*uni);
+                }
+            }
         }
         for r in &self.bf_ranges {
             if code >= r.first && code <= r.last {
@@ -195,7 +217,7 @@ pub fn parse_cmap(data: &[u8], g: &mut BudgetGuard<'_>) -> Result<Option<CMap>> 
                 }
             }
             Token::Raw(b"beginbfrange") => {
-                collect_bfrange(&mut tok, &mut cmap.bf_ranges)?;
+                collect_bfrange(&mut tok, &mut cmap.bf_ranges, &mut cmap.bf_arrays)?;
             }
             _ => {}
         }
@@ -204,17 +226,35 @@ pub fn parse_cmap(data: &[u8], g: &mut BudgetGuard<'_>) -> Result<Option<CMap>> 
         && cmap.cid_chars.is_empty()
         && cmap.bf_chars.is_empty()
         && cmap.bf_ranges.is_empty()
+        && cmap.bf_arrays.is_empty()
     {
         return Ok(None); // no mapping: not a CMap
     }
     Ok(Some(cmap))
 }
 
-/// Collect `start end unicode` triples until `endbfrange`.
+/// Collect `bfrange` entries until `endbfrange`.
 ///
-/// The explicit-destination array form (`<start> <end> [u1 u2 ...]`) is
-/// skipped; a `/ToUnicode` with that form falls back to `None` for the codes.
-fn collect_bfrange(tok: &mut Tokenizer<'_>, out: &mut Vec<BfRange>) -> Result<()> {
+/// Two destination forms are legal (ISO 32000-2 §9.7.5.2): a single base
+/// Unicode, advanced by the code offset, or an explicit array of Unicodes.
+/// Both are recovered — the array form is common in real `/ToUnicode` CMaps
+/// and used to be skipped wholesale (SL-3.TEXT.19).
+///
+/// # Budget
+///
+/// No independent charge: the whole CMap stream is charged once by
+/// [`parse_cmap`]; every vector here is bounded by that stream's length.
+///
+/// # Malformed Input
+///
+/// A truncated entry or array, a missing closer, or an unexpected token ends
+/// the block with whatever was recovered so far — `Ok`, never an error or a
+/// panic. An over-long array is truncated to the declared code range.
+fn collect_bfrange(
+    tok: &mut Tokenizer<'_>,
+    ranges: &mut Vec<BfRange>,
+    arrays: &mut Vec<BfArray>,
+) -> Result<()> {
     loop {
         let Some(Token::Number(start)) = tok.next() else {
             return Ok(()); // endbfrange or end of stream
@@ -222,14 +262,37 @@ fn collect_bfrange(tok: &mut Tokenizer<'_>, out: &mut Vec<BfRange>) -> Result<()
         let Some(Token::Number(last)) = tok.next() else {
             return Ok(());
         };
-        let Some(Token::Number(uni)) = tok.next() else {
-            return Ok(());
-        };
-        out.push(BfRange {
-            first: num_to_u32(start),
-            last: num_to_u32(last),
-            unicode: num_to_u32(uni),
-        });
+        let first = num_to_u32(start);
+        let last = num_to_u32(last);
+        match tok.next() {
+            Some(Token::Number(uni)) => ranges.push(BfRange {
+                first,
+                last,
+                unicode: num_to_u32(uni),
+            }),
+            Some(Token::Raw(b"[")) => {
+                let mut items = Vec::new();
+                loop {
+                    match tok.next() {
+                        Some(Token::Number(uni)) => items.push(num_to_u32(uni)),
+                        Some(Token::Raw(b"]")) | None => break,
+                        // An unexpected token ends this block; keep what was
+                        // recovered rather than abandoning the whole CMap.
+                        Some(_) => break,
+                    }
+                }
+                // A well-formed array has one destination per code; a hostile
+                // CMap must not inflate this beyond the declared range.
+                let count = usize::try_from(last.saturating_sub(first).saturating_add(1))
+                    .unwrap_or(usize::MAX);
+                items.truncate(count);
+                if !items.is_empty() {
+                    arrays.push(BfArray { first, items });
+                }
+            }
+            // endbfrange, an array closer without an opener, or end of stream.
+            _ => return Ok(()),
+        }
     }
 }
 
@@ -322,6 +385,14 @@ impl<'a> Tokenizer<'a> {
                 // stray one must not become a `Raw` word either).
                 self.skip_string();
                 return self.next();
+            }
+            if c == b'[' || c == b']' {
+                // Array delimiters in a `bfrange` destination array. Consume
+                // exactly one byte and return a standalone token — falling
+                // through to `skip_word` would yield a zero-length token with
+                // no progress (the same bug class as the stray `>` above).
+                self.pos = self.pos.saturating_add(1);
+                return Some(Token::Raw(self.data.get(start..self.pos)?));
             }
             if c.is_ascii_digit() || c == b'-' || c == b'+' || c == b'.' {
                 self.skip_number();
@@ -508,6 +579,63 @@ mod tests {
         assert_eq!(cmap.unicode_map(0x38), Some(0x0915));
         assert_eq!(cmap.unicode_map(0x20), Some(0x093F));
         assert_eq!(cmap.unicode_map(0x07), None);
+    }
+
+    /// SL-3.TEXT.19: real `/ToUnicode` CMaps from composite fonts frequently
+    /// use the `bfrange` explicit-destination ARRAY form — `<lo> <hi> [u1 u2
+    /// ...]` — instead of a single base value. Dropping the block loses every
+    /// character in it (the "missing chars" symptom on the Type0/CMap cohort).
+    #[test]
+    fn bfrange_explicit_array_recovers_unicode() {
+        let mut g = guard();
+        let src = b"1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n1 beginbfrange\n<0001> <0004> [<0054> <0065> <0073> <0074>]\nendbfrange\n";
+        let cmap = parse_cmap(src, &mut g).expect("parse").expect("cmap");
+        assert_eq!(cmap.unicode_map(0x0001), Some(0x0054));
+        assert_eq!(cmap.unicode_map(0x0002), Some(0x0065));
+        assert_eq!(cmap.unicode_map(0x0003), Some(0x0073));
+        assert_eq!(cmap.unicode_map(0x0004), Some(0x0074));
+        assert_eq!(cmap.unicode_map(0x0005), None);
+        assert_eq!(cmap.bf_arrays.len(), 1);
+    }
+
+    /// Both `bfrange` forms can appear in one CMap, and a `bfchar` entry must
+    /// still win over an array that covers the same code.
+    #[test]
+    fn bfrange_array_mixed_with_base_range_and_bfchar_override() {
+        let mut g = guard();
+        let src = b"2 beginbfrange\n<0001> <0002> [<0041> <0042>]\n<0010> <0012> <0061>\nendbfrange\n1 beginbfchar\n<0002> <005A>\nendbfchar\n";
+        let cmap = parse_cmap(src, &mut g).expect("parse").expect("cmap");
+        assert_eq!(cmap.bf_arrays.len(), 1);
+        assert_eq!(cmap.bf_ranges.len(), 1);
+        assert_eq!(cmap.unicode_map(0x0001), Some(0x0041));
+        assert_eq!(cmap.unicode_map(0x0002), Some(0x005A)); // bfchar wins
+        assert_eq!(cmap.unicode_map(0x0010), Some(0x0061)); // base range
+        assert_eq!(cmap.unicode_map(0x0012), Some(0x0063));
+    }
+
+    /// Real `/ToUnicode` CMaps put the full preamble before the mappings; the
+    /// array form must survive it and multi-codepoint destinations (e.g. a
+    /// U+4E00 CJK scalar) must round-trip as u32 values.
+    #[test]
+    fn bfrange_array_survives_cmap_preamble_and_wide_unicode() {
+        let mut g = guard();
+        let src = b"/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n/CIDSystemInfo <</Registry (Adobe) /Ordering (UCS) /Supplement 0>> def\n/CMapName /Adobe-Identity-UCS def\n/CMapType 2 def\n1 beginbfrange\n<0030> <0031> [<4E00> <4E8C>]\nendbfrange\nendcmap\n";
+        let cmap = parse_cmap(src, &mut g).expect("parse").expect("cmap");
+        assert_eq!(cmap.unicode_map(0x0030), Some(0x4E00));
+        assert_eq!(cmap.unicode_map(0x0031), Some(0x4E8C));
+    }
+
+    /// A truncated array (fewer destinations than codes) recovers what it can
+    /// and never panics on an out-of-range lookup.
+    #[test]
+    fn bfrange_short_array_recovers_prefix_only() {
+        let mut g = guard();
+        let src = b"1 beginbfrange\n<0001> <0005> [<0041> <0042>]\nendbfrange\n";
+        let cmap = parse_cmap(src, &mut g).expect("parse").expect("cmap");
+        assert_eq!(cmap.unicode_map(0x0001), Some(0x0041));
+        assert_eq!(cmap.unicode_map(0x0002), Some(0x0042));
+        assert_eq!(cmap.unicode_map(0x0003), None);
+        assert_eq!(cmap.unicode_map(0x0005), None);
     }
 
     #[test]

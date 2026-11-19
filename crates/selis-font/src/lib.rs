@@ -61,7 +61,7 @@ pub use cjk::build::{
 pub use cjk::set::{CjkChunkSource, CjkFontSet, CjkGlyph, CjkSnapshot};
 pub use cjk::{chunk_by_id, chunk_for, is_cjk, CjkChunk, CjkSlot, CHUNKS};
 pub use cmap::{select_cmap, CmapEncoding};
-pub use cmapfile::{parse_cmap, BfRange, CMap, CidRange};
+pub use cmapfile::{parse_cmap, BfArray, BfRange, CMap, CidRange};
 pub use encoding::{
     expand_differences, resolve, BaseEncoding, DifferenceItem, Encoding, FontEncoding,
 };

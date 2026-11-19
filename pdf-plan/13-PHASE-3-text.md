@@ -1095,3 +1095,74 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
     (it touches selection quads and search), which is why it is a separate task and not a
     follow-up to TEXT.16. Agreement with pypdf/pdfminer is **not** evidence of correctness —
     neither renders.
+
+## Addendum — TEXT divergence corpus sweep (2026-11-19, scoped)
+
+This addendum records what a *local* corpus sweep could and could not establish.
+No conformance level is promoted by it: Text-and-fonts stays **Parse**,
+Annotations and AcroForm stay **None** at G2.
+
+### Harness status — honest limitation
+
+The existing differential harness is `xtask text-sweep` (`xtask/src/text_sweep.rs`).
+It could **not** be run against the labelled expectation files in this worktree:
+
+* it reads PDFs from `corpus/pdfs`, which is fetch-only and absent from every
+  worktree (SL-0.LEGAL.04); `corpus/expect/` holds only the 3,863 hashed
+  expectation records, not the source PDFs,
+* its text oracles are absent locally (mutool is not installed; PDFium/pdf.js
+  run only in the pinned CI images, and Docker is unavailable on this host),
+* without those, neither per-file similarity numbers nor the *membership of the
+  divergence-tail subset* of a cohort can be re-derived. The expect tree has
+  e.g. 429 `PDF_UA-1/2` files while TEXT.17's tail is 98; enumerating all 429
+  as "the tail" would be fabrication.
+
+Per the task's honesty rule, no per-file tail verdicts were invented. The
+verdict ledger is written as `corpus/expect/<cohort>/verdicts.jsonl` by
+`python corpus/tools/gen_verdict_ledger.py`, and `--check` validates its schema
+and provenance invariants. Every row states whether it was *measured* locally
+or inherited from the cluster analysis.
+
+### Cohorts recorded, with evidence provenance
+
+| Cohort | Task | Expect files in pattern | Tail (documented) | Verdict | Provenance |
+|---|---|---:|---:|---|---|
+| annotation appearance text | SL-3.TEXT.14 | n/a | 62 | **Fixed** | local read-back test (3/3 pass) |
+| tagged reading order | SL-3.TEXT.17 | 429 | 98 | **OurBug — open** | documented cluster, NOT re-measured |
+| Type0 / CMap composite | SL-3.TEXT.19 | 18 (`6-2-11-3*`) | 47 | **OurBug — one cause fixed** | documented cluster + local read-back fix |
+
+These are **not** OracleBug/OurBug/Fixed tallies over measured files: no file
+was measured by the oracle sweep. The honest tally is Fixed 1 cohort /
+OurBug 2 cohorts at cohort scope, with 18 candidate per-file rows for TEXT.19
+explicitly marked `measured: false`. Zero `OracleBug` verdicts were filed —
+nothing here establishes that a reference extractor, rather than selis, was
+wrong, which itself needs a second oracle.
+
+### Fix landed in this sweep: SL-3.TEXT.19 bfrange array
+
+`selis-font::cmapfile` skipped the `beginbfrange` explicit-destination array
+form (`<lo> <hi> [<u1> <u2> ...]>`). A `/ToUnicode` that used only that form
+produced **no CMap at all**, so composite-font codes came back as raw CIDs
+(the "missing chars" symptom in the TEXT.19 cohort).
+
+* `CMap` now carries `bf_arrays: Vec<BfArray>`; `unicode_map` consults it
+  (after `bfchar`, before base-value ranges), and the parser recovers both
+  forms. Array delimiters are tokenised without the zero-length-token hang.
+* Red unit test (pre-fix) proved `unicode_map` returned `None` for every code
+  in an array-only CMap. End-to-end read-back: a Type0/Identity-H PDF whose
+  `/ToUnicode` maps codes `0001..0004` to `T,e,s,t` extracted **raw control
+  bytes** before the fix and **`Test`** after it
+  (`apps/cli/tests/text19_bfrange_array.rs`). The pre/post proof was done by
+  stashing only the font fix, rebuilding, and re-running the same test.
+* Regression pin: `corpus/expect/synthetic/bugfix_text19_bfrange_array.toml`
+  (render/text hashes unmeasured — no sweep run).
+
+### Closed vs still open
+
+* **TEXT.14 (annotation AP text): closed at base** (`0bb8ff2`), re-verified
+  locally, 3/3 CLI read-back tests pass. No change in this sweep.
+* **TEXT.19: partially addressed** — the bfrange-array cause is fixed with a
+  read-back pin; the task stays OPEN because the 47-file cohort was not
+  re-measured and other causes may remain.
+* **TEXT.17 and all other TEXT.16/18/20-25 items: still open**, verdicts
+  documented, no assertions weakened, no silent passing.
