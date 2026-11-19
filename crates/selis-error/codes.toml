@@ -625,6 +625,45 @@ user_msg = "Cancelled."
 retryable = true
 doc_state = "Unchanged"
 
+# SL-5.JS.01 — the budgeted form-script interpreter (ADR-P0020). A script never
+# modifies the document itself: it returns a value the caller may apply, so a
+# contained run reports doc_state = Unchanged.
+[[code]]
+id = 4011
+name = "JS_INSTRUCTION_BUDGET"
+kind = "Budget"
+meaning = "A form script exceeded its instruction-budget (interrupt) allowance and was stopped."
+user_msg = "This document's form script used too much computation and was stopped."
+retryable = false
+doc_state = "Unchanged"
+
+[[code]]
+id = 4012
+name = "JS_MEMORY_BUDGET"
+kind = "Budget"
+meaning = "A form script exceeded the interpreter's heap or string-size allowance and was stopped."
+user_msg = "This document's form script needed too much memory and was stopped."
+retryable = false
+doc_state = "Unchanged"
+
+[[code]]
+id = 4013
+name = "JS_SCRIPT_REJECTED"
+kind = "Invalid"
+meaning = "A form script was rejected before execution: malformed source, empty input, or over the script-size limit."
+user_msg = "This document's form script could not be read."
+retryable = false
+doc_state = "Unchanged"
+
+[[code]]
+id = 4014
+name = "JS_RUNTIME_ERROR"
+kind = "Invalid"
+meaning = "A form script raised an uncaught JavaScript exception that was contained by the sandbox."
+user_msg = "This document's form script stopped with an error."
+retryable = false
+doc_state = "Unchanged"
+
 [[code]]
 id = 4100
 name = "INTERNAL_PANIC"
@@ -672,6 +711,25 @@ meaning = "An operation would send document-derived data off the device without 
 user_msg = "This action would send your document off this device, so Selis stopped it."
 retryable = false
 doc_state = "Unchanged"
+
+# SL-5.JS.02/03 — active content is off by default (ADR-P0020).
+[[code]]
+id = 4303
+name = "JS_CONSENT_REQUIRED"
+kind = "Policy"
+meaning = "A document's scripts were refused because the reader has not consented for this document and no admin origin policy pre-approves it."
+user_msg = "Scripts in this document are off. Enable scripting for this document to allow them."
+retryable = true
+doc_state = "Unchanged"
+
+[[code]]
+id = 4304
+name = "JS_API_REFUSED"
+kind = "Policy"
+meaning = "A form script used an Acrobat API outside the whitelist (for example app.launchURL, submitForm, exportDataObject, Net.* or Collab.*)."
+user_msg = "This document's form script tried to use an action Selis does not allow."
+retryable = false
+doc_state = "Loaded"
 
 # ---------------------------------------------------------------------------
 # 5000–5299 — I/O and sources

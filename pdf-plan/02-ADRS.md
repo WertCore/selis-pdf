@@ -268,6 +268,29 @@ the current gate can see an npm tree at all. The policy now reads:
   JavaScript gets none. Recorded here rather than papered over, and owned by the pre-release
   hardening pass — UI.14 does not wait on it.
 
+  **Revision accepted 2026-11-19 (SL-5.JS.01/02/03 — two-environment scripting sandbox).**
+  Form scripts are CPU-interpreted in two environments, and the dependency gate applies to one:
+  - **Native (CLI/desktop/mobile):** `rquickjs =0.11.0` (MIT; QuickJS itself is MIT), maintained by
+    DelSkayn with releases through 2026, small (~200 KB of C), deterministic, and exposes a
+    interrupt handler used as the instruction budget. `0.11.0` is the last release with
+    `rust-version = 1.85` (the workspace MSRV) and is pinned exactly, crates.io only. The
+    `loader`, `dyn-load`, `futures` and `parallel` features stay off: no imports, no native modules,
+    no threads. This is a **native-only** crate; a wasm32 build of rquickjs would need `bindgen` +
+    libclang + a wasm C toolchain that this workspace does not have, so none is attempted and no
+    wasm bytes are shipped (size delta zero).
+  - **Browser:** no new dependency and no wasm bytes at all. The browser's own engine (V8) runs
+    inside a sandboxed `Worker` whose capability globals (`fetch`, `XMLHttpRequest`,
+    `importScripts`, `WebAssembly`, `indexedDB`, `WebSocket`, `postMessage`, …) are removed and
+    which has no DOM. A hard `worker.terminate()` deadline bounds runaway scripts. The same
+    whitelisted Acrobat subset and consent/origin policy are mirrored in TypeScript under
+    `apps/web/host/src/editor/`.
+  `boa` was rejected as larger and GPL-licensed engines remain denied on the iOS static-link
+  grounds above. `cargo deny check` licenses the new Rust dependency through the existing MIT
+  allowance. Honest gap: the browser boundary is enforced by the platform's Worker isolation and a
+  deadline, not by a second engine we control; its tests exercise the generated bootstrap in a
+  fresh realm (Node `vm` analogue) and the deadline/consent wiring with injected Workers, not a
+  real browser process.
+
 ## ADR-P0022 — Shell strategy: one TypeScript UI for web, desktop, and iOS; Android native
 **Status:** Accepted (revised — supersedes the original "mobile is native" position)
 **Decision:** `apps/web/ui` is the single React/TypeScript application. The desktop shell (Tauri v2)

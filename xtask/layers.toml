@@ -43,6 +43,7 @@ selis-pdf-engine = 3
 selis-policy     = 3
 selis-job        = 3
 selis-pdf-convert = 3
+selis-pdf-js     = 3 # native-only budgeted form-script interpreter (SL-5.JS.01)
 
 # L4 — Bindings
 selis-pdf-wasm = 4
@@ -211,6 +212,15 @@ why = """
 The engine is the only L3 crate an app talks to; budget surfaces, entitlement
 sets and CloudConsent are policy decisions, and the engine is where they are
 consulted per operation. Policy is a leaf with no reverse dependency."""
+
+[[edge]]
+from = "selis-pdf-js"
+to = "selis-policy"
+why = """
+SL-5.JS.02/03: scripts never run without an explicit decision. The interpreter's
+`run_authorized` entry point consults the reader-consent and admin-origin policy
+from selis-policy before it touches QuickJS. Policy is a leaf with no reverse
+dependency on the interpreter."""
 
 [[edge]]
 from = "selis-pdf-engine"
