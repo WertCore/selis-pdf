@@ -1530,7 +1530,7 @@ Everything here is reused verbatim by desktop (ADR-P0022), so no `window.chrome`
   - **Do:** Firefox (MV3 with `webRequest` still available — a different interception path) and
     Safari Web Extension (requires the Xcode wrapper and an App Store submission).
   - **Note:** Safari's wrapper means an Apple Developer account (SL-0.LEAD.02) and a store review.
-  - **Status (2026-11-20, partial — portable code, NOT browser-tested):** the host now detects
+  - **Status (2026-11-20, partial — portable code, not browser-tested):** the host now detects
     capabilities instead of assuming Chromium: `apps/web/host/src/capability.ts` returns a typed
     `BrowserCapabilities` result for 16 surfaces (service worker, WebAssembly, OPFS + sync handle,
     File System Access, OffscreenCanvas, IndexedDB, Blob URLs, Web Locks, structured clone, dialog
