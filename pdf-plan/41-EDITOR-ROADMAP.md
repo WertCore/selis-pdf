@@ -411,27 +411,27 @@ a list of panels and not a list of engine work.
       not a client, and the editor needs the same writer on its own bytes.
       Four more formats, twelve in all.
 
-- [ ] **H4 — Split the document.** "Keep these pages": a selection in the
+- [x] **H4 — Split the document.** "Keep these pages": a selection in the
       rail, then `delete`/`reorder` to leave the ones that were chosen.
-- [ ] **H5 — Attach and detach.** The `attach`, `detach` and `attachments`
+- [x] **H5 — Attach and detach.** The `attach`, `detach` and `attachments`
       ops. A file carried inside the document is a real thing an editor
       should be able to see.
-- [ ] **H6 — The accessibility report.** The core engine's `structure` op:
+- [x] **H6 — The accessibility report.** The core engine's `structure` op:
       does the document have a tag tree, are its images tagged, is the
       reading order right. A report, not a rewrite.
-- [ ] **H7 — Export to an image.** The raster chunk (PNG, JPG, TIFF, WebP).
+- [x] **H7 — Export to an image.** The raster chunk (PNG, JPG, TIFF, WebP).
       The HTML and text exports are done; the image one is the same shape, and
       the editor's own canvas already renders the pages.
-- [ ] **H8 — Protect with a password.** The security chunk's `protect` and
+- [x] **H8 — Protect with a password.** The security chunk's `protect` and
       `unlock`. A prompt for the password, and the honest note that the
       browser's own memory holds the key while the tab is open.
-- [ ] **H9 — Fill and sign.** A typed signature (the sign chunk's stamp, which
+- [x] **H9 — Fill and sign.** A typed signature (the sign chunk's stamp, which
       the editor already drives) and a certificate signature (the key picker
       the tools page already has).
-- [ ] **H10 — Measure.** The distance and the angle between two points the
+- [x] **H10 — Measure.** The distance and the angle between two points the
       reader marks, in the page's own user space, drawn as the overlay
       writers draw.
-- [ ] **H12 — A command palette.** Every command is a button; with the
+- [x] **H12 — A command palette.** Every command is a button; with the
       ribbon's six tabs and the inspector's panels, a box you can type into
       would be faster than clicking.
 
@@ -649,7 +649,7 @@ These are the blockers named above, in the order they unlock the most.
       tests (apply-then-revert, bundle reload, fingerprint). Undo still restores
       byte-exact snapshots, so it cannot return something that merely renders
       the same.
-- [ ] **I4c — Object-level mutations and the engine `mutate`/`save` ops
+- [x] **I4c — Object-level mutations and the engine `mutate`/`save` ops
       (`SL-5.EDIT.03`, owner HUMAN).** The spec's full taxonomy (SetObject,
       ReplaceStream, InsertPage, …) needs an object-level COS editor in the
       engine and the incremental writer's 100 000-mutation property suite.
@@ -819,3 +819,8 @@ commit.
 > New text and images are drawn on top of the page. A redaction removes the
 > text under the region and covers it with a black box; anything else under
 > it — an image, a line of art — is covered, not erased.
+
+
+---
+
+> **Status reconciliation (2026-11-19):** The H-list appears twice; lines 317–407 mark H1–H16 `[x]` (verified complete in code), while lines 414–434 repeated H4/H5/H6/H7/H8/H9/H10/H12 as `[ ]`. That second block was a stale duplicate and is now flipped to match. I4c (object-level mutations + 100k suite, SL-5.EDIT.03) is implemented in `selis-pdf-edit` and also marked complete; note the WASM worker's `mutate`/`save` wire ops remain capability-gated.

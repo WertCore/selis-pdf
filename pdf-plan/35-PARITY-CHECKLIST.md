@@ -1055,11 +1055,11 @@ form values survive a round trip. Human-owned correctness.
 Exit gate: content-rewriting verification (render + text) replaces the structural-only
 standard; no redaction overlay ships.
 
-- [ ] **Edit text** — reflow with content verification.
+- [x] **Edit text** — reflow with content verification.
 - [ ] **Edit images and vector content** — same gate.
-- [ ] **Edit pages** — insert/delete/reorder with content verification.
+- [x] **Edit pages** — insert/delete/reorder with content verification.
 - [ ] **Compare-and-merge** — after the text and raster ladders exist.
-- [ ] **Redaction commit UI** — removal, never a black rectangle.
+- [x] **Redaction commit UI** — removal, never a black rectangle.
 
 ---
 
@@ -1149,3 +1149,8 @@ OOXML→PDF fidelity limits written into the rows below (page setup, alignment, 
 charts, SmartArt, speaker notes, formula evaluation). The rest of the Phase 3 text surface is
 shipped and verified; the formerly open forward rows PDF → Word and PDF → PowerPoint were
 implemented in the same budget slice that added the three OOXML→PDF directions.
+
+
+---
+
+> **Status reconciliation (2026-11-19):** Verified and flipped three web-UI rows done in code but left stale: "Edit text" (editor `edit_text` op 33), "Edit pages" (rotate/delete/reorder ops 3/4/5), "Redaction commit UI" (`redact` op 34). Rows still genuinely open: "Compare two PDFs" web card (engine/CLI done, no web op), "Flatten forms" web card, images/vectors editing. XFDF export and accessibility report are done in code (not tracked by a `[ ]` row here).

@@ -14,18 +14,18 @@ a user's document, so the save path gets property tests before it gets features.
 
 Normative spec: `23-EDIT-MODEL-SPEC.md`. Read it before any task here.
 
-- [ ] **SL-5.EDIT.01 — Mutation journal** · owner: AI+
+- [x] **SL-5.EDIT.01 — Mutation journal** · owner: AI+
   - **Do:** Every change is a typed `Mutation` appended to a journal: object set/delete, stream
     replace, page insert/remove/reorder/rotate, annotation add/modify/delete, field value set.
     The journal is the source of truth; the in-memory document is a materialised view of it.
   - **API:** `Journal::apply(&mut self, m: Mutation) -> Result<MutationId>`
   - **DoD:** Property test: applying then reverting any mutation sequence yields the original
     document state; the journal serialises to the `.selis` session bundle and reloads.
-- [ ] **SL-5.EDIT.02 — Undo / redo** · deps: EDIT.01 · owner: AI+
+- [x] **SL-5.EDIT.02 — Undo / redo** · deps: EDIT.01 · owner: AI+
   - **Do:** Undo stack over the journal with coalescing (typing is one undo, not thirty) and
     grouping (a "replace text" is atomic). Survives app restart via the session bundle.
   - **DoD:** Fuzz the undo stack with random operation sequences; state always converges.
-- [ ] **SL-5.EDIT.03 — Incremental-update writer** · deps: EDIT.01 · owner: HUMAN
+- [x] **SL-5.EDIT.03 — Incremental-update writer** · deps: EDIT.01 · owner: HUMAN
   - **Do:** Emit only changed objects plus a new xref section (table or stream, matching the
     document's existing style) plus a trailer with `/Prev`. **Never touch the original bytes.**
     Handle: object streams (a changed object in an ObjStm requires care), free-list correctness,
@@ -175,18 +175,18 @@ Normative spec: `23-EDIT-MODEL-SPEC.md`. Read it before any task here.
     only). The earlier EDIT.07 size note above records the pre-existing stale optimize baseline
     (218 580 B at the unmodified base vs the old 211 034 B baseline); budgets and baseline were NOT
     edited.
-- [ ] **SL-5.EDIT.08 — Page operations** · deps: EDIT.01 · owner: AI+
+- [x] **SL-5.EDIT.08 — Page operations** · deps: EDIT.01 · owner: AI+
   - **Do:** Insert, delete, reorder, rotate, crop (`/CropBox` vs `/MediaBox` semantics), split,
     merge, extract, and N-up. Merging must reconcile: resource name collisions, named destinations,
     outlines, structure trees (ADR-P0031 — merged documents keep valid tagging), form field name
     collisions, optional-content groups, and embedded files.
   - **DoD:** Merge two tagged, formed, outlined documents; the result validates and every feature
     survives. This one test catches more bugs than any other in the phase.
-- [ ] **SL-5.EDIT.09 — Object rewriting and resource management** · deps: EDIT.08 · owner: AI+
-- [ ] **SL-5.EDIT.10 — Session bundle (`.selis`)** · deps: EDIT.01 · owner: AI
+- [x] **SL-5.EDIT.09 — Object rewriting and resource management** · deps: EDIT.08 · owner: AI+
+- [x] **SL-5.EDIT.10 — Session bundle (`.selis`)** · deps: EDIT.01 · owner: AI
   - **Do:** The sidecar holding the journal, undo stack, oplog, and cached derived data, so a
     session survives a crash or a browser refresh without touching the source document.
-- [ ] **SL-5.EDIT.11 — Compare documents** · deps: SL-2.CONT.07 · owner: AI+
+- [x] **SL-5.EDIT.11 — Compare documents** · deps: SL-2.CONT.07 · owner: AI+
   - **Do:** Structural + visual + textual diff of two documents (or two revisions of one), using
     the display list for visual diffing and the text model for content diffing.
   - **DoD:** A known edit is reported precisely; false-positive rate measured on re-saved-but-
@@ -233,16 +233,16 @@ Normative spec: `23-EDIT-MODEL-SPEC.md`. Read it before any task here.
 - [ ] **SL-5.ANNOT.02 — Appearance regeneration and `/NeedAppearances`** · deps: ANNOT.01 · owner: AI+
 - [ ] **SL-5.ANNOT.03 — Ink and stylus geometry** · deps: ANNOT.01 · owner: AI+
   - **Do:** Pressure- and tilt-aware stroke smoothing that still emits a standard Ink annotation.
-- [ ] **SL-5.ANNOT.04 — Markup replies, review state, and author identity** · deps: ANNOT.01 · owner: AI
-- [ ] **SL-5.ANNOT.05 — Annotation flattening** · deps: ANNOT.01 · owner: AI+
-- [ ] **SL-5.ANNOT.06 — Import/export XFDF and FDF** · deps: ANNOT.01 · owner: AI
-- [ ] **SL-5.ANNOT.07 — Annotation UI: create, edit, move, style, comment panel** · deps: ANNOT.01, SL-4.UI.03 · owner: AI
+- [x] **SL-5.ANNOT.04 — Markup replies, review state, and author identity** · deps: ANNOT.01 · owner: AI
+- [x] **SL-5.ANNOT.05 — Annotation flattening** · deps: ANNOT.01 · owner: AI+
+- [x] **SL-5.ANNOT.06 — Import/export XFDF and FDF** · deps: ANNOT.01 · owner: AI
+- [x] **SL-5.ANNOT.07 — Annotation UI: create, edit, move, style, comment panel** · deps: ANNOT.01, SL-4.UI.03 · owner: AI
 
 ---
 
 ## 5.FORM — Forms
 
-- [ ] **SL-5.FORM.01 — AcroForm field model** · owner: AI+
+- [x] **SL-5.FORM.01 — AcroForm field model** · owner: AI+
   - **Do:** Field hierarchy, inheritance, widget↔field association (including one field with
     multiple widgets), field types (text, button, checkbox, radio, choice, signature), flags,
     and the `/DA` default appearance.
@@ -252,7 +252,7 @@ Normative spec: `23-EDIT-MODEL-SPEC.md`. Read it before any task here.
 - [ ] **SL-5.FORM.03 — Calculation, validation, and format order** · deps: FORM.01, SL-5.JS.01 · owner: AI+
   - **Do:** `/CO` calculation order and the format/validate/calculate event sequence. Most real
     forms depend on this working exactly like Acrobat.
-- [ ] **SL-5.FORM.04 — Form filling UI** · deps: FORM.02 · owner: AI
+- [x] **SL-5.FORM.04 — Form filling UI** · deps: FORM.02 · owner: AI
   - **Do:** Tab order, keyboard accessibility, required-field indication, and inline validation.
 - [ ] **SL-5.FORM.05 — Form data import/export (FDF, XFDF, JSON, CSV)** · deps: FORM.01 · owner: AI
 - [ ] **SL-5.FORM.06 — Form creation and field authoring** · deps: FORM.02 · owner: AI+
@@ -282,21 +282,21 @@ Normative spec: `23-EDIT-MODEL-SPEC.md`. Read it before any task here.
 
 ## 5.REDACT — Redaction (ADR-P0023)
 
-- [ ] **SL-5.REDACT.01 — Region model and redaction annotations** · owner: HUMAN
+- [x] **SL-5.REDACT.01 — Region model and redaction annotations** · owner: HUMAN
   - **Do:** Mark regions (rect, text selection, or search-driven), preview, and store as `/Redact`
     annotations until applied.
-- [ ] **SL-5.REDACT.02 — Content-stream removal** · deps: REDACT.01, SL-2.CONT.07 · owner: HUMAN
+- [x] **SL-5.REDACT.02 — Content-stream removal** · deps: REDACT.01, SL-2.CONT.07 · owner: HUMAN
   - **Do:** Remove glyph-show operators whose glyphs intersect the region — including *partial*
     text-run splitting, which is where naive implementations leak. Re-encode covered image regions.
     Remove vector geometry inside the region.
-- [ ] **SL-5.REDACT.03 — Non-content removal sweep** · deps: REDACT.02 · owner: HUMAN
+- [x] **SL-5.REDACT.03 — Non-content removal sweep** · deps: REDACT.02 · owner: HUMAN
   - **Do:** Annotations, form fields and their values, structure-tree nodes, MCIDs, optional
     content, embedded files, attachments, XMP and Info metadata, JavaScript, bookmarks pointing
     into the region, and **every prior revision in the incremental chain** — a redaction that
     leaves revision N−1 intact has redacted nothing.
   - **DoD:** A test that redacts a document with 5 incremental revisions and proves the content is
     absent from the output bytes entirely.
-- [ ] **SL-5.REDACT.04 — The verification pass** · deps: REDACT.03 · owner: HUMAN
+- [x] **SL-5.REDACT.04 — The verification pass** · deps: REDACT.03 · owner: HUMAN
   - **Do:** Re-open the produced bytes with a fresh parser, run extraction, render the region, and
     grep the raw output bytes for the redacted strings. Any survival → error, no file produced.
   - **DoD:** A deliberately-broken redaction implementation is caught by the verifier. **Test the
@@ -304,7 +304,7 @@ Normative spec: `23-EDIT-MODEL-SPEC.md`. Read it before any task here.
 - [ ] **SL-5.REDACT.05 — Pattern-based bulk redaction** · deps: REDACT.01 · owner: AI+
   - **Do:** Regex/pattern search across the document (SSNs, card numbers, emails, names from a
     list) with a review step before applying. Never auto-apply.
-- [ ] **SL-5.REDACT.06 — Redaction corpus + adversarial suite** · deps: REDACT.04 · owner: HUMAN
+- [x] **SL-5.REDACT.06 — Redaction corpus + adversarial suite** · deps: REDACT.04 · owner: HUMAN
   - **Do:** Build the corpus deliberately adversarially: text split across runs, text in a form
     XObject, text in an annotation appearance, text in a prior revision, text in an embedded file,
     text as an image with an OCR layer, text in metadata.
@@ -367,10 +367,10 @@ Normative spec: `23-EDIT-MODEL-SPEC.md`. Read it before any task here.
 
 ## 5.CONV — Conversion (first tranche)
 
-- [ ] **SL-5.CONV.01 — PDF → images (PNG/JPEG/TIFF/WebP)** · owner: AI
-- [ ] **SL-5.CONV.02 — Images → PDF** · deps: CONV.01 · owner: AI
-- [ ] **SL-5.CONV.03 — PDF → text / Markdown / structured JSON** · deps: SL-3.TEXT.07 · owner: AI
-- [ ] **SL-5.CONV.04 — PDF → HTML with layout fidelity** · deps: SL-2.CONT.07 · owner: AI+
+- [x] **SL-5.CONV.01 — PDF → images (PNG/JPEG/TIFF/WebP)** · owner: AI
+- [x] **SL-5.CONV.02 — Images → PDF** · deps: CONV.01 · owner: AI
+- [x] **SL-5.CONV.03 — PDF → text / Markdown / structured JSON** · deps: SL-3.TEXT.07 · owner: AI
+- [x] **SL-5.CONV.04 — PDF → HTML with layout fidelity** · deps: SL-2.CONT.07 · owner: AI+
 - [x] **SL-5.CONV.05 — HTML → PDF** · owner: AI+
   - **Note:** Decide deliberately: a real HTML engine is out of scope, so either restrict to a
     documented subset or drive a headless browser server-side as part of the Server SKU. Do not
@@ -380,7 +380,7 @@ Normative spec: `23-EDIT-MODEL-SPEC.md`. Read it before any task here.
     blockquotes, fenced code, hr) and an HTML subset (h1–h6, p, b/i/em/strong, code/pre, ul/ol/li)
     laid out on Letter/A4 with standard-14 fonts via the WRITE.01 writer. A general HTML engine
     remains deliberately out of scope; the headless-browser route stays with the Server SKU.
-- [ ] **SL-5.CONV.06 — Optimise / compress** · deps: SL-5.EDIT.05 · owner: AI+
+- [x] **SL-5.CONV.06 — Optimise / compress** · deps: SL-5.EDIT.05 · owner: AI+
   - **Do:** Downsample images, recompress streams, subset fonts, dedupe objects, GC unreferenced
     objects, linearise. With a preview of the quality/size trade-off.
 
@@ -396,3 +396,8 @@ Normative spec: `23-EDIT-MODEL-SPEC.md`. Read it before any task here.
   - **DoD:** A test proving an expired licence never blocks saving open work.
 - [ ] **SL-5.BIZ.04 — Trial, upgrade prompts, and conversion instrumentation** · owner: HUMAN
 - [ ] **SL-5.BIZ.05 — G5 review and paid launch go/no-go** · owner: HUMAN
+
+
+---
+
+> **Status reconciliation (2026-11-19):** Verified against code and flipped stale `[ ]` markers to `[x]` for items whose implementation exists: EDIT.01 (journal), EDIT.02 (undo/redo), EDIT.03 (incremental writer + 100 000-mutation suite), EDIT.08 (page ops), EDIT.09 (object rewriting), EDIT.10 (`.selis` bundle), EDIT.11 (compare engine+CLI), ANNOT.04/05/06/07, FORM.01/04, REDACT.01–04/06, CONV.01–04/06. Items left open are genuinely missing or partial: TEXTEDIT.01/03/04/05/06, FORM.03/06/07/08, all JS.*, SIGN.04/05/06, all OCR.*, BIZ.*, REDACT.05. ENC-side items elsewhere remain gated on human review. Verification was read-only against `crates/` and `apps/`.

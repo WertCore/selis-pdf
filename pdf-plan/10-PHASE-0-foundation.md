@@ -461,7 +461,7 @@ point you have 40 000 lines and no idea which of them are wrong.
     xref/Length//Root, byte-flips). Expectations come from actual open outcomes; `corpus verify`
     (3736 files) reports 0 changes.
 
-- [ ] **SL-0.CORP.05 — Wild-corpus acquisition plan** · owner: HUMAN
+- [x] **SL-0.CORP.05 — Wild-corpus acquisition plan** · owner: HUMAN
   - **Do:** Decide how to legally obtain ~100k real-world PDFs for the G1 robustness gate
     (Common Crawl extraction is the usual route; check terms and PII posture). Write the handling
     policy: no redistribution, encrypted at rest, no human review without cause.
@@ -719,7 +719,7 @@ plan to precede the fetch.
   - **Do:** Prepare the application for the three OSS crates (ADR-P0030). Submit as soon as the
     repos are public.
 
-- [ ] **SL-0.SEC.04 — Security disclosure policy + `SECURITY.md`** · owner: HUMAN
+- [x] **SL-0.SEC.04 — Security disclosure policy + `SECURITY.md`** · owner: HUMAN
   - **Do:** Publish the reporting channel, the SLA, the CVE process, and the bug-bounty posture
     (even if "not yet"). A PDF vendor without a disclosure channel gets full-disclosure instead.
 
@@ -766,3 +766,8 @@ plan to precede the fetch.
 - [ ] **SL-0.OPS.04 — Public roadmap and the "what we do not support yet" page** · owner: HUMAN
   - **Note:** Publishing the conformance ladder honestly is a marketing asset, not a liability.
     Every competitor claims everything; nobody believes them.
+
+
+---
+
+> **Status reconciliation (2026-11-19):** SL-0.CORP.05 flipped to `[x]` (both children CORP.05a/05b are done); SL-0.SEC.04 flipped to `[x]` (`SECURITY.md` exists with reporting address, SLA, disclosure and supply-chain posture). Other `[ ]` items (legal/procurement/human long-leads, OSS-Fuzz application, threat-model test mapping) are genuinely open and untouched.
