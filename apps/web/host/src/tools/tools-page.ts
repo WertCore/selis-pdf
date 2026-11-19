@@ -25,6 +25,12 @@ import {
 	spellOut,
 } from "../tool-registry.js";
 import { opsChunkForTool } from "./chunk-routing.js";
+import { COMPARE_NOTE, type ComparisonReportJson, compareReportRows } from "./compare.js";
+import {
+	type CompareWasm,
+	loadCompare,
+	runCompare,
+} from "./compare-protocol.js";
 import {
 	type OptimizeWasm,
 	loadOptimize,
@@ -774,6 +780,9 @@ function reportRows(
 	}
 	if (schema === "selis-privacy/1") {
 		return privacyRows(parsed as PrivacyReportJson);
+	}
+	if (schema === "selis-compare/1") {
+		return compareReportRows(parsed as ComparisonReportJson);
 	}
 	return metadataRows(parsed as MetadataReportJson);
 }
@@ -2360,6 +2369,12 @@ function init(): void {
 			);
 			return;
 		}
+		if (tool.id === "compare") {
+			const note = make("p", "option-note");
+			note.textContent = COMPARE_NOTE;
+			options.append(note);
+			return;
+		}
 		if (tool.id === "flatten_forms") {
 			const note = make("p", "option-note");
 			note.textContent = FLATTEN_FORMS_NOTE;
@@ -3622,6 +3637,15 @@ function fileTile(file: File, index: number, tool: ToolDef | null): HTMLLIElemen
 			}
 			return { op: "compress", options, files: wireFiles };
 		}
+		if (tool.id === "compare") {
+			// Op 46 is the only two-input tools-protocol operation. Both PDFs
+			// travel as in-memory keys `in/0` and `in/1`; the guest renders each
+			// page of both at this DPI and returns a JSON report, not a PDF.
+			if (wireFiles.length !== 2) {
+				throw new ToolInputError("Compare needs exactly two PDFs first.");
+			}
+			return { op: "compare", options: { dpi: 72 }, files: wireFiles };
+		}
 		if (tool.id === "flatten_forms") {
 			// Op 44 needs no options: one PDF in, one form-flattened PDF out.
 			return { op: "flatten_forms", files: wireFiles };
@@ -3766,6 +3790,21 @@ function fileTile(file: File, index: number, tool: ToolDef | null): HTMLLIElemen
 			});
 		}
 		return optimizeWasmPromise;
+	}
+
+	// The compare card runs the tools wire protocol but a different module: it
+	// alone links the rasteriser and the text ladder. Keep its promise separate
+	// so opening compare never downloads the (engine-free) tools chunk and a
+	// failed load is retried on its own.
+	let compareWasmPromise: Promise<CompareWasm> | null = null;
+	function getCompareWasm(): Promise<CompareWasm> {
+		if (compareWasmPromise === null) {
+			compareWasmPromise = loadCompare().catch((error: unknown) => {
+				compareWasmPromise = null;
+				throw error;
+			});
+		}
+		return compareWasmPromise;
 	}
 
 	let convertWasmPromise: Promise<ConvertWasm> | null = null;
@@ -5278,13 +5317,23 @@ function fileTile(file: File, index: number, tool: ToolDef | null): HTMLLIElemen
 			const request = buildRequest(tool, wireFiles);
 			const chunk = opsChunkForTool(tool.id);
 			setStatus(
-				chunk === "optimize"
-					? "Loading the local optimise engine…"
-					: "Loading the local tools engine…",
+				chunk === "compare"
+					? "Loading the local compare engine…"
+					: chunk === "optimize"
+						? "Loading the local optimise engine…"
+						: "Loading the local tools engine…",
 				"info",
 			);
 			let result: ToolResult;
-			if (chunk === "optimize") {
+			if (chunk === "compare") {
+				// Op 46 keeps the shared wire framing, but the guest that exports
+				// it is the dedicated compare chunk: it is the only two-input
+				// operation and the only one that links both engine halves.
+				const compareWasm = await getCompareWasm();
+				setStatus("Running locally…", "info");
+				await nextPaint();
+				result = runCompare(compareWasm, request);
+			} else if (chunk === "optimize") {
 				// Ops 41 and 43 keep their wire codes, but the guest that exports
 				// them is the optimise chunk, never the tools chunk.
 				const optimize = await getOptimizeWasm();

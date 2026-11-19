@@ -152,6 +152,19 @@ describe("encodeToolRequest", () => {
 		expect(readU32(encoded, 12)).toBe(0);
 	});
 
+	it("encodes compare as op 46 with two PDFs and a dpi option", () => {
+		const encoded = encodeToolRequest({
+			op: "compare",
+			options: { dpi: 72 },
+			files: [
+				{ name: "a.pdf", bytes: new Uint8Array([0x25, 0x50, 0x44, 0x46]) },
+				{ name: "b.pdf", bytes: new Uint8Array([0x25, 0x50, 0x44, 0x46]) },
+			],
+		});
+		expect(readU32(encoded, 8)).toBe(46);
+		expect(new TextDecoder().decode(encoded)).toContain('"dpi":72');
+	});
+
 	it("encodes repair at 22", () => {
 		const files = [{ name: "a.pdf", bytes: new Uint8Array([0x25]) }];
 		expect(readU32(encodeToolRequest({ op: "repair", files }), 8)).toBe(22);

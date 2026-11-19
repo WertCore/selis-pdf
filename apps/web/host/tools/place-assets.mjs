@@ -132,6 +132,10 @@ const TOOLS_WASM_RAW = "wasm32-unknown-unknown/release/selis_pdf_wasm_tools.wasm
 const OPTIMIZE_WASM_OPT = "wasm32-unknown-unknown/release/selis_pdf_wasm_optimize.opt.wasm";
 /** The unoptimised optimise chunk, for developers who only ran `cargo build`. */
 const OPTIMIZE_WASM_RAW = "wasm32-unknown-unknown/release/selis_pdf_wasm_optimize.wasm";
+/** The compare chunk (op 46, two inputs, JSON report), optimised first. */
+const COMPARE_WASM_OPT = "wasm32-unknown-unknown/release/selis_pdf_wasm_compare.opt.wasm";
+/** The unoptimised compare chunk, for developers who only ran `cargo build`. */
+const COMPARE_WASM_RAW = "wasm32-unknown-unknown/release/selis_pdf_wasm_compare.wasm";
 /** The convert chunk, optimised first. Also import-free (checked below). */
 const CONVERT_WASM_OPT = "wasm32-unknown-unknown/release/selis_pdf_wasm_convert.opt.wasm";
 /** The unoptimised convert chunk, for developers who only ran `cargo build`. */
@@ -192,6 +196,17 @@ function findToolsEngine() {
 function findOptimizeEngine() {
 	for (const dir of targetDirs()) {
 		for (const name of [OPTIMIZE_WASM_OPT, OPTIMIZE_WASM_RAW]) {
+			const candidate = join(dir, name);
+			if (existsSync(candidate)) return candidate;
+		}
+	}
+	return null;
+}
+
+/** The first compare chunk that exists, optimised preferred over raw. */
+function findCompareEngine() {
+	for (const dir of targetDirs()) {
+		for (const name of [COMPARE_WASM_OPT, COMPARE_WASM_RAW]) {
 			const candidate = join(dir, name);
 			if (existsSync(candidate)) return candidate;
 		}
@@ -667,7 +682,54 @@ if (optimizeImports.length > 0) {
 	process.exit(1);
 }
 
-// The convert chunk is the third engine: Markdown/HTML/CSV → PDF. It is lazy,
+// The compare chunk is a third tools-family engine: op 46 compares two PDFs
+// page by page and emits a JSON report. Only the compare card fetches it. It
+// links the rasteriser and the text ladder, which is exactly why it cannot live
+// in the engine-free tools chunk; it still carries the same import-free
+// contract, so a missing or import-bearing artifact is a build failure.
+const compare = findCompareEngine();
+if (compare === null) {
+	console.error(
+		[
+			"place-assets: no compare WASM chunk found - the compare-pdfs card cannot run",
+			"without one, so this is a build failure rather than a skip. Build it first:",
+			"",
+			"  cargo build -p selis-pdf-wasm-compare --target wasm32-unknown-unknown --release",
+			"",
+			"(`cargo xtask size-check` builds it with fat LTO. Set CARGO_TARGET_DIR if the",
+			"build is redirected; this script reads it.)",
+		].join("\n"),
+	);
+	process.exit(1);
+}
+
+const compareOut = join(publicRoot, "wasm/selis_pdf_wasm_compare.wasm");
+mkdirSync(dirname(compareOut), { recursive: true });
+copyFileSync(compare, compareOut);
+const compareBytes = readFileSync(compareOut).length;
+let compareImports;
+try {
+	compareImports = WebAssembly.Module.imports(new WebAssembly.Module(readFileSync(compareOut)));
+} catch (error) {
+	console.error(`place-assets: the compare chunk at ${compareOut} is not valid WebAssembly: ${error}`);
+	process.exit(1);
+}
+if (compareImports.length > 0) {
+	console.error(
+		[
+			"place-assets: the compare chunk has host imports; its operation must run with none.",
+			"An import is a capability leak (clock, entropy, filesystem, network) and breaks the",
+			"no-upload guarantee. Found:",
+			...compareImports.map((entry) => `  ${entry.module}.${entry.name}`),
+			"",
+			"Rebuild it with:",
+			"  cargo build -p selis-pdf-wasm-compare --target wasm32-unknown-unknown --release",
+		].join("\n"),
+	);
+	process.exit(1);
+}
+
+// The convert chunk is another lazy engine: Markdown/HTML/CSV → PDF. It is lazy,
 // so the tools page never downloads it unless the user picks Convert to PDF,
 // and it must be import-free for the same reason the tools chunk is: an import
 // is a capability, and this chunk is handed the user's document text.
@@ -929,6 +991,10 @@ writeFileSync(
 				url: "/wasm/selis_pdf_wasm_optimize.wasm",
 				bytes: optimizeBytes,
 			},
+			compare: {
+				url: "/wasm/selis_pdf_wasm_compare.wasm",
+				bytes: compareBytes,
+			},
 			convert: {
 				url: "/wasm/selis_pdf_wasm_convert.wasm",
 				bytes: convertBytes,
@@ -960,6 +1026,7 @@ console.log(
 	`place-assets: copied ${modules.length} modules, ${ASSET_COPIES.length} asset files, ` +
 		`the engine (${engineBytes} B, from ${relative(workspaceRoot, engine)}) and the ` +
 		`tools chunk (${toolsBytes} B, 0 imports) and the optimise chunk (${optimizeBytes} B, 0 imports) ` +
+		`and the compare chunk (${compareBytes} B, 0 imports) ` +
 		`and the convert chunk (${convertBytes} B, 0 imports) ` +
 		`and the raster chunk (${rasterBytes} B, 0 imports) and the html chunk (${htmlBytes} B, 0 imports) ` +
 		`and the security chunk (${securityBytes} B, 0 imports) ` +

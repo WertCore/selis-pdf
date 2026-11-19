@@ -1,0 +1,28 @@
+[package]
+name = "selis-pdf-wasm-compare"
+description = "Lazy WASM chunk: render-and-text comparison of two PDFs in the browser."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# No `native-fs`: both paths are keys in the in-memory tool session, exactly as
+# in the tools and optimise chunks. Compare reads two documents and writes no
+# document; it only emits a JSON report, so no path ever reaches a filesystem.
+# The `text` feature links both the renderer and the text ladder, which is the
+# whole reason this operation needs a dedicated chunk instead of living in the
+# engine-free tools chunk. The engine keeps its workspace-default
+# `default-features = false` so no entropy source is linked and the module stays
+# import-free.
+selis-pdf-tools = { workspace = true, features = ["text"] }
+serde = { workspace = true }
+serde_json = { workspace = true }

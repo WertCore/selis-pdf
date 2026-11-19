@@ -74,7 +74,8 @@ export type ToolOp =
 	| "fill_form_data"
 	| "flatten_forms"
 	| "subset_fonts"
-	| "linearize";
+	| "linearize"
+	| "compare";
 
 /** The wire operation number for each operation. */
 const OP_CODE: Record<ToolOp, number> = {
@@ -121,6 +122,10 @@ const OP_CODE: Record<ToolOp, number> = {
 	subset_fonts: 41,
 	linearize: 43,
 	flatten_forms: 44,
+	// 45 is reserved: compare was originally scoped there before the dedicated
+	// chunk decision. The shipped op code is 45+1 so no persisted reference to
+	// the reserved number can collide with the real operation.
+	compare: 46,
 };
 
 /** One input file on the wire. */

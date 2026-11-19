@@ -1989,6 +1989,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "selis-pdf-wasm-compare"
+version = "0.1.0"
+dependencies = [
+ "selis-pdf-tools",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "selis-pdf-wasm-convert"
 version = "0.1.0"
 dependencies = [

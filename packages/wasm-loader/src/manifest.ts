@@ -7,7 +7,15 @@
  * for `xtask/size-budgets.toml` and the Rust `Manifest::canonical()`.
  */
 
-export type ChunkId = "core" | "jpx" | "cjk" | "ocr" | "convert" | "editor" | "optimize";
+export type ChunkId =
+	| "core"
+	| "jpx"
+	| "cjk"
+	| "ocr"
+	| "convert"
+	| "editor"
+	| "optimize"
+	| "compare";
 
 export interface ChunkEntry {
 	id: ChunkId;
@@ -27,7 +35,7 @@ export interface Manifest {
 	chunks: ChunkEntry[];
 }
 
-/** The canonical 7-chunk split (core + 6 lazy). */
+/** The canonical 8-chunk split (core + 7 lazy). */
 export const MANIFEST: Manifest = {
 	v: 1,
 	engine: "0.1.0",
@@ -42,6 +50,12 @@ export const MANIFEST: Manifest = {
 			id: "optimize",
 			url: "wasm/selis_pdf_wasm_optimize.wasm",
 			budget: 200_000,
+			viewerAuto: false,
+		},
+		{
+			id: "compare",
+			url: "wasm/selis_pdf_wasm_compare.wasm",
+			budget: 700_000,
 			viewerAuto: false,
 		},
 	],
@@ -63,6 +77,9 @@ export function validateViewerIsolation(manifest: Manifest = MANIFEST): void {
 		if (e.id === "optimize" && e.viewerAuto) {
 			throw new Error("viewer must not auto-load the optimise chunk");
 		}
+		if (e.id === "compare" && e.viewerAuto) {
+			throw new Error("viewer must not auto-load the compare chunk");
+		}
 	}
 }
 
@@ -75,4 +92,5 @@ export const ALL_CHUNKS: ChunkId[] = [
 	"convert",
 	"editor",
 	"optimize",
+	"compare",
 ];

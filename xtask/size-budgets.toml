@@ -236,3 +236,19 @@ budget = 400000
 chunk = "text"
 artifact = "selis_pdf_wasm_text"
 budget = 400000
+
+# The compare chunk (op 46: a two-input, render-and-text diff that emits a JSON
+# report). It is the only tools-protocol operation that links BOTH engine halves:
+# the tiny-skia raster pipeline (every page of both documents rendered at the
+# same DPI) and the text ladder (whole-document extracted-text comparison). The
+# tools chunk is deliberately engine-free and sits at 424k/440k, so compare
+# cannot live there; a fat-LTO wasm-opt probe adding compare_pdfs to the text
+# chunk measured 320 596 B → 574 705 B brotli, over that chunk's 400 000 B budget
+# and far past its 2% baseline gate. A dedicated chunk with its own ABI and this
+# ceiling keeps the weight behind one explicit card action. The ceiling is set
+# above the measured probe with room for the ABI and report framing; the 2%
+# baseline rule gates the next slice. It is fetched only by the compare card.
+[[budget]]
+chunk = "compare"
+artifact = "selis_pdf_wasm_compare"
+budget = 700000
