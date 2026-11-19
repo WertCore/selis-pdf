@@ -91,8 +91,9 @@ pub use edit::{edit_text, EditError, EditReport, EditTextOptions};
 pub use fingerprint::{fingerprint_report, FileIds, FingerprintReport, FontFact, ImageFact};
 pub use flatten::{flatten_annotations, flatten_forms};
 pub use forms::{
-    fill_forms, form_fields, scan_form_scripts, CalcScript, FieldEdit, FieldKind, FillFormsOptions,
-    FormField, FormFieldsReport, ScriptManifest,
+    fill_forms, form_fields, regenerate_field_appearances, scan_form_scripts, AppearanceReport,
+    AppearanceSkip, AppearanceSkipReason, CalcScript, FieldEdit, FieldKind, FillFormsOptions,
+    FormField, FormFieldsReport, FormatScript, ScriptManifest, ValidateScript,
 };
 pub use images::{image_to_pdf, ImagePageSize, ImageToPdfOptions};
 pub use linearize::{linearize, linearize_file, linearize_file_with_mode, LinearizeReport};

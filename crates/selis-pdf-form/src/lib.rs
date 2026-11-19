@@ -87,16 +87,20 @@ mod formdata_tests;
 // honest XFA static-text render. They are sibling modules of the read/fill
 // model so they can share its object helpers (a child module may reach the
 // private items of its parent).
+mod appearance;
 mod author;
 mod detect;
 mod scripts;
 mod xfa;
 
+pub use appearance::{
+    regenerate_appearances, AppearanceReport, AppearanceSkip, AppearanceSkipReason,
+};
 pub use author::{
     create_form_fields, AuthorFieldKind, CreateFormOptions, CreateFormReport, FieldSpec,
 };
 pub use detect::{detect_form_fields, CandidateKind, CandidateReport, FieldCandidate};
-pub use scripts::{scan_form_scripts, CalcScript, ScriptManifest};
+pub use scripts::{scan_form_scripts, CalcScript, FormatScript, ScriptManifest, ValidateScript};
 pub use xfa::{render_xfa, XfaRenderReport};
 
 use std::collections::HashMap;
@@ -297,6 +301,12 @@ pub struct FormFieldsReport {
     /// consent and wants to evaluate them in a sandbox.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub calculations: Vec<CalcScript>,
+    /// Validate actions (`/AA /V`) in field-tree walk order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub validations: Vec<ValidateScript>,
+    /// Format actions (`/AA /F`) in field-tree walk order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub formats: Vec<FormatScript>,
     /// The fields, in `/Fields` walk order (parents before children).
     pub fields: Vec<FormField>,
 }
@@ -425,6 +435,8 @@ pub fn read_form_fields(
         has_signature: walked.has_signature,
         has_scripts: script_manifest.has_scripts,
         calculations: script_manifest.calculations,
+        validations: script_manifest.validations,
+        formats: script_manifest.formats,
         fields: walked
             .records
             .into_iter()

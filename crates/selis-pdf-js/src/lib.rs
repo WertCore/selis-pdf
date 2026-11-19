@@ -50,6 +50,8 @@ mod forbidden;
 #[cfg(not(target_arch = "wasm32"))]
 mod sandbox;
 #[cfg(not(target_arch = "wasm32"))]
+mod sequence;
+#[cfg(not(target_arch = "wasm32"))]
 mod types;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -58,5 +60,7 @@ pub use budget::{JsBudget, JsUsage};
 pub use forbidden::{find_forbidden_api, FORBIDDEN_ACROBAT_APIS};
 #[cfg(not(target_arch = "wasm32"))]
 pub use sandbox::{JsSandbox, AF_FUNCTIONS};
+#[cfg(not(target_arch = "wasm32"))]
+pub use sequence::{EventSequenceOutcome, EventSequenceRequest, FormAction};
 #[cfg(not(target_arch = "wasm32"))]
 pub use types::{EventKind, Field, FieldUpdate, JsOutcome, JsRequest};
