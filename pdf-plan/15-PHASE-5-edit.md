@@ -315,23 +315,70 @@ Normative spec: `23-EDIT-MODEL-SPEC.md`. Read it before any task here.
   - **Do:** Field hierarchy, inheritance, widget↔field association (including one field with
     multiple widgets), field types (text, button, checkbox, radio, choice, signature), flags,
     and the `/DA` default appearance.
-- [ ] **SL-5.FORM.02 — Field appearance generation** · deps: FORM.01, ANNOT.02 · owner: AI+
+- [x] **SL-5.FORM.02 — Field appearance generation** · deps: FORM.01, ANNOT.02 · owner: AI+
   - **Do:** Text fields with quadding, comb fields, multiline, rich text, auto-size fonts, choice
     lists, and checkbox/radio appearance states.
-- [ ] **SL-5.FORM.03 — Calculation, validation, and format order** · deps: FORM.01, SL-5.JS.01 · owner: AI+
+  - **Done (all widget kinds):** `selis_pdf_form::regenerate_appearances(src, budget, g) ->
+    (bytes, AppearanceReport)` walks the whole AcroForm and writes a real `/AP` for **every** widget
+    type from the field's current `/V`: text and single/multi-select choice (reusing the shared
+    variable-text generator with exact standard-14 metrics, `/Q`, multiline and auto-size —
+    FORM.06's fill-time synthesis already covered these); checkbox and radio (`/AP /N` `Off` + an
+    on-state with a vector checkmark / filled disc, `/AS` selected from `/V`); push button (a
+    bordered `/MK /CA` caption); and signature (a bordered box drawing the signer name from an
+    existing `/V /Name`). Buttons that already carry appearance states are never replaced — only
+    `/AS` is selected. A signed field with no `/V`, a missing widget/box, or an unresolvable font
+    is skipped with a typed `AppearanceSkip`, and `/NeedAppearances` is left/set so a conformant
+    viewer rebuilds it (the ANNOT.02-compatible contract — that crate was read, not edited). Every
+    font substitution is disclosed in `AppearanceReport::disclosures`; nothing changes silently.
+    The result is re-opened and each generated `/AP` read back before it is returned. Exposed as
+    `selis form-appearances <in> --output <out>` through
+    `selis-pdf-tools::regenerate_field_appearances` (write-gate verified).
+  - **Not claimed (honest gaps):** like the rest of `selis-pdf-form`, this writes a verified
+    **full rewrite** (renumbered objects), **not** an incremental revision — the source bytes are
+    not a verbatim prefix; the incremental writer in `selis-pdf-edit` is not reusable from this
+    layer without a large dependency inversion. The checkbox/radio marks are simple vector glyphs,
+    not Acrobat's exact bundled checkmark/dingbat art. Push-button `/MK /BC` (border colour),
+    `/BG` (background) and `/R` (rotation) are read but the generated appearance uses a fixed black
+    border / no fill / no rotation — a visible simplification. A signature appearance is a
+    *drawing of the name*, not a cryptographic visual, and no signing is performed. Comb fields,
+    rich text and auto-size beyond the shared text generator are not separately implemented.
+- [x] **SL-5.FORM.03 — Calculation, validation, and format order** · deps: FORM.01, SL-5.JS.01 · owner: AI+
   - **Do:** `/CO` calculation order and the format/validate/calculate event sequence. Most real
     forms depend on this working exactly like Acrobat.
-  - **Partial (this slice):** `selis-pdf-form::scan_form_scripts` now reports a typed
-    `ScriptManifest` (`has_scripts` + `/CO`-ordered `CalcScript`s); `FormFieldsReport` carries it.
-    The native CLI `fill-forms --allow-js` evaluates `/CO` calculations via
-    `JsSandbox::run_authorized` (consent-gated) and merges the computed values into the fill.
-  - **Honest gap:** only the `calculate` event is evaluated; the full `validate`/`format` event
-    sequence and Acrobat-exact ordering/trigger semantics are not implemented. Browser-computed
-    values are shown as read-back rows but are **not** written back into the filled PDF (the PDF
-    keeps the values you entered); the native CLI does write computed values back.
+  - **Done (event subset, consent-gated):** `scan_form_scripts` now reports a typed `ScriptManifest`
+    with `/CO`-ordered `CalcScript`s **and** `/AA /V` `ValidateScript`s and `/AA /F`
+    `FormatScript`s (fully-qualified names, hierarchy resolved); `FormFieldsReport` carries all
+    three. `JsSandbox::run_event_sequence` evaluates them as one commit-time sequence in the
+    required order — **calculate (`/CO`) → validate (`/V`) → format (`/F`)** — reusing the same
+    consent gate: every action goes through `JsSandbox::run_authorized`, which refuses with
+    `JS_CONSENT_REQUIRED` before any interpreter work. A validate script setting `event.rc = false`
+    is a typed `JS_VALIDATE_REFUSED` naming its field and writes no file. A script that does not
+    assign `event.value` no longer clears the field (the value property is an accessor that tracks
+    real assignments). The CLI `fill-forms --allow-js` runs the whole sequence and merges computed
+    values back; without consent a scripted form is refused with a typed error naming
+    `--allow-js`/`SELIS_ALLOW_JS=1`.
+  - **Not claimed — full Acrobat semantics are NOT claimed:** this is a commit-time sequence, not
+    Acrobat's interactive event engine. `/AA /K` (keystroke) events, per-keystroke re-entrancy,
+    Acrobat's exact recalculation trigger points, and its separate *display* value are not
+    modelled: a format script's `event.value` is written to the stored `/V` because this engine
+    keeps one value per field. Document-level `/JS` execution remains out of scope (ADR-P0020).
+    Browser-computed values from the web prompt are still shown as read-back rows but are **not**
+    written back into the filled PDF; the native CLI does write them back.
 - [x] **SL-5.FORM.04 — Form filling UI** · deps: FORM.02 · owner: AI
   - **Do:** Tab order, keyboard accessibility, required-field indication, and inline validation.
-- [ ] **SL-5.FORM.05 — Form data import/export (FDF, XFDF, JSON, CSV)** · deps: FORM.01 · owner: AI
+- [x] **SL-5.FORM.05 — Form data import/export (FDF, XFDF, JSON, CSV)** · deps: FORM.01 · owner: AI
+  - **Done:** XFDF and FDF import already existed; added a documented, versioned JSON schema
+    (`selis-form-data/1`: `{"schema":...,"fields":{"name": value-or-array}}`) and a CSV shape
+    (header row of field names + one value row, multi-select joined with `;` and RFC-4180 quoted)
+    with `export_json`/`export_csv` and `import_json`/`import_csv` in `selis_pdf_form::formdata`.
+    Both import paths produce the same `Vec<FieldEdit>` the FDF/XFDF importer feeds into
+    `fill_form`, and a test proves export → import → fill → read-back round-trips. Binary and
+    attachment-like fields (signature fields, push buttons, NUL-bearing or CSV-reserved values)
+    are explicitly skipped with typed `SkippedField`/`SkipReason` notes, never silently dropped.
+    CLI: `selis form-export <pdf> [--format json|csv]` and
+    `selis form-import <pdf> <data> --output <pdf> [--format json|csv|auto]`.
+  - **Not claimed:** the CSV single-value/`;` collision is refused with a typed note rather than
+    escaped; there is no XFDF/FDF *export* (only import) in this slice.
 - [x] **SL-5.FORM.06 — Form creation and field authoring** · deps: FORM.02 · owner: AI+
   - **Done:** `selis-pdf-form::create_form_fields` builds `/AcroForm`, merged field/widget
     dictionaries (`/FT /T /Rect /DA /AP`) and page `/Annots` for caller-specified text, checkbox,

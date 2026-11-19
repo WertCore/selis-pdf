@@ -731,6 +731,16 @@ user_msg = "This document's form script tried to use an action Selis does not al
 retryable = false
 doc_state = "Loaded"
 
+# SL-5.FORM.03 — a validate script set event.rc = false, rejecting a value.
+[[code]]
+id = 4305
+name = "JS_VALIDATE_REFUSED"
+kind = "Policy"
+meaning = "A form field's validation script rejected its candidate value (event.rc = false)."
+user_msg = "A field rejected the value you entered."
+retryable = true
+doc_state = "Unchanged"
+
 # ---------------------------------------------------------------------------
 # 5000–5299 — I/O and sources
 # ---------------------------------------------------------------------------

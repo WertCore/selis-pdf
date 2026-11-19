@@ -66,6 +66,10 @@ pub struct FieldUpdate {
 pub struct JsOutcome {
     /// `event.value` after the script ran, when it was set.
     pub event_value: Option<String>,
+    /// True when the script actually assigned `event.value` (as opposed to
+    /// leaving the engine's initial value). A calculate/validate/format script
+    /// that never assigns `event.value` must not overwrite a field with `""`.
+    pub event_value_set: bool,
     /// `event.rc` after the script ran (`true` unless a validate script rejected).
     pub event_rc: bool,
     /// Field values the script changed, relative to the request.

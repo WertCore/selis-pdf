@@ -588,6 +588,38 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Export a PDF's current form field values as JSON or CSV.
+    FormExport {
+        /// The input PDF.
+        path: String,
+        /// `json` (default) or `csv`.
+        #[arg(long, default_value = "json")]
+        format: String,
+        /// Where to write the data. Prints it on stdout when omitted.
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+    /// Regenerate every form widget's appearance stream from its current value.
+    FormAppearances {
+        /// The input PDF.
+        path: String,
+        /// The output PDF.
+        #[arg(short, long)]
+        output: String,
+    },
+    /// Import JSON or CSV form data and fill a PDF with it.
+    FormImport {
+        /// The input PDF.
+        path: String,
+        /// The JSON or CSV form-data file.
+        data: String,
+        /// The output PDF.
+        #[arg(short, long)]
+        output: String,
+        /// `json`, `csv` or `auto` (default), which sniffs the leading byte.
+        #[arg(long, default_value = "auto")]
+        format: String,
+    },
     /// Read a PDF's Info dictionary, XMP packet and structure as JSON.
     ///
     /// The document is not modified: this is the read that comes before
@@ -1378,6 +1410,22 @@ fn run() {
             let allow = allow_js || std::env::var_os("SELIS_ALLOW_JS").is_some();
             finish(forms::fill(&path, &set, &output, allow), json)
         }
+        Command::FormAppearances { path, output } => {
+            let result = selis_pdf_tools::regenerate_field_appearances(&path, &output)
+                .map_err(CliError::from);
+            finish(result, false)
+        }
+        Command::FormExport {
+            path,
+            format,
+            output,
+        } => forms::export(&path, &format, output.as_deref()),
+        Command::FormImport {
+            path,
+            data,
+            output,
+            format,
+        } => finish(forms::import(&path, &data, &format, &output), false),
         Command::Stamp {
             path,
             output,

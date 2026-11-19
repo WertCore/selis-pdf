@@ -23,6 +23,7 @@ use crate::types::{EventKind, FieldUpdate, JsOutcome, JsRequest};
 struct SharedState {
     fields: BTreeMap<String, String>,
     event_value: String,
+    event_value_set: bool,
     event_rc: bool,
 }
 
@@ -187,6 +188,7 @@ impl JsSandbox {
                 .cloned()
                 .unwrap_or_default(),
         };
+        state.event_value_set = false;
         state.event_rc = true;
     }
 
@@ -194,25 +196,26 @@ impl JsSandbox {
         self.ctx.with(|ctx| -> Result<()> {
             let globals = ctx.globals();
             let event: Object<'_> = globals.get("event").map_err(|_| setup_error())?;
-            let value = self.state.borrow().event_value.clone();
+            // `event.value` is an accessor over SharedState (installed once in
+            // `install_api`); reset_state seeded it, so setting it here would
+            // falsely mark it as script-written.
             event
                 .set("type", request.event.as_str())
                 .map_err(|_| setup_error())?;
             event
                 .set("targetName", request.target.clone())
                 .map_err(|_| setup_error())?;
-            event.set("value", value).map_err(|_| setup_error())?;
             event.set("rc", true).map_err(|_| setup_error())?;
             Ok(())
         })
     }
 
     fn collect_outcome(&self, request: &JsRequest, usage: JsUsage) -> Result<JsOutcome> {
-        let (event_value, event_rc, updates) = self.ctx.with(|ctx| {
+        let (event_value, event_value_set, event_rc, updates) = self.ctx.with(|ctx| {
             let globals = ctx.globals();
             let event: Object<'_> = match globals.get("event") {
                 Ok(value) => value,
-                Err(_) => return (String::new(), true, Vec::new()),
+                Err(_) => return (String::new(), false, true, Vec::new()),
             };
             let event_value = match event.get::<_, Coerced<String>>("value") {
                 Ok(value) => value.0,
@@ -223,6 +226,7 @@ impl JsSandbox {
                 Err(_) => true,
             };
             let state = self.state.borrow();
+            let event_value_set = state.event_value_set;
             let mut updates = Vec::new();
             for field in &request.fields {
                 if let Some(current) = state.fields.get(&field.name) {
@@ -234,10 +238,11 @@ impl JsSandbox {
                     }
                 }
             }
-            (event_value, event_rc, updates)
+            (event_value, event_value_set, event_rc, updates)
         });
         Ok(JsOutcome {
             event_value: Some(event_value),
+            event_value_set,
             event_rc,
             updates,
             usage,
@@ -249,11 +254,30 @@ impl JsSandbox {
             let globals = ctx.globals();
 
             // `event` — the calculation/validate/format event object. Its
-            // `value` and `rc` are written by the script and read back after.
+            // `value` is an accessor over the run state so we can tell a script
+            // that actually assigned it apart from one that left the seeded
+            // value untouched (SL-5.FORM.03). `rc` is a plain property.
             let event = Object::new(ctx.clone()).map_err(|_| setup_error())?;
             event.set("type", "").map_err(|_| setup_error())?;
             event.set("targetName", "").map_err(|_| setup_error())?;
-            event.set("value", "").map_err(|_| setup_error())?;
+            let getter_state = Rc::clone(&self.state);
+            let setter_state = Rc::clone(&self.state);
+            event
+                .prop(
+                    "value",
+                    Accessor::new(
+                        move || -> rquickjs::Result<String> {
+                            Ok(getter_state.borrow().event_value.clone())
+                        },
+                        move |value: Coerced<String>| -> rquickjs::Result<()> {
+                            let mut shared = setter_state.borrow_mut();
+                            shared.event_value = value.0;
+                            shared.event_value_set = true;
+                            Ok(())
+                        },
+                    ),
+                )
+                .map_err(|_| setup_error())?;
             event.set("rc", true).map_err(|_| setup_error())?;
             globals.set("event", event).map_err(|_| setup_error())?;
 
