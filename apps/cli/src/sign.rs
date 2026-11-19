@@ -73,6 +73,10 @@ pub(crate) fn sign(
     reason: Option<&str>,
     location: Option<&str>,
     time: Option<&str>,
+    connect_tsa: bool,
+    tsa_url: Option<&str>,
+    connect_aia: bool,
+    ocsp_url: Option<&str>,
 ) -> CliResult<crate::verify_report::Verification> {
     if cert_paths.is_empty() {
         return Err(CliError(
@@ -103,7 +107,72 @@ pub(crate) fn sign(
         key_pem,
         certificates_pem,
     };
-    selis_pdf_tools::sign_pdf(path, &options, output).map_err(CliError::from)
+    let verification = selis_pdf_tools::sign_pdf(path, &options, output).map_err(CliError::from)?;
+
+    // SL-5.SIGN.04: external services are strictly opt-in. With neither flag
+    // this whole block is skipped — no socket, no consent line, no behaviour
+    // change from the offline signing path above.
+    if !connect_tsa && !connect_aia {
+        return Ok(verification);
+    }
+    embed_consented_trust(output, field, connect_tsa, tsa_url, connect_aia, ocsp_url)?;
+    Ok(verification)
+}
+
+/// Add consented timestamp / revocation data to a freshly signed PDF.
+///
+/// The network lives only in `tsa.rs`; here we read the signature's CMS blob,
+/// call the consent-gated providers and hand the returned DER to the engine's
+/// PURE `embed_dss`. No document bytes or keys are sent anywhere.
+#[cfg(not(target_arch = "wasm32"))]
+fn embed_consented_trust(
+    output: &str,
+    field: &str,
+    connect_tsa: bool,
+    tsa_url: Option<&str>,
+    connect_aia: bool,
+    ocsp_url: Option<&str>,
+) -> CliResult<()> {
+    let signed = std::fs::read(output)
+        .map_err(|e| CliError(format!("cannot re-open {output} for DSS: {e}")))?;
+    let budget = selis_sandbox::Budget::profile(selis_sandbox::Surface::Viewer);
+    let mut g = budget.guard();
+    let cms = selis_pdf_sign::signature_contents(&signed, field, &budget, &mut g)
+        .map_err(|e| CliError(e.to_string()))?;
+
+    let mut timestamps: Vec<selis_pdf_sign::TimestampToken> = Vec::new();
+    let mut ocsp: Vec<Vec<u8>> = Vec::new();
+    if connect_tsa {
+        let token = crate::tsa::timestamp_signature(
+            &cms,
+            &crate::tsa::NetworkConsent {
+                connect: true,
+                url: tsa_url,
+            },
+            &mut |line| eprintln!("{line}"),
+        )?;
+        timestamps.push(selis_pdf_sign::TimestampToken::from_der(token));
+    }
+    if connect_aia {
+        let data = crate::tsa::fetch_revocation(
+            &crate::tsa::NetworkConsent {
+                connect: true,
+                url: ocsp_url,
+            },
+            &mut |line| eprintln!("{line}"),
+        )?;
+        ocsp.push(data.ocsp);
+    }
+
+    let options = selis_pdf_sign::DssOptions {
+        field_name: field,
+        timestamps: &timestamps,
+        ocsp: &ocsp,
+        ..selis_pdf_sign::DssOptions::default()
+    };
+    let (out, _) = selis_pdf_sign::embed_dss(&signed, &options, &budget, &mut g)
+        .map_err(|e| CliError(e.to_string()))?;
+    crate::write_file(output, &out)
 }
 
 /// `selis signatures <path> [--output file] [--anchor <pem>]...`

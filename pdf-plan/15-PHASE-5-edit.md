@@ -482,9 +482,33 @@ Normative spec: `23-EDIT-MODEL-SPEC.md`. Read it before any task here.
 - [ ] **SL-5.SIGN.03 — Signing: PAdES B-B / B-T** · deps: SIGN.01, EDIT.03 · owner: HUMAN
   - **Do:** Create the signature field, reserve the `/Contents` gap, compute the byte-range digest,
     build the CMS, and embed — as an incremental update so prior signatures survive.
-- [ ] **SL-5.SIGN.04 — Timestamping (RFC 3161) and LTV** · deps: SIGN.03, SL-0.LEAD.08 · owner: HUMAN
+- [ ] **SL-5.SIGN.04 — Timestamping (RFC 3161) and LTV** · deps: SIGN.03, SL-0.LEAD.08 · owner: AI+ (consent-gated slice), HUMAN (trust membership)
   - **Do:** TSA integration, DSS/VRI construction, and document-timestamp signatures for long-term
     validation (PAdES B-LT / B-LTA).
+  - **Done (partial, consent-gated slice):** the engine stays network-free. `selis-pdf-sign::embed_dss`
+    is a PURE writer that takes ALREADY-FETCHED DER (RFC 3161 tokens, OCSP, CRLs, certs), writes a
+    `/DSS` with `/TS /OCSP /CRL /V` as an incremental revision, parses each token with the new
+    `selis-crypto::timestamp` DER reader and refuses one whose `messageImprint` is not SHA-256 of
+    the named signature's `/Contents`. Read-back proves the DSS chain and that the original
+    signature still verifies. The **only** socket in the workspace is the native CLI binding
+    `apps/cli/src/tsa.rs`: it runs solely under `--connect-tsa` / `--connect-aia`, requires a URL
+    from `SELIS_TSA_URL` / `SELIS_OCSP_URL` (no hardcoded third party), prints the exact consent
+    line to stderr **before** connecting, and sends only a 32-byte hash of the signature (ADR-P0017)
+    — never document bytes, keys or a request body containing them. `http://` only; HTTPS, chunked
+    responses and AIA auto-discovery are refused with typed errors. E2E tests prove: default sign
+    opens no socket and writes no DSS; no flag/URL is a typed refusal; a local mock TSA receives
+    the hash and the returned token embeds while the signature keeps verifying.
+  - **Consent wording (stderr, verbatim):** "Connecting to external time provider &lt;URL&gt; to
+    timestamp this signature; a hash of the document will be sent. Continue?" The flag *is* the
+    opt-in; there is no silent connection path. No document bytes leave the device without it.
+  - **Remaining long-lead (NOT code):** Adobe-trusted / AATL membership and a CA-trusted TSA
+    certificate are required before a timestamp is honoured by Acrobat as LTV — that is a trust /
+    procurement long-lead (SL-0.LEAD.08), not something this slice can claim. Also open: TSA
+    signature + chain verification and an X.509 AIA extension reader (we use a configured
+    responder URL instead, deliberately avoiding SSRF from a document-controlled URL), HTTPS
+    transport, full CRL/DSS-VRI refresh, and a separate document-timestamp *signature* object with
+    its own `/ByteRange` over the revised file (PAdES B-LTA) — this slice records the parsed,
+    imprint-bound token in `/DSS /TS` (PAdES B-LT data) and does not claim B-LTA.
 - [x] **SL-5.SIGN.05 — Certification signatures and DocMDP** · deps: SIGN.03 · owner: AI+
   - **Done:** `selis-pdf-sign::sign_certification` writes the same detached CMS as SIGN.03 plus
     `/Reference → /TransformMethod /DocMDP /TransformParams /P` (levels 1/2/3), re-opens the
@@ -569,6 +593,7 @@ Normative spec: `23-EDIT-MODEL-SPEC.md`. Read it before any task here.
 
 ---
 
-> **Status reconciliation (2026-11-19):** Verified against code and flipped stale `[ ]` markers to `[x]` for items whose implementation exists: EDIT.01 (journal), EDIT.02 (undo/redo), EDIT.03 (incremental writer + 100 000-mutation suite), EDIT.08 (page ops), EDIT.09 (object rewriting), EDIT.10 (`.selis` bundle), EDIT.11 (compare engine+CLI), ANNOT.04/05/06/07, FORM.01/04, REDACT.01–04/06, CONV.01–04/06. Items left open are genuinely missing or partial: TEXTEDIT.01/03/04/05/06, FORM.03/06/07/08, all JS.*, SIGN.04/06 (SIGN.05 now delivered: certification signatures + DocMDP), all OCR.*, BIZ.*. REDACT.05 was in this open list when that note was
+> **Status reconciliation (2026-11-19):** Verified against code and flipped stale `[ ]` markers to `[x]` for items whose implementation exists: EDIT.01 (journal), EDIT.02 (undo/redo), EDIT.03 (incremental writer + 100 000-mutation suite), EDIT.08 (page ops), EDIT.09 (object rewriting), EDIT.10 (`.selis` bundle), EDIT.11 (compare engine+CLI), ANNOT.04/05/06/07, FORM.01/04, REDACT.01–04/06, CONV.01–04/06. Items left open are genuinely missing or partial: TEXTEDIT.01/03/04/05/06, FORM.03/06/07/08, all JS.*, SIGN.04/06 (SIGN.05 delivered: certification signatures + DocMDP; SIGN.04 has a
+consent-gated TSA/LTV slice but remains open for Adobe/AATL trust membership), all OCR.*, BIZ.*. REDACT.05 was in this open list when that note was
 written; it now has the reviewed web card described above, still with no auto-apply path. ENC-side
 items elsewhere remain gated on human review. Verification was read-only against `crates/` and `apps/`.

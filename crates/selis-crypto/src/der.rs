@@ -35,6 +35,8 @@ impl Tag {
     pub(crate) const OCTET_STRING: Tag = Tag(0x04);
     /// Universal primitive OBJECT IDENTIFIER.
     pub(crate) const OID: Tag = Tag(0x06);
+    /// Universal primitive GeneralizedTime (RFC 3161 `TSTInfo.genTime`).
+    pub(crate) const GENERALIZED_TIME: Tag = Tag(0x18);
     /// Universal constructed SEQUENCE.
     pub(crate) const SEQUENCE: Tag = Tag(0x30);
     /// Universal constructed SET (and SET OF).
