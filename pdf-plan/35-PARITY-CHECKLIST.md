@@ -563,8 +563,8 @@ and extraction tests, and a lazy raster chunk under budget. No raster claim befo
       **Deferred — browser card:** the tools-chunk op (and its `u32` capability-mask saturation past
       32 ops) plus the web card are additional wiring that is not browser-verifiable here; the engine
       core and the CLI deliver the feature today.
-- [ ] **Flatten forms** — form appearance generation is its own correctness surface.
-      *Implemented (core + CLI with a render check; flatten web card deferred):* two halves now exist.
+- [x] **Flatten forms** — form appearance generation is its own correctness surface.
+      *Implemented (core, CLI and web card):* two halves now exist.
       (1) **Field-appearance synthesis (SL-5.FORM.02, text + choice/list-box fields):** `fill_form`
       writes a real `/AP /N` Form XObject per filled text field, single-select choice (`/Ch` with
       the Combo flag) or list box (`/Ch` with the flag clear), and multi-select choice when
@@ -609,9 +609,11 @@ and extraction tests, and a lazy raster chunk under budget. No raster claim befo
       chosen label is painted, a different label changes pixels only in the widget box) in
       `selis-pdf-tools`; `flatten_forms_bakes_widgets_and_drops_the_acroform` (appearance baked
       into content + `Do`, widget and `/AcroForm` gone, annotation count zero). The web **Fill forms**
-      card now exposes a "Synthesize appearances" checkbox that sets the option; host typecheck and
-      479 vitest tests pass. **Deferred:** the flatten WASM op + flatten web card (appearance synthesis
-      itself is exposed on the fill card and through the CLI/WASM fill op).
+      card exposes a "Synthesize appearances" checkbox that sets the option. The flatten half is now
+      wired to the web too: op 44 (`flatten_forms`) dispatches `selis_pdf_tools::flatten_forms` in
+      `selis-pdf-wasm-tools`, the tools protocol/registry/tools-page carry `flatten_forms`, and the
+      pure `flatten-forms.ts` note/rows are covered by `flatten-forms.test.ts`. The flatten card is
+      a single-PDF security card (`/flatten-pdf-forms/`) and runs entirely on the device.
 - [ ] **Compare two PDFs** — pixel and text diff with render determinism.
       *Implemented (core + CLI; web card deferred):* `selis-pdf-tools::compare_pdfs` (behind the
       `text` feature, which links both the renderer and the text ladder) renders each page of both
@@ -625,11 +627,19 @@ and extraction tests, and a lazy raster chunk under budget. No raster claim befo
       Evidence: 5 engine/core tests (identical blanks equal, white-vs-black pixel difference with the
       text halves still equal, a differing page count detected, serialization, bad-dpi refused),
       2 CLI tests (a file vs itself is identical; a file vs its inverted copy is not), `cargo fmt`
-      clean. **Deferred — browser card:** compare needs *two* inputs plus both the rasteriser and the
-      text ladder in one chunk; the single-input raster chunk and the no-rasteriser text chunk fit
-      neither, so the web card needs a dedicated two-input render+text chunk (new ABI). That is real
-      work and is not browser-verifiable in this environment, so it is left as a named deferral rather
-      than half-wired. The CLI delivers the feature today.
+      clean. **Deferred — browser card (measured 2026-11-19):** op 45 is deliberately NOT wired into
+      any shipped chunk, and this row stays open. The text chunk is the natural home for an engine
+      tool, but its ABI is single-input `selis_text_run` with `SLTX` framing (ops 1–8), not the
+      two-input tools protocol; serving compare there would mean a new two-input export plus a
+      distinct host loader. More decisively, compare renders every page, so calling
+      `selis_pdf_tools::compare_pdfs` pulls the tiny-skia raster pipeline into the text chunk: a fat-LTO
+      `wasm-opt -O3` probe measured its brotli size rise from **320,596 B to 574,705 B**, past the
+      400,000 B text budget and far beyond the 2% baseline-regression gate (320,759 B baseline).
+      Putting it in the tools chunk is likewise forbidden: that chunk must not link the engine and
+      sits at 424k/440k with ~16k of headroom. The raster chunk already has the renderer but not the
+      text ladder and is single-input. A correct web card therefore needs a dedicated two-input
+      render+text chunk (new ABI, new budget row) — real work that cannot be faked by a partial wire.
+      The CLI delivers the feature today.
 - [x] **Fingerprinting report** — producer/creator, IDs, timestamps, fonts, image hashes,
       incremental revisions; structural part may ship before the raster part.
       *Implemented (structural part):* `selis-pdf-tools::fingerprint_report` owns the export shape
@@ -1157,4 +1167,4 @@ implemented in the same budget slice that added the three OOXML→PDF directions
 
 ---
 
-> **Status reconciliation (2026-11-19):** Verified and flipped three web-UI rows done in code but left stale: "Edit text" (editor `edit_text` op 33), "Edit pages" (rotate/delete/reorder ops 3/4/5), "Redaction commit UI" (`redact` op 34). Rows still genuinely open: "Compare two PDFs" web card (engine/CLI done, no web op), "Flatten forms" web card, images/vectors editing. XFDF export and accessibility report are done in code (not tracked by a `[ ]` row here).
+> **Status reconciliation (2026-11-19):** Verified and flipped three web-UI rows done in code but left stale: "Edit text" (editor `edit_text` op 33), "Edit pages" (rotate/delete/reorder ops 3/4/5), "Redaction commit UI" (`redact` op 34). The "Flatten forms" web card is now live on op 44 (`/flatten-pdf-forms/`). Rows still genuinely open: "Compare two PDFs" web card (engine/CLI done; op 45 deliberately not wired — adding the render+text path to the text chunk measures 574,705 B brotli vs a 400,000 B budget, and the engine-free tools chunk cannot host it), images/vectors editing. XFDF export and accessibility report are done in code (not tracked by a `[ ]` row here).

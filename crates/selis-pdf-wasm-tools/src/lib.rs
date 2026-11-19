@@ -107,6 +107,7 @@ enum Op {
     XfdfExport,
     FlattenAnnotations,
     FillFormData,
+    FlattenForms,
 }
 
 impl Op {
@@ -152,8 +153,11 @@ impl Op {
             38 => Some(Self::XfdfExport),
             39 => Some(Self::FlattenAnnotations),
             40 => Some(Self::FillFormData),
+            44 => Some(Self::FlattenForms),
             // Ops 41 (subset fonts) and 43 (linearize) moved to the dedicated
-            // `selis-pdf-wasm-optimize` chunk. Op 42 was never assigned.
+            // `selis-pdf-wasm-optimize` chunk. Op 42 was never assigned. Op 45
+            // (compare two PDFs) needs the rasteriser *and* the text ladder in
+            // one two-input module, which this engine-free chunk cannot link.
             _ => None,
         }
     }
@@ -622,6 +626,12 @@ fn parse_and_run(request: &[u8]) -> Result<RunOutput, ToolError> {
             output: "out.pdf".to_string(),
             name: format!("{stem}-flattened.pdf"),
             verification: selis_pdf_tools::flatten_annotations("in/0", "out.pdf")?,
+            over_target: false,
+        }],
+        Op::FlattenForms => vec![Produced {
+            output: "out.pdf".to_string(),
+            name: format!("{stem}-form-flattened.pdf"),
+            verification: selis_pdf_tools::flatten_forms("in/0", "out.pdf")?,
             over_target: false,
         }],
         Op::Crop => {
@@ -2017,6 +2027,27 @@ mod tests {
                 "op {op} must not be dispatched by the tools chunk"
             );
         }
+    }
+
+    #[test]
+    fn flatten_forms_operation_is_dispatched() {
+        let pdf = form_pdf();
+        let response = run_request(&request(44, b"", &[("doc.pdf", &pdf)]));
+        let (status, message, outputs) = parse_response(&response);
+        assert_eq!(status, 0, "flatten forms failed: {message}");
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].0, "doc-form-flattened.pdf");
+        assert_eq!(&outputs[0].1[0..5], b"%PDF-");
+        assert_eq!(message["fields_out"], 0, "the form fields are gone");
+        let text = String::from_utf8_lossy(&outputs[0].1);
+        assert!(!text.contains("/AcroForm"), "the AcroForm is removed");
+        let reports = message["outputs"].as_array().expect("reports");
+        assert_eq!(reports[0]["kind"], "pdf");
+
+        // Op 45 stays in a two-input render+text chunk; this engine-free chunk
+        // must refuse it rather than link the rasteriser to serve a stale card.
+        let response = run_request(&request(45, b"", &[("doc.pdf", &pdf)]));
+        assert!(error_text(&response).contains("unknown tool operation"));
     }
 
     #[test]

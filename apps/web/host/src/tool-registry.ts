@@ -60,6 +60,7 @@ export type ToolId =
 	| "zip"
 	| "edit_text"
 	| "fill_forms"
+	| "flatten_forms"
 	| "unlock"
 	| "protect"
 	| "clear_permissions"
@@ -69,7 +70,7 @@ export type ToolId =
 	| "workflow";
 
 /**
- * The sections the card grid is organised into. Forty-nine cards in one flat
+ * The sections the card grid is organised into. Fifty cards in one flat
  * list is not a menu, it is a wall: the groups are named after what a reader
  * has come to *do*, in the order the operations build on each other — arrange
  * the pages, change what they are, mark them up, then decide who may open
@@ -643,6 +644,19 @@ export const TOOLS: readonly ToolDef[] = [
 		verb: "Fill form",
 		multiple: false,
 		accepts: "pdf",
+	},
+	{
+		id: "flatten_forms",
+		slug: "flatten-pdf-forms",
+		group: "security",
+		mark: "⊞",
+		title: "Flatten forms",
+		blurb: "Bake filled form fields into the page content so the values are fixed everywhere.",
+		note: "Each widget's appearance is placed into the page content, the widget is removed and the AcroForm is dropped. Fill first with appearance synthesis if the fields have no appearance of their own.",
+		verb: "Flatten form",
+		multiple: false,
+		accepts: "pdf",
+		related: ["fill_forms"],
 	},
 	{
 		id: "unlock",

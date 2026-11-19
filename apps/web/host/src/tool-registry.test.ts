@@ -23,7 +23,7 @@ describe("registry shape", () => {
 	it("holds every card the grid renders", () => {
 		// The browser harness names the same count. A change here without the
 		// harness and the offline precache changing is a tool nobody exercises.
-		expect(TOOLS.length).toBe(49);
+		expect(TOOLS.length).toBe(50);
 		expect(TOOL_PAGE_SLUGS.length).toBe(TOOLS.length);
 	});
 
@@ -118,6 +118,21 @@ describe("the linearize card", () => {
 		expect(card?.blurb).toContain("never leaves it");
 		expect(card?.note).toContain("not a qpdf conformance verdict");
 		expect(TOOL_PAGE_SLUGS).toContain("linearize");
+	});
+});
+
+describe("the flatten-forms card", () => {
+	it("is registered as a single-PDF, local-only security card on op 44", () => {
+		const card = TOOL_BY_ID.get("flatten_forms");
+		expect(card).toBeDefined();
+		expect(card?.slug).toBe("flatten-pdf-forms");
+		expect(TOOL_BY_SLUG.get("flatten-pdf-forms")).toBe(card);
+		expect(card?.group).toBe("security");
+		expect(card?.accepts).toBe("pdf");
+		expect(card?.multiple).toBe(false);
+		expect(card?.minimum).toBeUndefined();
+		expect(card?.related).toContain("fill_forms");
+		expect(TOOL_PAGE_SLUGS).toContain("flatten-pdf-forms");
 	});
 });
 

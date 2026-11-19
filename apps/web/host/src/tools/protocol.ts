@@ -72,6 +72,7 @@ export type ToolOp =
 	| "xfdf"
 	| "flatten_annotations"
 	| "fill_form_data"
+	| "flatten_forms"
 	| "subset_fonts"
 	| "linearize";
 
@@ -119,6 +120,7 @@ const OP_CODE: Record<ToolOp, number> = {
 	fill_form_data: 40,
 	subset_fonts: 41,
 	linearize: 43,
+	flatten_forms: 44,
 };
 
 /** One input file on the wire. */

@@ -143,6 +143,15 @@ describe("encodeToolRequest", () => {
 		expect(readU32(encoded, 12)).toBe(0);
 	});
 
+	it("encodes flatten_forms as op 44 with one PDF and no options", () => {
+		const encoded = encodeToolRequest({
+			op: "flatten_forms",
+			files: [{ name: "doc.pdf", bytes: new Uint8Array([0x25, 0x50, 0x44, 0x46]) }],
+		});
+		expect(readU32(encoded, 8)).toBe(44);
+		expect(readU32(encoded, 12)).toBe(0);
+	});
+
 	it("encodes repair at 22", () => {
 		const files = [{ name: "a.pdf", bytes: new Uint8Array([0x25]) }];
 		expect(readU32(encodeToolRequest({ op: "repair", files }), 8)).toBe(22);

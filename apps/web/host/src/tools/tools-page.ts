@@ -77,6 +77,10 @@ import {
 	signatureRows,
 	signingStamp,
 } from "./sign-protocol.js";
+import {
+	FLATTEN_FORMS_NOTE,
+	flattenFormsReportRows,
+} from "./flatten-forms.js";
 import { LINEARIZE_NOTE, linearizeReportRows } from "./linearize.js";
 import { SUBSET_FONTS_NOTE, subsetReportRows } from "./subset.js";
 import {
@@ -2356,6 +2360,12 @@ function init(): void {
 			);
 			return;
 		}
+		if (tool.id === "flatten_forms") {
+			const note = make("p", "option-note");
+			note.textContent = FLATTEN_FORMS_NOTE;
+			options.append(note);
+			return;
+		}
 		if (tool.id === "subset_fonts") {
 			const note = make("p", "option-note");
 			note.textContent = SUBSET_FONTS_NOTE;
@@ -3611,6 +3621,10 @@ function fileTile(file: File, index: number, tool: ToolDef | null): HTMLLIElemen
 				options.targetKiB = numberInRange("target-kib", "Target size", 1, 100_000_000, 1, true);
 			}
 			return { op: "compress", options, files: wireFiles };
+		}
+		if (tool.id === "flatten_forms") {
+			// Op 44 needs no options: one PDF in, one form-flattened PDF out.
+			return { op: "flatten_forms", files: wireFiles };
 		}
 		if (tool.id === "subset_fonts") {
 			// The op needs no options: it walks the document's own text and
@@ -5292,19 +5306,22 @@ function fileTile(file: File, index: number, tool: ToolDef | null): HTMLLIElemen
 				);
 			}
 			document.documentElement.dataset.noUpload = "verified";
-			// The subset and linearize cards add their own measured report rows
-			// beside the standard verification rows; other tools have none.
+			// The flatten-forms, subset and linearize cards add their own
+			// measured report rows beside the standard verification rows;
+			// other tools have none.
 			const extraRows =
-				tool.id === "subset_fonts"
-					? subsetReportRows(result.verification)
-					: tool.id === "linearize"
-						? linearizeReportRows(
-								result.outputs.find((output) =>
-									output.name.toLowerCase().endsWith(".pdf"),
-								)?.bytes ?? new Uint8Array(0),
-								result.verification,
-							)
-						: [];
+				tool.id === "flatten_forms"
+					? flattenFormsReportRows(result.verification)
+					: tool.id === "subset_fonts"
+						? subsetReportRows(result.verification)
+						: tool.id === "linearize"
+							? linearizeReportRows(
+									result.outputs.find((output) =>
+										output.name.toLowerCase().endsWith(".pdf"),
+									)?.bytes ?? new Uint8Array(0),
+									result.verification,
+								)
+							: [];
 			showResult(result, extraRows);
 			setStatus("Done. The result was verified on this device.", "ok");
 		} catch (error) {

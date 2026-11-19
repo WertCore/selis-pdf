@@ -10,7 +10,7 @@
  * about the two interchangable tools-protocol modules only.
  *
  * Keeping the decision here makes it testable without a DOM: the routing test
- * walks all 49 cards and asserts that exactly these two ids select `optimize`,
+ * walks all 50 cards and asserts that exactly these two ids select `optimize`,
  * so a copy/paste edit to a card cannot silently send op 41 to the tools chunk.
  */
 
