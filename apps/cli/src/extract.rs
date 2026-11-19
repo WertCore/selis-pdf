@@ -107,17 +107,33 @@ pub(crate) fn run(
             .mcid_order(&budget, &mut g)
             .ok()
             .filter(|v| !v.is_empty());
-        let (lines, line_texts, low_confidence) =
+        let (lines, line_texts, low_confidence, verdict) =
             page_lines(&session, p, &budget, &dl, mcid_order.as_deref(), &mut g)?;
-        let page_out = match format {
+        let mut page_out = match format {
             "json" => {
                 let mut s = selis_pdf_text::structured(&lines, &line_texts, &run_texts(&lines));
                 s.low_confidence = low_confidence;
+                s.verdict = verdict;
                 selis_pdf_text::to_json(&s)
             }
             "md" => selis_pdf_text::to_markdown(&lines, &line_texts, low_confidence),
             _ => selis_pdf_text::to_text(&lines, &line_texts, low_confidence),
         };
+        // SL-3.TEXT.15: a partial undecodable tail gets its OWN typed marker in
+        // the human-readable formats. JSON carries the typed verdict as a field
+        // instead — a bare marker line would corrupt the document.
+        // `ZeroRecovery` already carries `LOW_CONFIDENCE_MARKER` from the text
+        // formatter, so the `contains` check avoids duplicating it.
+        if format != "json" {
+            if let Some(marker) = verdict.marker() {
+                if !page_out.contains(marker) {
+                    if !page_out.is_empty() {
+                        page_out.push('\n');
+                    }
+                    page_out.push_str(marker);
+                }
+            }
+        }
         if !first_output && page != last {
             println!();
         }
@@ -435,10 +451,11 @@ fn extract_html(
         let dl = session
             .page_text_display_list(p, budget, g)
             .map_err(|e| CliError(format!("cannot interpret page {number}: {e}")))?;
-        let (lines, line_texts, low_confidence) =
+        let (lines, line_texts, low_confidence, verdict) =
             page_lines(session, p, budget, &dl, mcid_order.as_deref(), g)?;
         let mut model = selis_pdf_text::structured(&lines, &line_texts, &run_texts(&lines));
         model.low_confidence = low_confidence;
+        model.verdict = verdict;
         let view = session
             .page_view(p, HTML_DPI)
             .ok_or_else(|| CliError(format!("page {number} has no box to lay text out on")))?;
@@ -528,7 +545,12 @@ pub(crate) fn page_lines(
     dl: &selis_pdf_content::display_list::DisplayList,
     mcid_order: Option<&[u32]>,
     g: &mut selis_sandbox::BudgetGuard<'_>,
-) -> CliResult<(Vec<selis_pdf_text::TextLine>, Vec<String>, bool)> {
+) -> CliResult<(
+    Vec<selis_pdf_text::TextLine>,
+    Vec<String>,
+    bool,
+    selis_pdf_text::ExtractionVerdict,
+)> {
     // Codes become Unicode scalars BEFORE assembly (SL-3.TEXT.08): the word
     // splitter strips `0x20` glyphs, and a raw CID can equal 0x20 without
     // being a space (SL-3.SHAPE.04 — e.g. Devanagari CID 32 is vowel sign I),
@@ -542,9 +564,10 @@ pub(crate) fn page_lines(
     let visible = session.page_visible_box(page);
     let mut glyphs = selis_pdf_text::gather_glyphs(dl, visible);
     let drew_text = !glyphs.is_empty();
-    selis_pdf_text::apply_unicode_recovery(&mut glyphs, &mut |font, code| {
+    let counts = selis_pdf_text::apply_unicode_recovery_counted(&mut glyphs, &mut |font, code| {
         session.text_unicode(page, font, code, budget, g)
     });
+    let verdict = selis_pdf_text::classify_verdict(&counts);
     let lines = selis_pdf_text::assemble(glyphs);
     // Reading order: column detection + XY-cut (no structure-tree MCIDs).
     let mcid_lines: Vec<selis_pdf_text::LineWithMcid> = lines
@@ -566,7 +589,7 @@ pub(crate) fn page_lines(
     // the formatters emit a low-confidence marker instead of a silent empty
     // page.
     let low_confidence = drew_text && !recovered;
-    Ok((ordered.lines, line_texts, low_confidence))
+    Ok((ordered.lines, line_texts, low_confidence, verdict))
 }
 
 /// List the document's embedded files (metadata only, newline-delimited JSON),

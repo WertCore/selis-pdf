@@ -20,6 +20,7 @@ pub mod reflow;
 pub mod search;
 pub mod selection;
 pub mod table;
+pub mod verdict;
 pub mod xlsx;
 mod xml;
 
@@ -31,8 +32,8 @@ pub use epub::{read_stored_zip, store_zip, to_epub, verify_epub};
 pub mod text_layer;
 
 pub use assembly::{
-    apply_unicode_recovery, assemble, assemble_lines, assemble_runs, assemble_words, gather_glyphs,
-    TextLine, TextRun, TextWord,
+    apply_unicode_recovery, apply_unicode_recovery_counted, assemble, assemble_lines,
+    assemble_runs, assemble_words, gather_glyphs, TextLine, TextRun, TextWord,
 };
 pub use export::{
     structured, to_json, to_markdown, to_text, to_text_from_line_texts, Line, Span, Structured,
@@ -59,4 +60,7 @@ pub use table::{
     tables_on_page, to_csv as tables_to_csv, Table, MIN_TABLE_COLUMNS, MIN_TABLE_ROWS,
 };
 pub use text_layer::{page_layer, LayerChar, LayerLine, PageTextLayer, TextDirection};
+pub use verdict::{
+    classify_verdict, ExtractionVerdict, RecoveryCounts, DIVERGENT_NO_RECOVERY_MARKER,
+};
 pub use xlsx::{to_xlsx, verify_xlsx, XLSX_MEDIA_TYPE};

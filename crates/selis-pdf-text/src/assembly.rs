@@ -366,18 +366,48 @@ pub fn apply_unicode_recovery(
     glyphs: &mut [TextGlyph],
     resolve: &mut dyn FnMut(&selis_bytes::Bytes, u16) -> Option<u32>,
 ) {
+    let _ = apply_unicode_recovery_counted(glyphs, resolve);
+}
+
+/// [`apply_unicode_recovery`] plus the local counts the typed extraction
+/// verdict (SL-3.TEXT.15) needs. `drawn` is the glyph count before recovery.
+///
+/// A glyph counts as **undecodable** only when the recovery chain returned
+/// `None` *and* its raw code is not a valid Unicode scalar value: those are the
+/// glyphs the assembler actually drops (`char::from_u32` rejects surrogates and
+/// out-of-range codes, so no text is produced). A simple-font byte with no
+/// `/Encoding` is *not* undecodable merely because recovery found no better
+/// mapping — the legacy code-as-character reading is the correct fallback and
+/// still yields a real character (SL-3.TEXT.08). Counting those as failures
+/// would flag every unencoded Helvetica page as divergent.
+pub fn apply_unicode_recovery_counted(
+    glyphs: &mut [TextGlyph],
+    resolve: &mut dyn FnMut(&selis_bytes::Bytes, u16) -> Option<u32>,
+) -> crate::verdict::RecoveryCounts {
     let mut cache: std::collections::HashMap<(Vec<u8>, u16), Option<u32>> =
         std::collections::HashMap::new();
+    let mut undecodable = 0usize;
     for glyph in glyphs.iter_mut() {
         let key = (glyph.font.as_slice().to_vec(), glyph.code);
-        let cached = cache
+        let resolved = cache
             .entry(key)
             .or_insert_with(|| resolve(&glyph.font, glyph.code));
-        if let Some(uni) = *cached {
-            if let Ok(narrow) = u16::try_from(uni) {
-                glyph.code = narrow;
+        match *resolved {
+            Some(uni) => {
+                if let Ok(narrow) = u16::try_from(uni) {
+                    glyph.code = narrow;
+                }
+            }
+            None => {
+                if char::from_u32(u32::from(glyph.code)).is_none() {
+                    undecodable = undecodable.saturating_add(1);
+                }
             }
         }
+    }
+    crate::verdict::RecoveryCounts {
+        drawn: glyphs.len(),
+        undecodable,
     }
 }
 
@@ -942,6 +972,55 @@ mod tests {
 
     use super::*;
     use selis_bytes::Bytes;
+
+    /// SL-3.TEXT.15: the counted recovery path reports how many drawn glyphs
+    /// produced no character at all (a surrogate code that even the legacy
+    /// byte reading cannot render). A plain byte with no recovery mapping is
+    /// NOT counted: its code is still a valid character. The uncached
+    /// `apply_unicode_recovery` delegates to this, so both paths stay identical.
+    #[test]
+    fn counted_recovery_tracks_undecodable_glyphs() {
+        use crate::verdict::{classify_verdict, ExtractionVerdict};
+        let mut glyphs = vec![
+            glyph(0x41, 0.0, 0.0, "F1", 12.0),
+            glyph(0xD800, 6.0, 0.0, "F1", 12.0),
+            glyph(0x43, 12.0, 0.0, "F1", 12.0),
+            glyph(0x44, 18.0, 0.0, "F1", 12.0),
+        ];
+        let counts = apply_unicode_recovery_counted(&mut glyphs, &mut |_f, code| {
+            if code == 0x41 || code == 0x43 || code == 0x44 {
+                Some(u32::from(code))
+            } else {
+                None
+            }
+        });
+        assert_eq!(
+            counts,
+            crate::RecoveryCounts {
+                drawn: 4,
+                undecodable: 1
+            }
+        );
+        assert_eq!(counts.recovered(), 3);
+        assert_eq!(
+            glyphs[1].code, 0xD800,
+            "undecodable code is kept, not dropped"
+        );
+        // 1/4 undecodable = 25 % -> the partial-divergence verdict.
+        assert_eq!(
+            classify_verdict(&counts),
+            ExtractionVerdict::DivergentNoRecovery
+        );
+    }
+
+    /// A simple-font byte the recovery chain does not map still renders as a
+    /// character under the legacy reading, so it is not a divergence signal.
+    #[test]
+    fn unmapped_but_valid_byte_is_not_undecodable() {
+        let mut glyphs = vec![glyph(0x41, 0.0, 0.0, "F1", 12.0)];
+        let counts = apply_unicode_recovery_counted(&mut glyphs, &mut |_f, _code| None);
+        assert_eq!(counts.undecodable, 0);
+    }
 
     /// A glyph with a typical proportionally-spaced pen model: advance half an
     /// em, space a quarter em (matches what the content interpreter records for

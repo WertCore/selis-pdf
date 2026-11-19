@@ -56,6 +56,55 @@ pub struct CjkChunk {
 /// The reserved id of the bundled core set (never a chunk-table id).
 pub const CORE_ID: &str = "core";
 
+/// A typed disclosure that a CJK face was substituted for an unembedded font
+/// (SL-3.FONT.10). Font substitution is a fact a consumer is entitled to know:
+/// the glyphs on screen are not the font the document named. The note is pure
+/// data — it carries no font bytes and performs no I/O — so the engine can
+/// surface it on any target, including the network-free WASM build.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CjkSubstitutionNote {
+    /// The `/BaseFont` the document asked for (e.g. `STSong-Light`).
+    pub requested_base_font: String,
+    /// The code point that triggered the fallback.
+    pub code: u32,
+    /// The chunk that serves the code, or `None` when the bundled core did.
+    /// `Some(id)` means the fallback face is a lazy, on-demand subset.
+    pub chunk: Option<&'static str>,
+    /// Always `true`: the substitute is a subset, never a whole 100 MB CJK
+    /// font embedded in the payload. Statement of policy, not a measurement;
+    /// the sizes are measured by `xtask cjk-measure` against the real payload.
+    pub subset: bool,
+}
+
+impl CjkSubstitutionNote {
+    /// Disclose the substitution for `code` under an unembedded CJK font.
+    /// Returns `None` when the code is outside the CJK fallback set (no
+    /// substitution happened).
+    #[must_use]
+    pub fn for_code(requested_base_font: &str, code: u32) -> Option<Self> {
+        let chunk = chunk_for(code)?;
+        Some(Self {
+            requested_base_font: requested_base_font.to_string(),
+            code,
+            chunk: Some(chunk.id),
+            subset: true,
+        })
+    }
+
+    /// A human-readable one-line disclosure for a diagnostics panel.
+    #[must_use]
+    pub fn disclosure(&self) -> String {
+        let source = match self.chunk {
+            Some(id) => format!("on-demand subset chunk {id}"),
+            None => "bundled subset core".to_string(),
+        };
+        format!(
+            "font {} substituted with CJK {} for U+{:04X}",
+            self.requested_base_font, source, self.code
+        )
+    }
+}
+
 /// The CJK chunk covering a code point, or `None` for non-CJK scripts.
 ///
 /// Deterministic (ADR-P0012): the same code point always maps to the same
@@ -283,6 +332,26 @@ pub use set::{CjkChunkSource, CjkFontSet, CjkGlyph, CjkSlot, CjkSnapshot};
 mod tests {
     #![allow(clippy::arithmetic_side_effects, clippy::integer_division)]
     use super::*;
+
+    /// SL-3.FONT.10: a substituted CJK face is disclosed as a typed note that
+    /// names the on-demand subset chunk and never pretends a 100 MB font was
+    /// embedded. Outside the CJK set no substitution occurs.
+    #[test]
+    fn substitution_note_discloses_the_subset_chunk() {
+        let note = CjkSubstitutionNote::for_code("STSong-Light", 0x4E2D).expect("note");
+        assert_eq!(note.requested_base_font, "STSong-Light");
+        assert_eq!(note.code, 0x4E2D);
+        assert_eq!(note.chunk, Some("ideographs-1"));
+        assert!(
+            note.subset,
+            "fallback face must be a subset, not a whole font"
+        );
+        let text = note.disclosure();
+        assert!(text.contains("STSong-Light"), "{text}");
+        assert!(text.contains("ideographs-1"), "{text}");
+        assert!(text.contains("subset"), "{text}");
+        assert!(CjkSubstitutionNote::for_code("Helvetica", 0x0041).is_none());
+    }
 
     #[test]
     fn main_ideographs_map_to_the_quartered_chunks() {

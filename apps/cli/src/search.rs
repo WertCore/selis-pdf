@@ -41,7 +41,7 @@ pub(crate) fn run(path: &str, query: &str, page: usize) -> CliResult<()> {
         .mcid_order(&budget, &mut g)
         .ok()
         .filter(|v| !v.is_empty());
-    let (lines, line_texts, low_confidence) =
+    let (lines, line_texts, low_confidence, _verdict) =
         page_lines(&session, page, &budget, &dl, mcid_order.as_deref(), &mut g)?;
     let matches = selis_pdf_text::search_lines(&lines, &line_texts, query);
     // SL-3.TEXT.10: a page that **drew** text but recovered none of it answers

@@ -13,6 +13,7 @@
 use selis_geom::Rect;
 
 use crate::assembly::{TextLine, TextRun, TextWord};
+use crate::verdict::ExtractionVerdict;
 
 /// What a consumer must see when a page's display list **drew text** yet the
 /// extractor recovered no characters (SL-3.TEXT.10): a visible low-confidence
@@ -56,6 +57,13 @@ pub struct Structured {
     /// empty output as a genuinely blank page; never silently returns empty
     /// when text was actually drawn.
     pub low_confidence: bool,
+    /// SL-3.TEXT.15: the typed page-level verdict. Never a bare "success" —
+    /// a page that drew text but recovered nothing, or whose undecodable tail
+    /// exceeds 5 %, carries a flagged verdict that the JSON output surfaces.
+    /// Defaults to [`ExtractionVerdict::Recovered`] when the caller does not
+    /// supply counts; extraction callers set it from
+    /// [`crate::classify_verdict`].
+    pub verdict: ExtractionVerdict,
 }
 
 /// Build the structured model from assembled lines and their recovered text.
@@ -112,6 +120,7 @@ pub fn structured(
     Structured {
         lines: out,
         low_confidence: false,
+        verdict: ExtractionVerdict::Recovered,
     }
 }
 
@@ -167,7 +176,9 @@ pub fn to_text_from_line_texts(line_texts: &[String], low_confidence: bool) -> S
 pub fn to_json(s: &Structured) -> String {
     let mut out = String::from("{\n  \"schema\": \"selis-extract/1\",\n  \"low_confidence\": ");
     out.push_str(if s.low_confidence { "true" } else { "false" });
-    out.push_str(",\n  \"lines\": [\n");
+    out.push_str(",\n  \"verdict\": \"");
+    out.push_str(s.verdict.as_str());
+    out.push_str("\",\n  \"lines\": [\n");
     let n = s.lines.len();
     for (i, line) in s.lines.iter().enumerate() {
         out.push_str("    {\n      \"bbox\": ");
@@ -363,6 +374,26 @@ mod tests {
         assert!(to_json(&s).contains("\"low_confidence\": false"));
         s.low_confidence = true;
         assert!(to_json(&s).contains("\"low_confidence\": true"));
+    }
+
+    /// SL-3.TEXT.15: the typed verdict is emitted in the JSON schema so a
+    /// consumer can tell a blank page, a clean page, a fully-silent page and a
+    /// >5 % undecodable tail apart without re-deriving them from the text.
+    #[test]
+    fn json_carries_typed_verdict() {
+        let s = structured(&[], &[], &[]);
+        assert!(to_json(&s).contains("\"verdict\": \"recovered\""));
+        let mut flagged = s;
+        flagged.verdict = crate::ExtractionVerdict::DivergentNoRecovery;
+        let json = to_json(&flagged);
+        assert!(
+            json.contains("\"verdict\": \"divergent_no_recovery\""),
+            "{json}"
+        );
+        flagged.verdict = crate::ExtractionVerdict::ZeroRecovery;
+        assert!(to_json(&flagged).contains("\"verdict\": \"zero_recovery\""));
+        flagged.verdict = crate::ExtractionVerdict::Blank;
+        assert!(to_json(&flagged).contains("\"verdict\": \"blank\""));
     }
 
     /// The low-confidence marker rendered as text reads exactly the constant

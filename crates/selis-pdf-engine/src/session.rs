@@ -1037,6 +1037,21 @@ impl Session {
                 return Some(unicode);
             }
             if fd.is_cid() {
+                // SL-3.TEXT.20: a predefined `Uni…UCS2…` CMap's 2-byte codes
+                // ARE the Unicode scalars. Recover them explicitly rather than
+                // relying on the legacy code-as-character reading, so the typed
+                // extraction verdict sees a recovered glyph and a Chinese page
+                // is not mislabelled `zero_recovery`. Surrogate/nul codes are
+                // not scalars and stay undecodable.
+                if fd
+                    .cmap_name
+                    .as_deref()
+                    .is_some_and(selis_font::cmapfile::is_ucs2_cmap_name)
+                {
+                    if let Some(ch) = char::from_u32(u32::from(code)) {
+                        return Some(u32::from(ch));
+                    }
+                }
                 return None;
             }
             if let Some(u) = simple_text_unicode(&fd, code) {
@@ -1059,6 +1074,15 @@ impl Session {
                     return Some(unicode);
                 }
                 if fd.is_cid() {
+                    if fd
+                        .cmap_name
+                        .as_deref()
+                        .is_some_and(selis_font::cmapfile::is_ucs2_cmap_name)
+                    {
+                        if let Some(ch) = char::from_u32(u32::from(code)) {
+                            return Some(u32::from(ch));
+                        }
+                    }
                     return None;
                 }
                 if let Some(u) = simple_text_unicode(&fd, code) {
