@@ -255,13 +255,29 @@ Normative spec: `23-EDIT-MODEL-SPEC.md`. Read it before any task here.
 - [x] **SL-5.FORM.04 — Form filling UI** · deps: FORM.02 · owner: AI
   - **Do:** Tab order, keyboard accessibility, required-field indication, and inline validation.
 - [ ] **SL-5.FORM.05 — Form data import/export (FDF, XFDF, JSON, CSV)** · deps: FORM.01 · owner: AI
-- [ ] **SL-5.FORM.06 — Form creation and field authoring** · deps: FORM.02 · owner: AI+
-- [ ] **SL-5.FORM.07 — Auto-detect form fields on a flat document** · deps: FORM.06, SL-3.TEXT.03 · owner: AI+
+- [x] **SL-5.FORM.06 — Form creation and field authoring** · deps: FORM.02 · owner: AI+
+  - **Done:** `selis-pdf-form::create_form_fields` builds `/AcroForm`, merged field/widget
+    dictionaries (`/FT /T /Rect /DA /AP`) and page `/Annots` for caller-specified text, checkbox,
+    radio and choice fields on a flat document (or appends to an existing form). Full rewrite +
+    re-open read-back asserts every field's type, name and rectangle. AP streams are simple
+    authoring defaults, not the full appearance generation of FORM.02.
+- [x] **SL-5.FORM.07 — Auto-detect form fields on a flat document** · deps: FORM.06, SL-3.TEXT.03 · owner: AI+
   - **Do:** Infer fields from lines, boxes, and labels. A marquee Acrobat feature; ship it with a
     confidence indicator and easy correction.
-- [ ] **SL-5.FORM.08 — XFA: render static, refuse dynamic honestly** · deps: FORM.01 · owner: AI+
+  - **Done:** `selis-pdf-form::detect_form_fields` scans decoded page content streams for flat
+    rules/stroked lines (text candidates) and small squares (checkbox candidates), attaches
+    nearby text labels, and returns a read-only `CandidateReport` with per-candidate confidence
+    and reason. Strictly heuristic — never creates a field; undecodable streams are noted, not
+    guessed at.
+- [x] **SL-5.FORM.08 — XFA: render static, refuse dynamic honestly** · deps: FORM.01 · owner: AI+
   - **Do:** Render the XFA-embedded static PDF representation; for dynamic XFA, say so clearly
     rather than showing the "please upgrade your reader" placeholder page and nothing else.
+  - **Done:** `selis-pdf-form::render_xfa` decodes the `/XFA` packet(s) and extracts the static
+    `<template>`'s captions and field names as a clearly-labelled plain-text representation (NOT a
+    pixel-accurate XFA layout render). A packet declaring `<dynamic>`, `<event>` or `<script>` is
+    refused with a typed `FormError::XfaDynamic` naming the reason; a packet with no readable
+    static template is `FormError::XfaUnsupported`. Full dynamic XFA layout/scripting remains out
+    of scope (no JS engine, ADR-P0021) and is not faked.
 
 ---
 
