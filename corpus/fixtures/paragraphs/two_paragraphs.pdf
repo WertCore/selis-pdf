@@ -1,0 +1,33 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << >> >>
+endobj
+4 0 obj
+<< /Length 271 >>
+stream
+0 0 0 rg
+BT /Helvetica 12 Tf 72 800.0 Td (First paragraph line one) Tj ET
+BT /Helvetica 12 Tf 72 786.0 Td (First paragraph line two) Tj ET
+BT /Helvetica 12 Tf 72 700.0 Td (Second paragraph line one) Tj ET
+BT /Helvetica 12 Tf 72 686.0 Td (Second paragraph line two) Tj ET
+endstream
+endobj
+xref
+0 5
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000121 00000 n 
+0000000225 00000 n 
+trailer
+<< /Root 1 0 R /Size 5 >>
+startxref
+546
+%%EOF

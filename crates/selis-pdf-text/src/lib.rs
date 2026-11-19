@@ -13,6 +13,7 @@ pub mod epub;
 pub mod export;
 pub mod html;
 pub mod order;
+pub mod paragraphs;
 pub mod pptx;
 pub mod quality;
 pub mod reflow;
@@ -42,6 +43,10 @@ pub use html::{
     ReadPage, ReadSpan, MAX_COORDINATE_PX, MAX_POSITION_ERROR_PX,
 };
 pub use order::{order_lines, LineWithMcid, OrderResult, ReadingOrder};
+pub use paragraphs::{
+    confidence_for, infer_model, infer_paragraphs, Confidence, Paragraph, ParagraphModel,
+    ParagraphStyle, PROVISIONAL_REFLOW_THRESHOLD,
+};
 pub use pptx::{slide_from_lines, to_pptx, verify_pptx, Slide, TextShape, PPTX_MEDIA_TYPE};
 pub use quality::{page_separator, to_text_with_page_separators, ExtractionQuality, PageQuality};
 pub use reflow::{

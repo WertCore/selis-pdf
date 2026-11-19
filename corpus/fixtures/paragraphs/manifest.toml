@@ -1,0 +1,153 @@
+version = 1
+note = "Synthetic assembled-line pages with known paragraph ends (TEXTEDIT.01). Not the DoD 500-page set."
+
+[[page]]
+id = "p01"
+tagged = true
+paragraph_ends = [2, 4]
+lines = [
+  { y = 800.00, size = 10.0, font = "F1", text = "alpha bravo", mcid = 1 },
+  { y = 786.00, size = 10.0, font = "F1", text = "bravo charlie", mcid = 2 },
+  { y = 738.00, size = 10.0, font = "F1", text = "charlie delta", mcid = 3 },
+  { y = 724.00, size = 10.0, font = "F1", text = "delta echo", mcid = 4 },
+]
+
+[[page]]
+id = "p02"
+tagged = false
+paragraph_ends = [3, 5]
+lines = [
+  { y = 800.00, size = 11.0, font = "F1", text = "alpha bravo", mcid = -1 },
+  { y = 785.70, size = 11.0, font = "F1", text = "bravo charlie", mcid = -1 },
+  { y = 771.40, size = 11.0, font = "F1", text = "charlie delta", mcid = -1 },
+  { y = 719.70, size = 11.0, font = "F1", text = "delta echo", mcid = -1 },
+  { y = 705.40, size = 11.0, font = "F1", text = "echo foxtrot", mcid = -1 },
+]
+
+[[page]]
+id = "p03"
+tagged = true
+paragraph_ends = [2, 5, 7]
+lines = [
+  { y = 800.00, size = 9.0, font = "F1", text = "alpha bravo", mcid = 1 },
+  { y = 786.50, size = 9.0, font = "F1", text = "bravo charlie", mcid = 2 },
+  { y = 742.40, size = 9.0, font = "F1", text = "charlie delta", mcid = 3 },
+  { y = 728.90, size = 9.0, font = "F1", text = "delta echo", mcid = 4 },
+  { y = 715.40, size = 9.0, font = "F1", text = "echo foxtrot", mcid = 5 },
+  { y = 671.30, size = 9.0, font = "F1", text = "foxtrot golf", mcid = 6 },
+  { y = 657.80, size = 9.0, font = "F1", text = "golf hotel", mcid = 7 },
+]
+
+[[page]]
+id = "p04"
+tagged = false
+paragraph_ends = [2, 4]
+lines = [
+  { y = 800.00, size = 12.0, font = "F2", text = "alpha bravo", mcid = -1 },
+  { y = 783.20, size = 12.0, font = "F2", text = "bravo charlie", mcid = -1 },
+  { y = 725.60, size = 12.0, font = "F2", text = "charlie delta", mcid = -1 },
+  { y = 708.80, size = 12.0, font = "F2", text = "delta echo", mcid = -1 },
+]
+
+[[page]]
+id = "p05"
+tagged = true
+paragraph_ends = [3, 6]
+lines = [
+  { y = 800.00, size = 10.0, font = "F1", text = "alpha bravo", mcid = 1 },
+  { y = 788.00, size = 10.0, font = "F1", text = "bravo charlie", mcid = 2 },
+  { y = 776.00, size = 10.0, font = "F1", text = "charlie delta", mcid = 3 },
+  { y = 730.00, size = 10.0, font = "F1", text = "delta echo", mcid = 4 },
+  { y = 718.00, size = 10.0, font = "F1", text = "echo foxtrot", mcid = 5 },
+  { y = 706.00, size = 10.0, font = "F1", text = "foxtrot golf", mcid = 6 },
+]
+
+[[page]]
+id = "p06"
+tagged = false
+paragraph_ends = [2, 4, 6]
+lines = [
+  { y = 800.00, size = 10.0, font = "F1", text = "alpha bravo", mcid = -1 },
+  { y = 786.00, size = 10.0, font = "F1", text = "bravo charlie", mcid = -1 },
+  { y = 738.00, size = 10.0, font = "F2", text = "charlie delta", mcid = -1 },
+  { y = 724.00, size = 10.0, font = "F2", text = "delta echo", mcid = -1 },
+  { y = 676.00, size = 10.0, font = "F2", text = "echo foxtrot", mcid = -1 },
+  { y = 662.00, size = 10.0, font = "F2", text = "foxtrot golf", mcid = -1 },
+]
+
+[[page]]
+id = "p07"
+tagged = true
+paragraph_ends = [2, 4, 6]
+lines = [
+  { y = 800.00, size = 14.0, font = "F1", text = "alpha bravo", mcid = 1 },
+  { y = 779.00, size = 14.0, font = "F1", text = "bravo charlie", mcid = 2 },
+  { y = 710.40, size = 14.0, font = "F1", text = "charlie delta", mcid = 3 },
+  { y = 689.40, size = 14.0, font = "F1", text = "delta echo", mcid = 4 },
+  { y = 620.80, size = 14.0, font = "F1", text = "echo foxtrot", mcid = 5 },
+  { y = 599.80, size = 14.0, font = "F1", text = "foxtrot golf", mcid = 6 },
+]
+
+[[page]]
+id = "p08"
+tagged = false
+paragraph_ends = [4, 6]
+lines = [
+  { y = 800.00, size = 10.0, font = "F1", text = "alpha bravo", mcid = -1 },
+  { y = 787.00, size = 10.0, font = "F1", text = "bravo charlie", mcid = -1 },
+  { y = 774.00, size = 10.0, font = "F1", text = "charlie delta", mcid = -1 },
+  { y = 761.00, size = 10.0, font = "F1", text = "delta echo", mcid = -1 },
+  { y = 714.00, size = 10.0, font = "F1", text = "echo foxtrot", mcid = -1 },
+  { y = 701.00, size = 10.0, font = "F1", text = "foxtrot golf", mcid = -1 },
+]
+
+[[page]]
+id = "p09"
+tagged = true
+paragraph_ends = [2, 5]
+lines = [
+  { y = 800.00, size = 11.0, font = "F1", text = "alpha bravo", mcid = 1 },
+  { y = 784.60, size = 11.0, font = "F1", text = "bravo charlie", mcid = 2 },
+  { y = 731.80, size = 11.0, font = "F1", text = "charlie delta", mcid = 3 },
+  { y = 716.40, size = 11.0, font = "F1", text = "delta echo", mcid = 4 },
+  { y = 701.00, size = 11.0, font = "F1", text = "echo foxtrot", mcid = 5 },
+]
+
+[[page]]
+id = "p10"
+tagged = false
+paragraph_ends = [2, 4]
+lines = [
+  { y = 800.00, size = 9.0, font = "F3", text = "alpha bravo", mcid = -1 },
+  { y = 787.40, size = 9.0, font = "F3", text = "bravo charlie", mcid = -1 },
+  { y = 744.20, size = 9.0, font = "F3", text = "charlie delta", mcid = -1 },
+  { y = 731.60, size = 9.0, font = "F3", text = "delta echo", mcid = -1 },
+]
+
+[[page]]
+id = "p11"
+tagged = true
+paragraph_ends = [3, 5, 7]
+lines = [
+  { y = 800.00, size = 10.0, font = "F1", text = "alpha bravo", mcid = 1 },
+  { y = 785.00, size = 10.0, font = "F1", text = "bravo charlie", mcid = 2 },
+  { y = 770.00, size = 10.0, font = "F1", text = "charlie delta", mcid = 3 },
+  { y = 721.00, size = 10.0, font = "F1", text = "delta echo", mcid = 4 },
+  { y = 706.00, size = 10.0, font = "F1", text = "echo foxtrot", mcid = 5 },
+  { y = 657.00, size = 10.0, font = "F1", text = "foxtrot golf", mcid = 6 },
+  { y = 642.00, size = 10.0, font = "F1", text = "golf hotel", mcid = 7 },
+]
+
+[[page]]
+id = "p12"
+tagged = false
+paragraph_ends = [2, 4, 6]
+lines = [
+  { y = 800.00, size = 12.0, font = "F1", text = "alpha bravo", mcid = -1 },
+  { y = 784.40, size = 12.0, font = "F1", text = "bravo charlie", mcid = -1 },
+  { y = 728.00, size = 12.0, font = "F1", text = "charlie delta", mcid = -1 },
+  { y = 712.40, size = 12.0, font = "F1", text = "delta echo", mcid = -1 },
+  { y = 656.00, size = 12.0, font = "F1", text = "echo foxtrot", mcid = -1 },
+  { y = 640.40, size = 12.0, font = "F1", text = "foxtrot golf", mcid = -1 },
+]
+
