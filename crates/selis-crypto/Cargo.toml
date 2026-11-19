@@ -39,6 +39,11 @@ getrandom = { workspace = true, optional = true, features = ["js"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 getrandom = { workspace = true, optional = true }
+# Native self-signed identity generation (SL-5.SIGN trust anchors): the OS
+# CSPRNG (`rsa::rand_core::OsRng`) is the only place entropy is drawn. This only
+# enables a feature on the already-pinned `rsa`; it adds no new lockfile package
+# (rand_core/getrandom is already resolved by the `rng` feature above).
+rsa = { workspace = true, features = ["getrandom"] }
 
 [dev-dependencies]
 # The PKCS#7 fixtures use `rsa::rand_core::OsRng`; the library's own `rng`

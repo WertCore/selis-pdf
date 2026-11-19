@@ -78,6 +78,15 @@ pub struct DssOptions<'a> {
     pub crl: &'a [Vec<u8>],
     /// X.509 certificates (leaf and chain), DER.
     pub certificates: &'a [Vec<u8>],
+    /// DER certificates the caller trusts as time authorities. When non-empty,
+    /// every timestamp token's own CMS signature AND its signing certificate's
+    /// chain to one of these anchors must verify before the token is embedded.
+    /// Empty means "no TSA is trusted": tokens are embedded but reported as
+    /// unverified, never silently accepted as trusted.
+    pub tsa_anchors: &'a [Vec<u8>],
+    /// `now` as Unix seconds, supplied by the caller (this crate has no clock),
+    /// used only when checking a TSA certificate's validity window.
+    pub now_unix: i64,
 }
 
 /// What was written, and the read-back evidence.
@@ -87,6 +96,10 @@ pub struct DssReport {
     pub field: String,
     /// Tokens embedded and verified.
     pub timestamps: usize,
+    /// Whether every token's TSA certificate chained to a supplied anchor.
+    /// `false` when no anchors were supplied (tokens still embedded, but not
+    /// trusted as time authorities).
+    pub tsa_chain_trusted: bool,
     /// OCSP responses embedded.
     pub ocsp: usize,
     /// CRLs embedded.
@@ -165,6 +178,8 @@ pub fn embed_dss(
         selis_crypto::cert::DigestAlg::Sha256,
         &[contents.as_slice()],
     );
+    let anchor_refs: Vec<&[u8]> = options.tsa_anchors.iter().map(Vec::as_slice).collect();
+    let mut tsa_chain_trusted = false;
     for token in options.timestamps {
         let parsed = {
             let chain_budget = Budget::profile(selis_sandbox::Surface::Fuzz);
@@ -178,6 +193,33 @@ pub fn embed_dss(
             return Err(invalid(
                 "the RFC 3161 token's messageImprint does not bind to this signature",
             ));
+        }
+        // SL-5.SIGN trust anchors: when the caller supplies TSA anchors, prove
+        // the token's own CMS signature and its signer's chain before writing.
+        // With no anchors the token is embedded but explicitly not trusted.
+        if !anchor_refs.is_empty() {
+            let verdict = {
+                let chain_budget = Budget::profile(selis_sandbox::Surface::Fuzz);
+                let mut chain_guard = chain_budget.guard();
+                selis_crypto::timestamp::verify_tsa_token(
+                    &token.der,
+                    &anchor_refs,
+                    options.now_unix,
+                    &mut chain_guard,
+                )
+                .map_err(|e| {
+                    SignError::Invalid(format!(
+                        "the RFC 3161 token's TSA could not be checked: {e}"
+                    ))
+                })?
+            };
+            if !verdict.signature_ok || !verdict.chain_trusted {
+                let reason = verdict.reason.unwrap_or_else(|| "unknown".to_string());
+                return Err(SignError::Refused(format!(
+                    "the timestamp token's TSA certificate is not trusted: {reason}"
+                )));
+            }
+            tsa_chain_trusted = true;
         }
     }
 
@@ -324,7 +366,7 @@ pub fn embed_dss(
     let out = write_incremental_update(src, &objects, &carried, budget, g)
         .map_err(|e| malformed(format!("the DSS incremental revision failed: {e}")))?;
 
-    let report = read_back(&out, options, byte_range, budget, g)?;
+    let report = read_back(&out, options, byte_range, tsa_chain_trusted, budget, g)?;
     Ok((out, report))
 }
 
@@ -333,6 +375,7 @@ fn read_back(
     src: &[u8],
     options: &DssOptions<'_>,
     byte_range: [u64; 4],
+    tsa_chain_trusted: bool,
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
 ) -> Result<DssReport, SignError> {
@@ -412,6 +455,7 @@ fn read_back(
     Ok(DssReport {
         field: options.field_name.to_string(),
         timestamps: ts_count,
+        tsa_chain_trusted,
         ocsp: count(b"OCSP"),
         crl: count(b"CRL"),
         certificates: count(b"V"),
@@ -577,6 +621,131 @@ mod tests {
         assert_eq!(
             after.signatures[0].byte_range,
             read.signatures[0].byte_range
+        );
+    }
+
+    /// Build a complete, correctly signed RFC 3161 token around `imprint`,
+    /// carried by `cert_der` as the TSA signing certificate.
+    fn signed_token(cert_der: &[u8], key: &rsa::RsaPrivateKey, imprint: &[u8]) -> Vec<u8> {
+        use rsa::pkcs1v15::SigningKey;
+        use rsa::signature::{SignatureEncoding as _, Signer as _};
+        use selis_crypto::der_write as w;
+        use sha2::{Digest, Sha256};
+
+        let tst = sequence(&[
+            integer(1),
+            oid(&[1, 3, 6, 1, 4, 1, 99_999, 1]),
+            sequence(&[sequence(&[oid(OID_SHA256)]), octet_string(imprint)]),
+            integer(7),
+            tlv(GENERALIZED_TIME, SIGNING_TIME.as_bytes()),
+        ]);
+        let digest = Sha256::digest(&tst);
+        let digest_alg = sequence(&[oid(OID_SHA256), w::null()]);
+        let mut attrs = vec![sequence(&[
+            oid(&[1, 2, 840, 113549, 1, 9, 4]),
+            set(&[octet_string(&digest)]),
+        ])];
+        attrs.sort();
+        let signature = SigningKey::<Sha256>::new(key.clone())
+            .sign(&w::tlv(w::SET, &w::concat(&attrs)))
+            .to_vec();
+        let sig_alg = sequence(&[oid(&[1, 2, 840, 113549, 1, 1, 11]), w::null()]);
+        let signer = sequence(&[
+            integer(1),
+            w::implicit(0, false, &[1, 2, 3]),
+            digest_alg.clone(),
+            w::implicit(0, true, &w::concat(&attrs)),
+            sig_alg,
+            octet_string(&signature),
+        ]);
+        let encap = sequence(&[oid(OID_TST_INFO), explicit(0, &octet_string(&tst))]);
+        let signed = sequence(&[
+            integer(3),
+            set(&[digest_alg]),
+            encap,
+            w::implicit(0, true, cert_der),
+            set(&[signer]),
+        ]);
+        sequence(&[oid(OID_SIGNED_DATA), explicit(0, &signed)])
+    }
+
+    #[test]
+    fn a_real_tsa_token_embeds_only_with_its_anchor_and_a_valid_signature() {
+        use rsa::pkcs8::DecodePrivateKey as _;
+        use selis_crypto::identity::{generate_self_signed, IdentityParams};
+
+        let src = base_pdf(None);
+        let budget = Budget::profile(Surface::Viewer);
+        let mut g = budget.guard();
+        let (signed, _) =
+            sign_digital(&src, &digital_options("Signature1"), &budget, &mut g).expect("signs");
+        let imprint = test_imprint(&signed, "Signature1");
+
+        let mut rng = rsa::rand_core::OsRng;
+        let tsa = generate_self_signed(
+            &IdentityParams {
+                common_name: "Selis Test TSA",
+                organization: None,
+                key_bits: 2048,
+                validity_days: 365,
+                not_before_unix: 1_793_000_000,
+                serial: [9; 16],
+                is_ca: false,
+            },
+            &mut rng,
+        )
+        .expect("a TSA identity");
+        let key =
+            rsa::RsaPrivateKey::from_pkcs8_der(&tsa.key_der).expect("the generated key parses");
+        let token = signed_token(&tsa.cert_der, &key, &imprint);
+
+        // With the correct anchor and a live clock inside validity: accepted.
+        let options = DssOptions {
+            field_name: "Signature1",
+            timestamps: &[TimestampToken::from_der(token.clone())],
+            tsa_anchors: std::slice::from_ref(&tsa.cert_der),
+            now_unix: NOW,
+            ..DssOptions::default()
+        };
+        let (out, report) =
+            embed_dss(&signed, &options, &budget, &mut g).expect("the TSA verifies");
+        assert!(out.starts_with(&signed));
+        assert!(report.tsa_chain_trusted);
+        assert!(report.signature_still_verifies);
+
+        // The same token with no anchors: embedded, but explicitly not trusted.
+        let options = DssOptions {
+            field_name: "Signature1",
+            timestamps: &[TimestampToken::from_der(token.clone())],
+            ..DssOptions::default()
+        };
+        let (_, report) = embed_dss(&signed, &options, &budget, &mut g).expect("embeds anyway");
+        assert!(!report.tsa_chain_trusted, "no anchors means no trust");
+
+        // A wrong anchor: refused, no bytes written to the source.
+        let other = generate_self_signed(
+            &IdentityParams {
+                common_name: "Another TSA",
+                organization: None,
+                key_bits: 2048,
+                validity_days: 365,
+                not_before_unix: 1_793_000_000,
+                serial: [8; 16],
+                is_ca: false,
+            },
+            &mut rng,
+        )
+        .expect("another identity");
+        let options = DssOptions {
+            field_name: "Signature1",
+            timestamps: &[TimestampToken::from_der(token)],
+            tsa_anchors: &[other.cert_der],
+            now_unix: NOW,
+            ..DssOptions::default()
+        };
+        assert!(
+            embed_dss(&signed, &options, &budget, &mut g).is_err(),
+            "a TSA signed by a different CA is refused"
         );
     }
 

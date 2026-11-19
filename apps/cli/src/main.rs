@@ -693,6 +693,12 @@ enum Command {
         /// --connect-tsa). `http://` only; no TLS in this build.
         #[arg(long)]
         tsa_url: Option<String>,
+        /// A trusted TSA certificate (PEM, repeatable; bundles accepted). When
+        /// supplied, the token's own signature and its signing certificate's
+        /// chain to one of these anchors must verify or the token is refused.
+        /// With none, a token is embedded but reported as an untrusted TSA.
+        #[arg(long = "tsa-anchor", value_name = "PEM")]
+        tsa_anchor: Vec<String>,
         /// OPT-IN: after a consent notice, fetch an OCSP response from the
         /// responder configured by SELIS_OCSP_URL for the DSS LTV data.
         /// The certificate's AIA URL is NOT auto-discovered. Default: off.
@@ -705,6 +711,31 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Generate a LOCAL self-signed signing identity (key + certificate) on
+    /// this device. No CA, no network, no upload. The certificate is trusted
+    /// by Selis and by viewers that import it as an anchor — it is NOT a
+    /// publicly trusted / AATL identity and Acrobat will call it "unknown".
+    GenerateIdentity {
+        /// The subject common name, e.g. "Ada Lovelace (Selis local)".
+        #[arg(long)]
+        name: String,
+        /// Directory to write `key.pem` and `cert.pem` into (must exist).
+        #[arg(short, long)]
+        output: String,
+        /// RSA modulus size in bits (2048..=4096, default 2048).
+        #[arg(long, default_value_t = 2048)]
+        bits: usize,
+        /// Validity in days from now (default 3650).
+        #[arg(long, default_value_t = 3650)]
+        days: u32,
+        /// Assert CA constraints (for issuing other certificates). A normal
+        /// per-user signing identity does not need this.
+        #[arg(long)]
+        ca: bool,
+        /// Overwrite an existing key.pem / cert.pem in the output directory.
+        #[arg(long)]
+        force: bool,
+    },
     /// Report every signature and check it against the bytes it covers.
     Signatures {
         /// The input PDF.
@@ -712,8 +743,11 @@ enum Command {
         /// Where to write the JSON report. Prints it on stdout when omitted.
         #[arg(short, long)]
         output: Option<String>,
-        /// A trusted certificate (PEM), repeatable. With none, nothing is
-        /// trusted and the report says so.
+        /// A trusted certificate (PEM, or a base64 DER), repeatable. A PEM
+        /// bundle with several CERTIFICATE blocks is accepted as one file.
+        /// With none, nothing is trusted and the report says so. The verdict
+        /// is "trusted by Selis using caller-supplied anchors", NOT a public
+        /// CA / Acrobat trust statement.
         #[arg(long = "anchor", value_name = "PEM")]
         anchor: Vec<String>,
     },
@@ -1370,6 +1404,7 @@ fn run() {
             time,
             connect_tsa,
             tsa_url,
+            tsa_anchor,
             connect_aia,
             ocsp_url,
             json,
@@ -1388,11 +1423,20 @@ fn run() {
                 time.as_deref(),
                 connect_tsa,
                 tsa_url.as_deref(),
+                &tsa_anchor,
                 connect_aia,
                 ocsp_url.as_deref(),
             ),
             json,
         ),
+        Command::GenerateIdentity {
+            name,
+            output,
+            bits,
+            days,
+            ca,
+            force,
+        } => sign::generate_identity(&name, &output, bits, days, ca, force),
         Command::Signatures {
             path,
             output,

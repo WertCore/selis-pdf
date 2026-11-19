@@ -501,14 +501,20 @@ Normative spec: `23-EDIT-MODEL-SPEC.md`. Read it before any task here.
   - **Consent wording (stderr, verbatim):** "Connecting to external time provider &lt;URL&gt; to
     timestamp this signature; a hash of the document will be sent. Continue?" The flag *is* the
     opt-in; there is no silent connection path. No document bytes leave the device without it.
+  - **Done (trust anchors, "Foxit model"):** `selis-crypto::timestamp::verify_tsa_token` now
+    verifies the token's OWN CMS signature over the `TSTInfo` (via `cms::verify_signer`) and walks
+    the TSA signing certificate's chain to caller-supplied anchors (`--tsa-anchor` on the CLI, PEM
+    bundles accepted). `embed_dss` refuses a token when anchors are supplied but the signature or
+    chain fails, and reports `tsaChainTrusted`; with no anchors a token is embedded but reported
+    untrusted — never silently trusted. Tests: trusted anchor, no/wrong anchor, forged TSTInfo.
   - **Remaining long-lead (NOT code):** Adobe-trusted / AATL membership and a CA-trusted TSA
     certificate are required before a timestamp is honoured by Acrobat as LTV — that is a trust /
-    procurement long-lead (SL-0.LEAD.08), not something this slice can claim. Also open: TSA
-    signature + chain verification and an X.509 AIA extension reader (we use a configured
-    responder URL instead, deliberately avoiding SSRF from a document-controlled URL), HTTPS
-    transport, full CRL/DSS-VRI refresh, and a separate document-timestamp *signature* object with
-    its own `/ByteRange` over the revised file (PAdES B-LTA) — this slice records the parsed,
-    imprint-bound token in `/DSS /TS` (PAdES B-LT data) and does not claim B-LTA.
+    procurement long-lead (SL-0.LEAD.08), not something this slice can claim. Also open: an X.509
+    AIA extension reader (we use a configured responder URL instead, deliberately avoiding SSRF
+    from a document-controlled URL), HTTPS transport, full CRL/DSS-VRI refresh, and a separate
+    document-timestamp *signature* object with its own `/ByteRange` over the revised file (PAdES
+    B-LTA) — this slice records the parsed, imprint-bound token in `/DSS /TS` (PAdES B-LT data)
+    and does not claim B-LTA.
 - [x] **SL-5.SIGN.05 — Certification signatures and DocMDP** · deps: SIGN.03 · owner: AI+
   - **Done:** `selis-pdf-sign::sign_certification` writes the same detached CMS as SIGN.03 plus
     `/Reference → /TransformMethod /DocMDP /TransformParams /P` (levels 1/2/3), re-opens the
@@ -533,6 +539,28 @@ Normative spec: `23-EDIT-MODEL-SPEC.md`. Read it before any task here.
     sectors. The typed OS-keystore gap is deliberate, not a silent fallback.
   - **Note:** Smart-card/eID support is a hard requirement in several European public sectors and
     a genuine barrier to entry for competitors.
+- [x] **SL-5.SIGN.08 — Trust anchors and local self-signed identity (Foxit model)** · owner: AI+
+  - **Decision:** do what Foxit does — support bring-your-own certificates (PKCS#12, SIGN.06),
+    offer a local self-signed identity, and trust public CA anchors the caller supplies. Do NOT
+    run our own public CA or pursue AATL membership as a code prerequisite. Owning a domain helps
+    host CRL/OCSP/TSA endpoints but does NOT make a root trusted by Acrobat (AATL/EUTL is the only
+    path to a default-green check, and that is a business decision — SL-0.LEAD.08).
+  - **Done:** the verifier (`selis-pdf-sign::signatures` → `selis-crypto::cert::validate_chain`)
+    walks the signer's chain to caller-supplied anchors; `--anchor` accepts a PEM **bundle** of
+    several CERTIFICATE blocks (`cert::pem_certificates`). `TrustReport.trust_scope` is always
+    `"selis-caller-anchors"`, so a local "trusted" verdict is explicitly NOT a public/Adobe one.
+    `selis-crypto::identity::generate_self_signed` builds a 2048–4096-bit RSA key and a self-signed
+    X.509 v3 certificate locally (SHA-256, basicConstraints/keyUsage/SKI), reads it back and
+    verifies its self-signature, and uses pure-Rust deps only (no new dependency, no `unsafe`,
+    ADR-P0019/P0021; rcgen was rejected for MSRV 1.88 > workspace 1.85 and its C crypto deps).
+    CLI `selis generate-identity --name ... --output DIR [--bits N] [--days N] [--ca] [--force]`
+    writes `key.pem`/`cert.pem`, refuses overwrite by default, and prints the honesty line "not a
+    publicly trusted / AATL identity". Tests: a generated identity is trusted only when its own
+    cert is supplied as an anchor; with no anchors or a wrong CA it is not; a bundle's later
+    blocks are loaded; no private key bytes appear in the PDF.
+  - **Remaining (external/business):** a publicly trusted (AATL/EUTL) signing certificate and CA
+    membership — procurement, not code. System/OS trust-store auto-loading is deliberately NOT
+    done (the browser has none; we keep trust explicit and local-only).
 - [ ] **SL-5.SIGN.07 — Signature appearance generation** · deps: SIGN.03, ANNOT.01 · owner: AI+
 
 ---

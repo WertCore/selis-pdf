@@ -774,7 +774,7 @@ pub struct ChainLink {
 }
 
 /// The outcome of walking a chain.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChainReport {
     /// Leaf first, anchor last.
     pub links: Vec<ChainLink>,
@@ -973,12 +973,54 @@ fn pkcs8_kind(der: &[u8]) -> Option<PrivateKeyKind> {
 /// Decode the bytes of a PEM block body (base64, whitespace ignored).
 #[must_use]
 pub fn pem_body(text: &str, label: &str) -> Option<Vec<u8>> {
+    pem_blocks(text, label).into_iter().next()
+}
+
+/// Decode every PEM block with `label` from `text`, in document order.
+///
+/// A trust bundle is a single file holding several `CERTIFICATE` blocks
+/// concatenated together (the format `openssl` and OS trust stores export).
+/// Reading only the first block would silently trust one root out of a bundle
+/// and report "trusted" for the wrong reasons, so the bundle loader returns
+/// them all. A `BEGIN` without a matching `END` ends the scan rather than
+/// guessing at base64 that spans it; blocks whose body is not base64 are
+/// skipped rather than aborting the whole bundle.
+#[must_use]
+pub fn pem_blocks(text: &str, label: &str) -> Vec<Vec<u8>> {
     let begin = format!("-----BEGIN {label}-----");
     let end = format!("-----END {label}-----");
-    let start = text.find(&begin)?.saturating_add(begin.len());
-    let stop = text.get(start..)?.find(&end)?.saturating_add(start);
-    let body = text.get(start..stop)?;
-    base64_decode(body)
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(start_rel) = rest.find(&begin) {
+        let after_begin = start_rel.saturating_add(begin.len());
+        let Some(body_rel) = rest.get(after_begin..) else {
+            break;
+        };
+        let Some(end_rel) = body_rel.find(&end) else {
+            break;
+        };
+        let body = body_rel.get(..end_rel).unwrap_or("");
+        if let Some(der) = base64_decode(body) {
+            out.push(der);
+        }
+        let advance = after_begin
+            .saturating_add(end_rel)
+            .saturating_add(end.len());
+        let Some(next) = rest.get(advance..) else {
+            break;
+        };
+        rest = next;
+    }
+    out
+}
+
+/// Extract every X.509 certificate from a PEM bundle (or a single PEM block).
+///
+/// Each returned item is the DER of one `CERTIFICATE`, ready to hand to
+/// [`validate_chain`] as an anchor or intermediate.
+#[must_use]
+pub fn pem_certificates(text: &str) -> Vec<Vec<u8>> {
+    pem_blocks(text, "CERTIFICATE")
 }
 
 /// Minimal base64 decoder (standard alphabet, `=` padding, whitespace ignored).
@@ -1088,7 +1130,7 @@ pub fn charge(g: &mut BudgetGuard<'_>, bytes: usize) -> Result<()> {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use super::{base64_encode, pem_body, pem_encode};
+    use super::{base64_encode, pem_body, pem_certificates, pem_encode};
 
     #[test]
     fn pem_encode_round_trips_through_pem_body() {
@@ -1097,6 +1139,28 @@ mod tests {
         assert!(pem.starts_with("-----BEGIN CERTIFICATE-----\n"));
         assert!(pem.ends_with("-----END CERTIFICATE-----\n"));
         assert_eq!(pem_body(&pem, "CERTIFICATE").expect("decodes"), der);
+    }
+
+    #[test]
+    fn pem_certificates_reads_every_block_of_a_bundle() {
+        let a = pem_encode("CERTIFICATE", b"root-der");
+        let b = pem_encode("CERTIFICATE", b"intermediate-der");
+        let key = pem_encode("PRIVATE KEY", b"key-der");
+        let bundle = format!("{a}\n{key}\n{b}\n");
+        assert_eq!(
+            pem_certificates(&bundle),
+            vec![b"root-der".to_vec(), b"intermediate-der".to_vec()]
+        );
+        // `pem_body` still returns only the first, for callers that expect one.
+        assert_eq!(pem_body(&bundle, "CERTIFICATE"), Some(b"root-der".to_vec()));
+    }
+
+    #[test]
+    fn pem_certificates_skips_a_trailing_unterminated_block() {
+        let good = pem_encode("CERTIFICATE", b"good");
+        let broken = format!("{good}\n-----BEGIN CERTIFICATE-----\nnot-base64!!!\n");
+        assert_eq!(pem_certificates(&broken), vec![b"good".to_vec()]);
+        assert!(pem_certificates("no certificates here").is_empty());
     }
 
     #[test]

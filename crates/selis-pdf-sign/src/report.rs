@@ -61,6 +61,11 @@ pub struct TrustReport {
     pub trusted: bool,
     /// Why the walk did not end on an anchor, when it did not.
     pub reason: Option<String>,
+    /// Where `trusted` comes from. Always `"selis-caller-anchors"`: the verdict
+    /// means "this chains to a certificate the caller supplied", NOT "a public
+    /// CA or Acrobat trusts this signer". Shells must show this scope so a
+    /// green local verdict is never mistaken for an AATL/EUTL one.
+    pub trust_scope: String,
     /// Always `false`: no OCSP or CRL is consulted.
     pub revocation_checked: bool,
     /// Leaf first, anchor last.
@@ -460,6 +465,7 @@ fn trust_report(
         issuer,
         trusted: report.trusted,
         reason: report.reason,
+        trust_scope: "selis-caller-anchors".to_string(),
         revocation_checked: false,
         chain: report
             .links

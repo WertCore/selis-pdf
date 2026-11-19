@@ -75,6 +75,7 @@ pub(crate) fn sign(
     time: Option<&str>,
     connect_tsa: bool,
     tsa_url: Option<&str>,
+    tsa_anchors: &[String],
     connect_aia: bool,
     ocsp_url: Option<&str>,
 ) -> CliResult<crate::verify_report::Verification> {
@@ -115,7 +116,15 @@ pub(crate) fn sign(
     if !connect_tsa && !connect_aia {
         return Ok(verification);
     }
-    embed_consented_trust(output, field, connect_tsa, tsa_url, connect_aia, ocsp_url)?;
+    embed_consented_trust(
+        output,
+        field,
+        connect_tsa,
+        tsa_url,
+        tsa_anchors,
+        connect_aia,
+        ocsp_url,
+    )?;
     Ok(verification)
 }
 
@@ -130,6 +139,7 @@ fn embed_consented_trust(
     field: &str,
     connect_tsa: bool,
     tsa_url: Option<&str>,
+    tsa_anchors: &[String],
     connect_aia: bool,
     ocsp_url: Option<&str>,
 ) -> CliResult<()> {
@@ -164,15 +174,101 @@ fn embed_consented_trust(
         ocsp.push(data.ocsp);
     }
 
+    // Trust anchors for the TSA's own certificate are caller-supplied; with
+    // none the token is embedded but reported as an untrusted time authority.
+    let mut tsa_anchor_der = Vec::with_capacity(tsa_anchors.len());
+    for anchor in tsa_anchors {
+        let text = read_text(anchor)?;
+        let certs = selis_crypto::cert::pem_certificates(&text);
+        if certs.is_empty() {
+            return Err(CliError(format!(
+                "{anchor}: not a PEM X.509 certificate (TSA anchor)"
+            )));
+        }
+        tsa_anchor_der.extend(certs);
+    }
     let options = selis_pdf_sign::DssOptions {
         field_name: field,
         timestamps: &timestamps,
         ocsp: &ocsp,
+        tsa_anchors: &tsa_anchor_der,
+        now_unix: now_seconds(),
         ..selis_pdf_sign::DssOptions::default()
     };
     let (out, _) = selis_pdf_sign::embed_dss(&signed, &options, &budget, &mut g)
         .map_err(|e| CliError(e.to_string()))?;
     crate::write_file(output, &out)
+}
+
+/// `selis generate-identity --name NAME --output DIR [--bits N] [--days N] [--ca]`
+///
+/// Writes a local self-signed signing identity. No CA, no network, no upload.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn generate_identity(
+    name: &str,
+    output_dir: &str,
+    bits: usize,
+    days: u32,
+    is_ca: bool,
+    force: bool,
+) -> CliResult<()> {
+    use std::path::Path;
+
+    let dir = Path::new(output_dir);
+    if !dir.is_dir() {
+        return Err(CliError(format!(
+            "{output_dir}: output directory does not exist"
+        )));
+    }
+    let key_path = dir.join("key.pem");
+    let cert_path = dir.join("cert.pem");
+    if !force && (key_path.exists() || cert_path.exists()) {
+        return Err(CliError(format!(
+            "{output_dir}: key.pem or cert.pem already exists; pass --force to overwrite"
+        )));
+    }
+
+    // Entropy comes from the OS CSPRNG here, the one boundary allowed to draw
+    // it; the clock is read here too. Nothing is sent anywhere.
+    let serial_bytes = selis_crypto::random_bytes(16)
+        .and_then(|bytes| <[u8; 16]>::try_from(&bytes[..]).ok())
+        .ok_or_else(|| CliError("no OS entropy source is available".to_string()))?;
+
+    let identity =
+        selis_crypto::identity::generate_local_identity(&selis_crypto::identity::IdentityParams {
+            common_name: name,
+            organization: Some("Selis local identity"),
+            key_bits: bits,
+            validity_days: days,
+            not_before_unix: now_seconds(),
+            serial: serial_bytes,
+            is_ca,
+        })
+        .map_err(|e| CliError(format!("identity generation failed: {e}")))?;
+
+    super::write_file(&key_path.to_string_lossy(), identity.key_pem.as_bytes())?;
+    // The key is a secret: on Unix restrict it to owner read/write. Windows
+    // inherits the directory ACL, which is the correct model there.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| CliError(format!("cannot secure {}: {e}", key_path.display())))?;
+    }
+    super::write_file(&cert_path.to_string_lossy(), identity.cert_pem.as_bytes())?;
+
+    eprintln!("{}", identity.trust_note());
+    eprintln!("Wrote {} and {}", key_path.display(), cert_path.display());
+    eprintln!(
+        "Sign with: selis sign <input.pdf> --key {} --cert {}",
+        key_path.display(),
+        cert_path.display()
+    );
+    eprintln!(
+        "Verify trust with: selis signatures <signed.pdf> --anchor {}",
+        cert_path.display()
+    );
+    Ok(())
 }
 
 /// `selis signatures <path> [--output file] [--anchor <pem>]...`
@@ -185,10 +281,22 @@ pub(crate) fn signatures(path: &str, output: Option<&str>, anchors: &[String]) -
     let mut der = Vec::with_capacity(anchors.len());
     for anchor in anchors {
         let text = read_text(anchor)?;
-        let cert = selis_crypto::cert::pem_body(&text, "CERTIFICATE")
-            .or_else(|| selis_crypto::cert::base64_decode(&text))
-            .ok_or_else(|| CliError(format!("{anchor}: not a PEM or base64 X.509 certificate")))?;
-        der.push(cert);
+        // A PEM bundle may hold a whole chain of CERTIFICATE blocks (an OS
+        // trust-store export, a CA bundle). Load all of them so the verifier
+        // sees the full set of caller-trusted anchors; a bare base64 DER
+        // certificate is accepted too.
+        let mut certs = selis_crypto::cert::pem_certificates(&text);
+        if certs.is_empty() {
+            if let Some(cert) = selis_crypto::cert::base64_decode(&text) {
+                certs.push(cert);
+            }
+        }
+        if certs.is_empty() {
+            return Err(CliError(format!(
+                "{anchor}: not a PEM (optionally bundled) or base64 X.509 certificate"
+            )));
+        }
+        der.extend(certs);
     }
     let report =
         selis_pdf_tools::signature_report(path, &der, now_seconds()).map_err(CliError::from)?;

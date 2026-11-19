@@ -27,5 +27,7 @@ serde_json = { workspace = true }
 p12-keystore = { workspace = true }
 
 [dev-dependencies]
-# The fixtures are committed PEMs; tests never need an entropy source.
-rsa = { workspace = true }
+# The identity/TSA tests generate a real RSA key locally from the OS CSPRNG.
+# This only enables a feature on the already-pinned `rsa`/`rand_core` packages.
+rsa = { workspace = true, features = ["getrandom"] }
+sha2 = { workspace = true }

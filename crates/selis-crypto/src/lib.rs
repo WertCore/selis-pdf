@@ -36,6 +36,7 @@ pub mod cert;
 pub mod cms;
 pub mod der;
 pub mod der_write;
+pub mod identity;
 pub mod legacy;
 pub mod pkcs7;
 pub mod timestamp;
