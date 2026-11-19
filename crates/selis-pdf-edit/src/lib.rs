@@ -45,6 +45,8 @@
 
 #![forbid(unsafe_code)]
 
+/// SL-5.TEXTEDIT.03: box/run-level editing with a mandatory no-reflow warning.
+pub mod box_edit;
 mod font;
 pub mod incremental;
 pub mod journal;
@@ -53,6 +55,8 @@ pub mod save;
 /// SL-5.EDIT.07: signature preservation and DocMDP enforcement for saves.
 pub mod signature_guard;
 
+#[cfg(test)]
+mod box_edit_tests;
 #[cfg(test)]
 mod encrypted_tests;
 #[cfg(test)]
@@ -72,6 +76,9 @@ mod signature_tests;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::ops::Range;
+
+/// SL-5.TEXTEDIT.03 — box/run-level editing with a mandatory no-reflow warning.
+pub use box_edit::{edit_box, BoxAck, BoxEdit, BoxEditError, BoxEditPreview, BoxEditWarning};
 
 use selis_bytes::Bytes;
 use selis_pdf_cos::copy::resolve_ref;
@@ -139,6 +146,12 @@ pub struct EditReport {
 /// Replace the first occurrence of `find` with `replace` in the text of page
 /// `page_index`, and return the incrementally-updated document.
 ///
+/// This is the full in-place edit: the text that follows on the same line is
+/// pushed along by the width the edit added. For the below-confidence-threshold
+/// path, which must NOT reflow, use [`edit_box`](box_edit::edit_box) instead —
+/// it reuses the same splice but refuses to return bytes until the caller
+/// acknowledges that the paragraph did not reflow.
+///
 /// # Errors
 ///
 /// [`EditError::Invalid`] for an empty `find` or an out-of-range page,
@@ -153,6 +166,24 @@ pub fn edit_text(
     replace: &str,
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
+) -> Result<(Vec<u8>, EditReport), EditError> {
+    edit_text_impl(src, page_index, find, replace, budget, g, true)
+}
+
+/// The shared splice behind [`edit_text`] and [`box_edit::edit_box`].
+///
+/// `reflow` decides whether the following text on the line is pushed along by
+/// the edit's added width. The box-level path passes `false` so the edit is a
+/// pure in-place splice, which is what its "this edit did not reflow" warning
+/// honestly describes.
+fn edit_text_impl(
+    src: &[u8],
+    page_index: u32,
+    find: &str,
+    replace: &str,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+    reflow: bool,
 ) -> Result<(Vec<u8>, EditReport), EditError> {
     if find.is_empty() {
         return Err(EditError::Invalid("the search text is empty".to_string()));
@@ -234,7 +265,11 @@ pub fn edit_text(
     };
     // The width the edit added, in unscaled text space units. A non-zero
     // delta pushes the text that follows on the same line along by it.
-    let delta = reflow_delta(&page_fonts, &found);
+    let delta = if reflow {
+        reflow_delta(&page_fonts, &found)
+    } else {
+        0.0
+    };
     let rewritten = if delta.abs() > EPSILON {
         reflow::apply(&decoded, found.span, &found.operand, delta)
     } else {

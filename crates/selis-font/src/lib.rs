@@ -37,6 +37,8 @@ pub mod cmapfile;
 pub mod encoding;
 pub mod fallback;
 pub mod fallback_set;
+/// Font matching for edited text (SL-5.TEXTEDIT.04).
+pub mod font_match;
 pub mod justify;
 pub mod model;
 pub mod outline;
@@ -64,9 +66,14 @@ pub use encoding::{
     expand_differences, resolve, BaseEncoding, DifferenceItem, Encoding, FontEncoding,
 };
 pub use fallback::{
-    can_render, fallback_order, is_standard14, match_substitute, substitute, FontMatchHints,
+    can_render, face_resident, fallback_order, is_standard14, match_substitute, substitute,
+    FontMatchHints,
 };
 pub use fallback_set::FallbackFontSet;
+/// The TEXTEDIT.04 entry point, named at the root without colliding with the
+/// low-level single-character [`fallback::match_substitute`].
+pub use font_match::match_substitute as match_substitute_for_edit;
+pub use font_match::{FontAvailability, OriginalFont, Substitute, SubstituteReason};
 pub use justify::justified_advance;
 pub use model::{FontDescriptor, FontDict, FontFile, FontSubtype};
 pub use outline::{

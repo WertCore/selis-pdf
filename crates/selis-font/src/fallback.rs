@@ -256,6 +256,18 @@ pub fn fallback_order() -> &'static [&'static str] {
     ]
 }
 
+/// Whether a fallback *face* is resident in this build.
+///
+/// This is a delivery question, not a policy one: it answers "are the bytes for
+/// `LiberationSans-Regular` compiled into this build?", never "what should
+/// substitute for `/Helvetica`?". It exists so a caller choosing a substitute
+/// can report honestly whether that substitute is already available (a full
+/// match) or still has to be delivered (a weaker match).
+#[must_use]
+pub fn face_resident(face_name: &str) -> bool {
+    family_bytes(face_name).is_some()
+}
+
 /// Whether a fallback font can render a character (its cmap has the codepoint).
 #[must_use]
 pub fn can_render(font_name: &str, ch: char) -> bool {

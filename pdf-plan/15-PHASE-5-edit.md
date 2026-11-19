@@ -208,12 +208,39 @@ Normative spec: `23-EDIT-MODEL-SPEC.md`. Read it before any task here.
     subset with any new glyphs.
   - **DoD:** Editing one word in a paragraph changes only that paragraph's content region; the page
     renders identically outside the edit; a character absent from the original subset renders.
-- [ ] **SL-5.TEXTEDIT.03 — Box-level fallback editing** · deps: TEXTEDIT.01 · owner: AI
+- [x] **SL-5.TEXTEDIT.03 — Box-level fallback editing** · deps: TEXTEDIT.01 · owner: AI
   - **Do:** Below the confidence threshold, offer per-line or per-run editing with explicit
     "this may not reflow" UI rather than silently mangling the page.
-- [ ] **SL-5.TEXTEDIT.04 — Font matching for edited text** · deps: SL-3.FONT.09 · owner: AI+
+  - **Done (first slice):** `selis-pdf-edit::box_edit::edit_box` reuses the in-place splice but
+    disables reflow, so a single line/run is edited without moving the surrounding text. It
+    returns a typed `BoxEditWarning` (`BOX_EDIT_NO_REFLOW`) whose message is the "this edit did
+    not reflow the paragraph" UI text. The bytes are sealed in `BoxEditPreview`; the only release
+    path is `commit(BoxAck)`, and a `BoxAck` is obtainable only from that warning's
+    `acknowledge()`. A box edit therefore cannot be applied silently — the warning must be
+    surfaced and accepted first. Read-back tests reopen the edited PDF and check the replacement
+    text, and a crossed-acknowledgement test proves the refusal path.
+  - **Not claimed:** TEXTEDIT.01 (paragraph confidence) is not implemented, so the caller — not
+    the library — decides when the box path applies; there is no automatic threshold gate. No new
+    font is embedded by a box edit (see TEXTEDIT.04).
+- [x] **SL-5.TEXTEDIT.04 — Font matching for edited text** · deps: SL-3.FONT.09 · owner: AI+
   - **Do:** When the original font is unembedded or unavailable, choose a substitute and tell the
     user, rather than silently changing the document's appearance.
+  - **Done (first slice):** `selis-font::font_match::match_substitute(original_font,
+    needed_chars, budget) -> Substitute` selects the metric-compatible Liberation twin of a
+    standard-14 face through the same policy the renderer uses (`fallback::substitute_for`),
+    widens through the bundled fallback set when a needed glyph is missing, scores the match, and
+    **always returns a disclosure string when it substitutes**. An embedded, complete face is
+    kept unchanged with an empty disclosure. `selis-pdf-tools::edit::plan_font_substitution`
+    surfaces the disclosure to the CLI/UI boundary.
+  - **Disclosure contract:** `substituted == true` implies a non-empty `disclosure` naming the
+    original face, why it changed ("not embedded" / "unavailable" / "lacks a needed glyph"), the
+    substitute, and any codepoint it still cannot carry (with a low `confidence`). There is no
+    silent-substitution path. `confidence` is a discrete `0..=100` score (100 = original kept).
+  - **Not claimed:** this slice does not embed the substitute into the PDF — that is TEXTEDIT.02's
+    re-embed step. The substitute is a *name*: on slim/web builds only the Serif subsets are
+    resident, so a chosen Sans face may still need lazy delivery, and the disclosure never claims
+    otherwise. No Noto face is bundled; the candidate set is the Liberation family. A CJK glyph
+    that no bundled face carries is disclosed as unmatched rather than silently dropped.
 - [ ] **SL-5.TEXTEDIT.05 — Image editing: replace, move, resize, delete, extract** · deps: SL-2.RAST.08 · owner: AI+
 - [ ] **SL-5.TEXTEDIT.06 — Vector object selection and manipulation** · deps: SL-2.CONT.07 · owner: AI
 - [ ] **SL-5.TEXTEDIT.07 — Add content: text boxes, images, shapes, links** · deps: SL-3.SHAPE.03 · owner: AI+
