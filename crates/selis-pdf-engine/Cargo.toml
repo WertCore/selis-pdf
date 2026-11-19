@@ -57,6 +57,10 @@ selis-policy = { workspace = true }
 selis-job = { workspace = true }
 selis-pdf-content = { workspace = true }
 selis-pdf-text = { workspace = true }
+# SL-5.TEXTEDIT.02: re-shape and re-break the edited paragraph. The shaping
+# path (selis-shape, swash) is kept on the editing side of the replay/shape
+# split (ADR-P0003), so it is an L3→L2 edge with no reverse dependency.
+selis-shape = { workspace = true }
 selis-font = { workspace = true }
 selis-raster = { workspace = true }
 selis-color = { workspace = true }

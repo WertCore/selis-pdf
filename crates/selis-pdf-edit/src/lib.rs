@@ -52,6 +52,8 @@ pub mod incremental;
 pub mod journal;
 /// SL-5.TEXTEDIT.05/06: object-level image and vector editing.
 pub mod objects;
+/// SL-5.TEXTEDIT.02: byte-region reflow writer and confidence gate.
+pub mod reflow_edit;
 pub mod rewrite;
 pub mod save;
 /// SL-5.EDIT.07: signature preservation and DocMDP enforcement for saves.
@@ -71,6 +73,8 @@ mod objects_tests;
 mod property_tests;
 mod reflow;
 #[cfg(test)]
+mod reflow_edit_tests;
+#[cfg(test)]
 mod rewrite_tests;
 #[cfg(test)]
 mod save_tests;
@@ -83,6 +87,11 @@ use std::ops::Range;
 
 /// SL-5.TEXTEDIT.03 — box/run-level editing with a mandatory no-reflow warning.
 pub use box_edit::{edit_box, BoxAck, BoxEdit, BoxEditError, BoxEditPreview, BoxEditWarning};
+/// SL-5.TEXTEDIT.02 — byte-region reflow writer and confidence gate.
+pub use reflow_edit::{
+    ensure_reflow_confidence, reflow_regions, ContentRegion, ReflowEditError, ReflowEditReport,
+    ReflowMutation, MIN_REFLOW_CONFIDENCE,
+};
 
 use selis_bytes::Bytes;
 use selis_pdf_cos::copy::resolve_ref;
@@ -328,14 +337,14 @@ fn edit_text_impl(
 }
 
 /// True when the document's newest revision carries `/Encrypt`.
-fn is_encrypted(doc: &selis_pdf_cos::Doc) -> bool {
+pub(crate) fn is_encrypted(doc: &selis_pdf_cos::Doc) -> bool {
     doc.revisions()
         .last()
         .is_some_and(|r| r.trailer.iter().any(|(k, _)| k.as_slice() == b"Encrypt"))
 }
 
 /// The leaf `/Page` object references, in reading order.
-fn page_refs(
+pub(crate) fn page_refs(
     src: &[u8],
     doc: &selis_pdf_cos::Doc,
     budget: &Budget,
@@ -405,7 +414,7 @@ fn collect_pages(
 /// `/Contents` an array. The streams are drawn in order, exactly as if their
 /// contents had been written one after another, so an edit reads them all and
 /// writes them back as one.
-fn content_refs(page_dict: &[(Bytes, Obj)]) -> Result<Vec<Ref>, EditError> {
+pub(crate) fn content_refs(page_dict: &[(Bytes, Obj)]) -> Result<Vec<Ref>, EditError> {
     match dict_get(page_dict, b"Contents") {
         Some(Obj::Ref(r)) => Ok(vec![*r]),
         Some(Obj::Array(items)) => {
@@ -437,7 +446,7 @@ fn content_refs(page_dict: &[(Bytes, Obj)]) -> Result<Vec<Ref>, EditError> {
 
 /// The stream's byte filter: `None` for a raw stream, `Some(name)` for a Flate
 /// stream. Any other filter is refused.
-fn stream_filter(stream_dict: &[(Bytes, Obj)]) -> Result<Option<Bytes>, EditError> {
+pub(crate) fn stream_filter(stream_dict: &[(Bytes, Obj)]) -> Result<Option<Bytes>, EditError> {
     let is_flate = |n: &Bytes| n.as_slice() == b"FlateDecode" || n.as_slice() == b"Fl";
     match dict_get(stream_dict, b"Filter") {
         None => Ok(None),
@@ -455,7 +464,7 @@ fn stream_filter(stream_dict: &[(Bytes, Obj)]) -> Result<Option<Bytes>, EditErro
 }
 
 /// Decode the content stream per its filter.
-fn decode_content(
+pub(crate) fn decode_content(
     filter: Option<Bytes>,
     data: &[u8],
     _budget: &Budget,
@@ -470,7 +479,17 @@ fn decode_content(
 
 /// Re-encode the rewritten content in the stream's original filter. Returns the
 /// bytes and the filter name to write (`None` for raw).
-fn encode_content(filter: Option<Bytes>, content: &[u8]) -> (Vec<u8>, Option<Bytes>) {
+///
+/// # Budget
+///
+/// Linear in `content.len()`: a raw copy, or one Flate pass over the decoded
+/// stream. No document-derived buffer is allocated beyond the output.
+///
+/// # Malformed Input
+///
+/// None: the filter is supplied by the caller, already validated by
+/// [`stream_filter`]. An arbitrary byte string re-encodes without panicking.
+pub(crate) fn encode_content(filter: Option<Bytes>, content: &[u8]) -> (Vec<u8>, Option<Bytes>) {
     match filter {
         None => (content.to_vec(), None),
         Some(name) => (
@@ -482,7 +501,7 @@ fn encode_content(filter: Option<Bytes>, content: &[u8]) -> (Vec<u8>, Option<Byt
 
 /// Rebuild the content-stream object with the new data and `/Length`, keeping
 /// every other dictionary entry.
-fn rebuild_stream(
+pub(crate) fn rebuild_stream(
     original_dict: &[(Bytes, Obj)],
     data: Vec<u8>,
     filter_name: Option<Bytes>,
