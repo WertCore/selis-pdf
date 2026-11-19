@@ -46,6 +46,9 @@ mod io;
 pub mod linearize;
 mod memory;
 pub mod metadata;
+/// SL-5.TEXTEDIT.05/06: object-level image/vector editing (library API only;
+/// CLI/wasm/UI selection is deferred — see the module docs).
+pub mod object_edit;
 pub mod outline;
 pub mod overlay;
 pub mod privacy;
@@ -94,6 +97,11 @@ pub use images::{image_to_pdf, ImagePageSize, ImageToPdfOptions};
 pub use linearize::{linearize, linearize_file, linearize_file_with_mode, LinearizeReport};
 pub use memory::{clear, insert_input, take_output, write_output, MemorySession};
 pub use metadata::{metadata_report, MetadataReport};
+pub use object_edit::{
+    delete_object, extract_image, list_image_objects, list_vector_objects, move_object,
+    replace_image, resize_object, ImageObject, ObjectEditReport, ObjectError, ObjectId,
+    VectorObject,
+};
 pub use outline::{set_outline, OutlineEntry, OutlineOptions};
 pub use overlay::add_image_watermark;
 pub use privacy::{privacy_report, PrivacyFinding, PrivacyReport};
