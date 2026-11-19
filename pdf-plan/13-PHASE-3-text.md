@@ -187,6 +187,19 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
     (**49 661 B brotli over five files**, plus `ext-sup` at 861 B), and no
     `Uni…UCS2…` document can ask for any of them.
 
+    **Bucket 1 (2026-11-20) — typed substitution disclosure, box stays open for
+    the same three web gaps.** Added `selis_font::cjk::CjkSubstitutionNote`, a
+    pure-data typed note that discloses an unembedded font was substituted by a
+    **subset** CJK face and names the on-demand chunk (`crates/selis-font/src/
+    cjk.rs`, unit test `substitution_note_discloses_the_subset_chunk`). No bytes
+    are embedded and no new dependency was taken, so the CJK/size budgets are
+    untouched. This closes the "disclose the substitution in a typed note" half
+    of the Do at the data layer. It does **not** close (a) a production caller
+    of `drainCjk`, (b) a `wasm-browser` CJK leg, or (c) the Cache Storage
+    adapter — all three still need a web build + CI, which this branch cannot
+    produce. Cohort verdict `corpus/expect/cjk-subset-payload/verdicts.jsonl`
+    (`measured: false`) records the honest state.
+
 - [x] **SL-3.FONT.11 — Font subsetting and re-embedding** · deps: FONT.03, FONT.04 · owner: AI+
   - **Do:** Subset TrueType and CFF to a glyph set, rebuild `loca`/`hmtx`/`cmap`/charstrings, and
     **merge new glyphs into an existing subset** — required by ADR-P0024, because editing text adds
@@ -404,6 +417,15 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
     (annotation-appearance walk) and **SL-3.TEXT.15** (divergence watchdog), the ids
     SL-3.TEXT.12/13 having been taken by SL-3.TEXT.11's own residuals (paint-time `Tm`,
     vertical-run assembly) — this box now tracks only the shipped diagnosis + marker.
+   - **Bucket 1 (2026-11-20):** the shipped marker path is re-verified with a
+     synthetic Type0 page whose surrogate codes decode to nothing:
+     `apps/cli/tests/b1_text_font.rs::text10_drawn_undecodable_text_is_flagged_not_silent`
+     asserts `LOW_CONFIDENCE_MARKER` in text output **and** a typed
+     `"verdict": "zero_recovery"` in JSON (the latter is the new TEXT.15 work).
+     The remaining 62 silent files are annotation-AP text (TEXT.14); no new
+     per-file tail numbers are claimed — cohort verdict
+     `corpus/expect/silent-empty-extraction/verdicts.jsonl` (`measured: false`
+     for the tail membership).
 - [x] **SL-3.TEXT.11 — Text-space advances must map through the text matrix** · deps: TEXT.01 ·
   owner: AI+ · **filed by SL-3.TEXT.08/09/10 work (2026-09-14)**
   - **Defect:** `text::show_string` and `Td`/`TD` accumulate pen movement as
@@ -716,6 +738,25 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
     not only the fully-silent case the `LOW_CONFIDENCE_MARKER` covers today.
   - **DoD:** Sweep verdicts carry the flag; a corpus case pins both the flagged and the
     exact-match neighbour so the threshold cannot drift silently.
+  - **Status (2026-11-20, PARTIAL — box stays open):** the engine/text half is
+    implemented and locally verified; the sweep half still needs the corpus.
+    `crates/selis-pdf-text/src/verdict.rs` adds the typed `ExtractionVerdict`
+    (`Blank` / `Recovered` / `ZeroRecovery` / `DivergentNoRecovery`), a `>=5 %`
+    undecodable-glyph classifier over counts from `apply_unicode_recovery_counted`,
+    and two distinct markers. The CLI wires it into the JSON `"verdict"` field and
+    a distinct marker for the partial case (`apps/cli/src/extract.rs`). End-to-end
+    proof: `apps/cli/tests/b1_text_font.rs::text15_partial_undecodable_tail_is_typed`
+    (one recoverable + two surrogate codes ⇒ `divergent_no_recovery` + its marker)
+    and `text15_exact_match_neighbour_is_clean` (all recoverable ⇒ `recovered`, no
+    marker) pin both sides of the 5 % boundary so it cannot drift silently.
+    **Pre-fix evidence:** before the `Session::text_unicode` UCS2 recovery landed,
+    `text20_ucs2_predefined_cmap_recovers_cjk` failed because a valid CJK page was
+    mislabelled `zero_recovery` — the typed verdict exposed a real recovery gap the
+    old silent string hid. Honest gap: the literal ">5 % divergence with zero
+    recovery" is differential (selis *vs* an oracle); the local classifier counts
+    undecodable glyphs only. `xtask text-sweep`'s `text_err` wiring and a corpus
+    case pin are unmeasured here (no corpus/pdfs, no oracles), recorded as
+    `corpus/expect/divergent-no-recovery/verdicts.jsonl` (`measured: false`).
 - [x] **SL-3.CONF.03 — Recalibrate the Extract gate; triage the diff≥25 long tail** ·
   deps: CONF.02, ORACLE.04 · owner: AI+
   - **Do:** ORACLE.04 measured that independent extractors top out at 79.0 % (pdfium↔pdfjs)
@@ -998,6 +1039,17 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
     CID-keyed Japanese fonts) and the noembed substitution fallback.
   - **DoD:** the `flat-cjk` + `noembed-cjk-external` clusters shrink; CJK fixtures extract
     at `match` or an annotated OracleBug verdict.
+  - **Status (2026-11-20, mechanism fixed — cohort open):** a genuine recovery gap was
+    found and fixed: `Session::text_unicode` returned `None` for every CID font
+    without `/ToUnicode`, so a `Uni…UCS2…` page's codes (which *are* Unicode
+    scalars) relied on an accidental legacy-code reading. It now recovers them
+    explicitly (`selis_font::cmapfile::is_ucs2_cmap_name`, guarded against
+    surrogate/nul codes); pre-fix, the new typed verdict wrongly flagged such a
+    page `zero_recovery`, post-fix it is `recovered` — proved by
+    `apps/cli/tests/b1_text_font.rs::text20_ucs2_predefined_cmap_recovers_cjk`
+    (and its `/ToUnicode` neighbour). The 20 flat-cjk + 3 noembed files were NOT
+    re-measured; JIS7/SJIS/EUC-JP predefined CMaps need the corpus/oracle.
+    Cohort verdict `corpus/expect/cjk-asian/verdicts.jsonl` (`measured: false`).
 - [ ] **SL-3.TEXT.21 — LaTeX/Computer-Modern font family extraction** · deps: TEXT.02 ·
   owner: AI+ · **filed by SL-3.CONF.03 (2026-09-16)**
   - **Defect:** 16 files using the LaTeX CM family (CMR/CMSY/CMTT/CMEX + NimbusRom,
@@ -1008,12 +1060,30 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
     the identical sc=5024 across files makes the root cause a single code path.
   - **DoD:** the `latex-cm-fonts` cluster shrinks; the shared signature is pinned as a
     corpus case.
+  - **Status (2026-11-20, mechanism pinned — cohort open):** verified with a synthetic
+    Type1 font whose `/Encoding/Differences` names CM glyphs (`alpha`, `beta`,
+    `Delta`, `summation`); the TEXT.02 glyph-name → AGL chain recovers Greek/math
+    Unicode (`apps/cli/tests/b1_text_font.rs::text21_cm_glyph_names_recover_greek_math`).
+    No code change was needed — the AGL already carries the CM math names — so this
+    is a regression pin, not a fix claim. The 16-file shared-signature cohort
+    (tracemonkey + 15) was not re-measured; `corpus/expect/latex-cm-fonts/verdicts.jsonl`
+    records it `measured: false`.
 - [ ] **SL-3.TEXT.22 — RTL reading order in the tail** · deps: TEXT.04, SHAPE.02 ·
   owner: AI+ · **filed by SL-3.CONF.03 (2026-09-16)**
   - **Do:** the 15 rtl-flagged `diff>=25` files (Arabic/Hebrew visual-vs-logical order risk,
     per the normaliser docs) — verdict each against the noise floor and fix the reading
     order where selis is the deviation.
   - **DoD:** every rtl-flagged tail file carries a verdict; the `rtl` cluster shrinks.
+  - **Status (2026-11-20, partial — cohort open):** logical-order RTL survives extraction
+    (`apps/cli/tests/b1_text_font.rs::text22_rtl_logical_order_is_preserved`, Hebrew
+    `שלום` through Identity-H `/ToUnicode`); and `selis-shape::bidi::reorder_text`
+    recovers logical order from a visual RTL run (unit test
+    `visual_rtl_run_reorders_back_to_logical`). **Not wired into default extraction:**
+    whether a producer emits visual vs logical order cannot be decided locally, and
+    the conformance normaliser deliberately folds no bidi, so applying UAX #9
+    globally could regress LTR/mixed files and needs a corpus + oracle verdict.
+    The 15 rtl-flagged tail files are recorded `measured: false` in
+    `corpus/expect/rtl-reading-order/verdicts.jsonl`.
 - [ ] **SL-3.TEXT.23 — Identity-H/V CID font encoding** · deps: TEXT.02, FONT.07 ·
   owner: AI+ · **filed by SL-3.CONF.03 (2026-09-16)**
   - **Do:** 10 flat files using Identity-H/V CID fonts in the tail (arial_unicode_ab_cidfont,
@@ -1021,12 +1091,26 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
     identity-CID mapping to glyph ids is producing wrong text.
   - **DoD:** the `flat-cid-identity` cluster shrinks; identity-CID fixtures extract at
     `match` or an annotated verdict.
+  - **Status (2026-11-20, mechanism pinned — cohort open):** Identity-H with a
+    `/ToUnicode` `bfchar` table recovers mapped text end-to-end
+    (`apps/cli/tests/b1_text_font.rs::text23_identity_h_tounicode_extracts`, asserts
+    exact `AB`). This is a regression pin — the mapping path already worked at base;
+    no code change claimed. Identity-V vertical writing and the 10-file tail were
+    not re-measured; `corpus/expect/identity-cid/verdicts.jsonl` records them
+    `measured: false`.
 - [ ] **SL-3.TEXT.24 — Type3 font text extraction** · deps: TEXT.02, FONT.06 · owner: AI+ ·
   **filed by SL-3.CONF.03 (2026-09-16)**
   - **Do:** the `type3` cluster (8 flat + the has_type3 10/63 G3 cohort): Type3 fonts'
     glyph-procedure text and `/Encoding` recovery diverge from MuPDF. Verdict the 8 tail
     files; fix the Type3 text path where selis is the deviation.
   - **DoD:** the `type3` cluster shrinks toward the noise floor; Type3 fixtures pinned.
+  - **Status (2026-11-20, mechanism pinned — cohort open):** a synthetic Type3 font with
+    two `/CharProcs` and `/Encoding/Differences` glyph names extracts `AB` through the
+    same simple-font recovery chain
+    (`apps/cli/tests/b1_text_font.rs::text24_type3_encoding_text_extracts`). Regression
+    pin, not a fix claim (the path worked at base). The 8-file tail and glyph-procedure
+    embedded text need corpus + oracle; `corpus/expect/type3-text/verdicts.jsonl`
+    records them `measured: false`.
 - [ ] **SL-3.TEXT.25 — pdf.js long-tail diff≥25 verdict sweep** · deps: TEXT.02, ORACLE.04 ·
   owner: AI · **filed by SL-3.CONF.03 (2026-09-16)**
   - **Do:** the 116 `flat-misc` files (individual pdf.js-corpus cases, sim 0 and partial,
@@ -1166,3 +1250,37 @@ produced **no CMap at all**, so composite-font codes came back as raw CIDs
   re-measured and other causes may remain.
 * **TEXT.17 and all other TEXT.16/18/20-25 items: still open**, verdicts
   documented, no assertions weakened, no silent passing.
+
+### Bucket 1 addendum (2026-11-20) — typed verdict + synthetic mechanism pins
+
+The second local pass added nine cohort verdicts to the same ledger (now 12
+cohorts; `gen_verdict_ledger.py --check` green), all with `measured: false` for
+any corpus-tail membership and explicit provenance. What changed in code, and
+what is genuinely verified locally:
+
+* **TEXT.15 — typed verdict (real fix).** `selis-pdf-text::verdict` defines
+  `ExtractionVerdict` + a `>=5 %` undecodable-glyph classifier; the CLI emits a
+  JSON `"verdict"` field and a distinct partial-divergence marker.
+  `b1_text_font.rs` pins the flagged page, its exact-match neighbour and the
+  fully-silent (TEXT.10) page end-to-end. This is a *local proxy* for the
+  differential tail; the sweep `text_err` wiring still needs the corpus.
+* **TEXT.20 — UCS2 recovery (real fix).** A `Uni…UCS2…` CID page without
+  `/ToUnicode` was relying on an accidental legacy reading; the new typed
+  verdict exposed it as a false `zero_recovery`. `Session::text_unicode` now
+  recovers those codes explicitly (surrogates/nul rejected). Pre/post proved by
+  the same CLI pin failing before the fix.
+* **TEXT.21 / 23 / 24 (regression pins, no bug claim)** and **TEXT.22 (logical
+  RTL preserved + bidi primitive)**: synthetic fixtures verify each mechanism;
+  the cohorts themselves are unmeasured and stay open.
+* **FONT.10 — typed subset-substitution disclosure** (`CjkSubstitutionNote`);
+  the web-half gaps (no production caller, no browser harness, no cache
+  adapter) are unchanged and cannot be closed from this branch.
+* **ROB.06 — containment hardening**: synthetic hostile CMap/SFNT/Type1 inputs
+  terminate with typed deviations, no panic (`selis-font/tests/fuzz_regressions.rs`
+  + a malformed-embedded-font CLI pin). The upstream-upgrade + instrumented-soak
+  DoD still needs overflow-clean releases and CI.
+
+No new dependency was taken, no font payload was embedded, and no budget or
+baseline was edited. SizeCheck deltas are reported in the branch's final
+report. No conformance level is promoted by this addendum: Text-and-fonts stays
+**Parse**.

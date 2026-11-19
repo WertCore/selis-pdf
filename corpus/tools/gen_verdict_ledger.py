@@ -91,6 +91,172 @@ COHORTS = {
         "pattern": ("verapdf/", "6-2-11-3"),
         "pattern_mode": "all",
     },
+    # --- Bucket 1 (2026-11-20) -------------------------------------------------
+    # Every row below is a COHORT verdict. No per-file tail membership is
+    # claimed: corpus/pdfs and the text oracles are absent, so the divergence
+    # tail subset of each cohort cannot be re-derived here. A "measured" flag
+    # is true ONLY where a local read-back test verified a concrete mechanism;
+    # it never means a corpus file was swept.
+    "silent-empty-extraction": {
+        "task": "SL-3.TEXT.10",
+        "tail_documented": 62,
+        "verdict": "OurBug",
+        "signature": "empty_selis (text drawn, nothing recovered)",
+        "provenance": "readback-fix+documented-cluster",
+        "evidence": (
+            "SL-3.TEXT.10: BT/ET state-reset fix + LOW_CONFIDENCE_MARKER landed "
+            "at base; apps/cli/tests/b1_text_font.rs pins the typed marker. "
+            "62-file tail is annotation-AP text (owned by TEXT.14)."
+        ),
+        "note": (
+            "Mechanism verified locally; 62-file membership NOT re-measured "
+            "(corpus + oracles absent). Annotation-AP walk closed at base."
+        ),
+        "pattern": None,
+    },
+    "divergent-no-recovery": {
+        "task": "SL-3.TEXT.15",
+        "tail_documented": 0,
+        "verdict": "OurBug",
+        "signature": "text_err / >5% divergence with zero recovery",
+        "provenance": "readback-fix",
+        "evidence": (
+            "SL-3.TEXT.15: typed ExtractionVerdict + >=5% undecodable signal "
+            "implemented in selis-pdf-text::verdict and wired into the CLI JSON "
+            "verdict field; apps/cli/tests/b1_text_font.rs pins flagged and "
+            "exact-match-neighbour pages."
+        ),
+        "note": (
+            "LOCAL PROXY verified: fraction of drawn glyphs the recovery chain "
+            "could not decode. The literal differential >5% vs an oracle needs "
+            "the corpus + text-sweep; sweep text_err wiring is not yet measured."
+        ),
+        "pattern": None,
+    },
+    "cjk-asian": {
+        "task": "SL-3.TEXT.20",
+        "tail_documented": 23,
+        "verdict": "OurBug",
+        "signature": "diff>=25 / flat-cjk + noembed-cjk-external",
+        "provenance": "readback-mechanism+documented-cluster",
+        "evidence": (
+            "SL-3.TEXT.20: Uni...UCS2... codes recovered explicitly in "
+            "Session::text_unicode (they are Unicode scalars); "
+            "apps/cli/tests/b1_text_font.rs pins UniGB-UCS2-H CJK with and "
+            "without ToUnicode."
+        ),
+        "note": (
+            "Mechanism verified locally on a synthetic Type0 page. The 20 "
+            "flat-cjk + 3 noembed files (KozMin/Ryumin/GBKp/...) were NOT "
+            "re-measured; JIS7/SJIS/EUC-JP predefined CMaps need the corpus."
+        ),
+        "pattern": None,
+    },
+    "latex-cm-fonts": {
+        "task": "SL-3.TEXT.21",
+        "tail_documented": 16,
+        "verdict": "OurBug",
+        "signature": "diff>=25 / latex-cm-fonts (sim 0.70-0.72)",
+        "provenance": "readback-mechanism+documented-cluster",
+        "evidence": (
+            "SL-3.TEXT.21: CM glyph names via /Encoding Differences -> AGL "
+            "recovered; apps/cli/tests/b1_text_font.rs pins alpha/beta/Delta/"
+            "summation -> Greek/math Unicode."
+        ),
+        "note": (
+            "Mechanism verified locally; the 16-file shared-signature cohort "
+            "(tracemonkey + 15) was NOT re-measured against an oracle."
+        ),
+        "pattern": None,
+    },
+    "rtl-reading-order": {
+        "task": "SL-3.TEXT.22",
+        "tail_documented": 15,
+        "verdict": "OurBug",
+        "signature": "diff>=25 / rtl-flagged",
+        "provenance": "readback-mechanism+documented-cluster",
+        "evidence": (
+            "SL-3.TEXT.22: logical-order RTL survives extraction "
+            "(apps/cli/tests/b1_text_font.rs); selis-shape bidi reorder_text "
+            "recovers logical from visual RTL (unit test)."
+        ),
+        "note": (
+            "Visual->logical reorder is NOT wired into default extraction: "
+            "whether a producer emits visual order is not locally decidable "
+            "and the normaliser folds no bidi. The 15 rtl-flagged tail files "
+            "need corpus + oracle verdicts."
+        ),
+        "pattern": None,
+    },
+    "identity-cid": {
+        "task": "SL-3.TEXT.23",
+        "tail_documented": 10,
+        "verdict": "OurBug",
+        "signature": "diff>=25 / flat-cid-identity (sim 0.0)",
+        "provenance": "readback-mechanism+documented-cluster",
+        "evidence": (
+            "SL-3.TEXT.23: Identity-H + /ToUnicode bfchar recovers mapped text "
+            "end-to-end (apps/cli/tests/b1_text_font.rs)."
+        ),
+        "note": (
+            "Identity-H mapping verified locally; Identity-V vertical writes "
+            "and the 10-file tail need corpus + oracle re-measure."
+        ),
+        "pattern": None,
+    },
+    "type3-text": {
+        "task": "SL-3.TEXT.24",
+        "tail_documented": 8,
+        "verdict": "OurBug",
+        "signature": "diff>=25 / type3 (has_type3 10/63 in G3)",
+        "provenance": "readback-mechanism+documented-cluster",
+        "evidence": (
+            "SL-3.TEXT.24: Type3 glyph names via /Encoding recover text "
+            "(apps/cli/tests/b1_text_font.rs pins two /CharProcs)."
+        ),
+        "note": (
+            "Mechanism verified locally; the 8-file tail (and glyph-procedure "
+            "embedded text) need corpus + oracle re-measure."
+        ),
+        "pattern": None,
+    },
+    "cjk-subset-payload": {
+        "task": "SL-3.FONT.10",
+        "tail_documented": 0,
+        "verdict": "OurBug",
+        "signature": "FONT.10 web half: production caller + browser harness",
+        "provenance": "documented-gap",
+        "evidence": (
+            "SL-3.FONT.10: engine lazy-CJK payload/protocol measured at base; "
+            "typed subset-substitution disclosure added "
+            "(selis_font::cjk::CjkSubstitutionNote)."
+        ),
+        "note": (
+            "STILL OPEN: no production caller of LazyPayloadClient, no browser "
+            "harness, no Cache Storage adapter. Web half unbuilt; cannot be "
+            "closed from a branch that does not push."
+        ),
+        "pattern": None,
+    },
+    "font-parser-panic": {
+        "task": "SL-1.ROB.06",
+        "tail_documented": 0,
+        "verdict": "OurBug",
+        "signature": "upstream font-parser overflow-panic containment",
+        "provenance": "readback-test",
+        "evidence": (
+            "SL-1.ROB.06: synthetic hostile bfrange/SFNT/Type1 inputs verified "
+            "to terminate with typed deviations, no panic "
+            "(crates/selis-font/tests/fuzz_regressions.rs, "
+            "apps/cli/tests/b1_text_font.rs)."
+        ),
+        "note": (
+            "Containment verified locally under the fuzz profile. DoD's "
+            "upgrade-drop-backstops + full instrumented Linux soak still needs "
+            "overflow-clean upstream releases and CI; not closable here."
+        ),
+        "pattern": None,
+    },
 }
 
 
@@ -154,7 +320,7 @@ def check() -> None:
             seen_files += 1
     # Only the cohort with a deterministic per-file pattern may carry file rows.
     assert seen_files == 18, f"expected 18 per-file candidate rows, got {seen_files}"
-    print(f"ledger check OK (3 cohorts, {seen_files} per-file candidate rows)")
+    print(f"ledger check OK ({len(COHORTS)} cohorts, {seen_files} per-file candidate rows)")
 
 
 def main() -> None:

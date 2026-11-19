@@ -798,6 +798,20 @@ round-trip property test where the filter is also an encoder, fuzz target, corpu
     so the nightly `fuzz-soak` `-D warnings` gate has to stay green by construction. Verified:
     `cd fuzz && RUSTFLAGS='-D warnings' cargo +nightly check` clean. Design note §9 R19 records
     it; the instrumented Linux campaign leg this was blocking can now run.
+  - **Bucket 1 (2026-11-20, containment re-verified — box stays open):** added
+    synthetic hostile-font inputs generated in-test (no corpus) that exercise the
+    `selis_font::contain` backstop contract: a `beginbfrange` with an overflowed
+    code range, truncated/absurd-count SFNT headers, and truncated Type 1
+    programs, each asserted to terminate with a typed `None`/`Result` and no
+    escaping panic under the fuzz profile
+    (`crates/selis-font/tests/fuzz_regressions.rs`, 6/6 green). A malformed
+    `/FontFile2` embedded in a synthetic PDF also opens, extracts and renders
+    without panic (`apps/cli/tests/b1_text_font.rs::rob06_malformed_embedded_font_is_contained`).
+    Cohort verdict `corpus/expect/font-parser-panic/verdicts.jsonl`. The DoD's
+    *upgrade* half is unchanged: skrifa/read-fonts/swash still ship no
+    overflow-clean release, so the backstops, hook and fixtures all stay. Full
+    instrumented Linux soak + drop-backstops confirmation remains a CI/HUMAN
+    step; not closable from a branch that does not push.
 
 ---
 

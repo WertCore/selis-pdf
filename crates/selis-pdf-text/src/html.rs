@@ -684,6 +684,7 @@ mod tests {
                 bbox: Rect::new(0.0, 0.0, 100.0, 12.0),
             }],
             low_confidence: false,
+            verdict: crate::ExtractionVerdict::Recovered,
         }
     }
 
@@ -872,6 +873,7 @@ mod tests {
                 bbox: Rect::new(0.0, 0.0, 1.0e30, 12.0),
             }],
             low_confidence: false,
+            verdict: crate::ExtractionVerdict::Recovered,
         };
         let model = [page(1, &wild)];
         let document = to_positioned_html(&model, "t").unwrap();

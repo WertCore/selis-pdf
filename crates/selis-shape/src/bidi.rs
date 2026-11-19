@@ -503,6 +503,24 @@ mod tests {
         assert_eq!(reorder_text("ABC", BaseDirection::LeftToRight), "ABC");
     }
 
+    /// SL-3.TEXT.22: a PDF content stream paints glyphs in *visual* order. To
+    /// recover the logical order of an RTL run at extraction time, apply the
+    /// same UAX #9 reorder to the visually-ordered string — for a pure RTL run
+    /// it is an involution. Direction detection is first-strong, so this is
+    /// only safe on a run already known to be RTL (a mixed-direction line needs
+    /// the per-run levels from [`visual_runs`]). Kept here as the reusable
+    /// primitive; wiring it into the default extraction path is a cohort
+    /// decision that needs the corpus + oracle (see the TEXT.22 verdict).
+    #[test]
+    fn visual_rtl_run_reorders_back_to_logical() {
+        let visual = "םולש"; // Hebrew "שלום" painted right-to-left on the page
+        assert_eq!(paragraph_direction(visual), BaseDirection::RightToLeft);
+        // Applying the reorder to the visual string returns the logical one.
+        assert_eq!(reorder_text(visual, BaseDirection::RightToLeft), "שלום");
+        // A second application returns the visual form (involution).
+        assert_eq!(reorder_text("שלום", BaseDirection::RightToLeft), visual);
+    }
+
     #[test]
     fn visual_runs_are_reversed_for_rtl() {
         let runs = visual_runs("ابج", BaseDirection::RightToLeft);

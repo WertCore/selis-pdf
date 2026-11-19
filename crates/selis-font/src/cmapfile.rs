@@ -131,6 +131,20 @@ impl CMap {
     }
 }
 
+/// Whether a CMap name is one of the predefined `Uni…UCS2…` CMaps whose
+/// 2-byte character codes **are** UCS-2 (Unicode) scalars
+/// (ISO 32000-1 §9.7.5.2, Adobe `UniGB-UCS2-H`, `UniJIS-UCS2-V`, …).
+///
+/// This is the region where a composite font with no `/ToUnicode` can still
+/// recover its characters: the code *is* the Unicode scalar, so text recovery
+/// (SL-3.TEXT.20) must not treat it as an opaque CID. The companion
+/// `Uni…UTF16…` CMaps are deliberately excluded — their codes are UTF-16 code
+/// units and can address supplementary planes, which a `u16` code cannot carry.
+#[must_use]
+pub fn is_ucs2_cmap_name(name: &str) -> bool {
+    name.starts_with("Uni") && name.contains("UCS2")
+}
+
 /// A CMap numeric value as a `u32`, clamping negatives and truncating
 /// fractions (CMap numbers are non-negative integers in practice).
 fn num_to_u32(v: f64) -> u32 {
@@ -504,6 +518,26 @@ mod tests {
 
     fn guard() -> BudgetGuard<'static> {
         Budget::unlimited().guard()
+    }
+
+    /// SL-3.TEXT.20: the predefined UCS2 CMaps are the ones whose codes are
+    /// Unicode scalars. UTF16 CMaps are a different shape (surrogate pairs)
+    /// and must not be mistaken for them.
+    #[test]
+    fn ucs2_cmap_name_recognition() {
+        for name in [
+            "UniGB-UCS2-H",
+            "UniGB-UCS2-V",
+            "UniJIS-UCS2-H",
+            "UniJIS-UCS2-V",
+            "UniCNS-UCS2-H",
+            "UniKS-UCS2-V",
+        ] {
+            assert!(is_ucs2_cmap_name(name), "{name}");
+        }
+        for name in ["UniGB-UTF16-H", "Identity-H", "Identity-V", "90ms-RKSJ-H"] {
+            assert!(!is_ucs2_cmap_name(name), "{name}");
+        }
     }
 
     #[test]
