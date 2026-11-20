@@ -2490,6 +2490,7 @@ dependencies = [
  "selis-bytes",
  "selis-crypto",
  "selis-error",
+ "selis-image",
  "selis-pdf-cos",
  "selis-pdf-engine",
  "selis-sandbox",

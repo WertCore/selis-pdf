@@ -438,7 +438,9 @@ mod tests {
     #[test]
     fn to_text_with_verdict_emits_the_distinct_marker() {
         let texts = vec!["T".to_string()];
-        let lines: Vec<TextLine> = Vec::new();
+        // `to_text_with_verdict` pairs each line text with its `TextLine`, so a
+        // matching line is required for the "T" to survive to the output.
+        let lines = vec![line_at(vec![glyph(0x54, "Helvetica", 12.0)])];
         let out = to_text_with_verdict(
             &lines,
             &texts,
