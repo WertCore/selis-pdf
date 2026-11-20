@@ -58,9 +58,13 @@ pub(crate) fn stamp(
 ///
 /// # Errors
 ///
-/// [`CliError`] when a key or certificate file cannot be read, when `--rect`
-/// or `--time` is malformed, or when the signature is refused for any of the
-/// typed reasons `selis_pdf_tools::sign_pdf` reports.
+/// [`CliError`] when a key, certificate or `--logo` file cannot be read, when
+/// the logo is not a PNG/JPEG the engine can decode, when `--rect` or `--time`
+/// is malformed, or when the signature is refused for any of the typed reasons
+/// `selis_pdf_tools::sign_pdf` reports.
+// The CLI command is a flat CLAP surface; grouping 17 options behind an options
+// struct would only move the argument count to the struct literal.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn sign(
     path: &str,
     output: &str,
@@ -73,6 +77,7 @@ pub(crate) fn sign(
     reason: Option<&str>,
     location: Option<&str>,
     time: Option<&str>,
+    logo_path: Option<&str>,
     connect_tsa: bool,
     tsa_url: Option<&str>,
     tsa_anchors: &[String],
@@ -97,6 +102,21 @@ pub(crate) fn sign(
         Some(time) => time.to_string(),
         None => now_stamp(),
     };
+    // SL-5.SIGN.07: PNG/JPEG decoding happens in the native binding layer's
+    // engine call; the key and the logo never leave this process. A malformed
+    // logo is a typed refusal before anything is written.
+    let logo = match logo_path {
+        Some(logo_path) => {
+            let bytes = crate::read_file(logo_path)?;
+            let budget = selis_sandbox::Budget::unlimited();
+            let mut g = budget.guard();
+            Some(
+                selis_pdf_sign::SignatureLogo::from_encoded(&bytes, &mut g)
+                    .map_err(|e| CliError(format!("{logo_path}: {e}")))?,
+            )
+        }
+        None => None,
+    };
     let options = selis_pdf_tools::DigitalOptions {
         page,
         rect: parse_rect(rect)?,
@@ -107,7 +127,7 @@ pub(crate) fn sign(
         signing_time,
         key_pem,
         certificates_pem,
-        logo: None,
+        logo,
         strokes: Vec::new(),
     };
     let verification = selis_pdf_tools::sign_pdf(path, &options, output).map_err(CliError::from)?;

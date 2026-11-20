@@ -187,6 +187,35 @@ fn dict_has(dict: &Dict, key: &[u8]) -> bool {
     dict.iter().any(|(name, _)| name.as_slice() == key)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_decoded_png_logo_survives_detached_signing_and_ap_read_back() {
+    let budget = budget();
+    let mut g = budget.guard();
+    let image = selis_image::Image {
+        width: 2,
+        height: 2,
+        rgba: vec![
+            255, 0, 0, 255, 0, 0, 255, 255, 0, 255, 0, 255, 255, 255, 0, 255,
+        ],
+    };
+    let png = selis_image::encode_png(&image, 6, &mut g).expect("encode png");
+    let logo = SignatureLogo::from_encoded(&png, &mut g).expect("decode png");
+    let src = synthetic_pdf();
+    let (out, report) = sign_digital(&src, &options(Some(logo)), &budget, &mut budget.guard())
+        .expect("sign with a decoded logo");
+
+    assert!(out.starts_with(&src));
+    assert!(report.verified && report.has_logo);
+    let image = streams(&out)
+        .into_iter()
+        .find(|(dict, _)| subtype(dict) == Some(b"Image"))
+        .expect("logo XObject");
+    // Alpha was dropped on decode, so the embedded bytes are exactly the raw
+    // RGB logo the previous test supplies by hand.
+    assert_eq!(image.1, test_logo().rgb);
+}
+
 #[test]
 fn missing_logo_bytes_are_a_typed_refusal_before_any_write() {
     let src = synthetic_pdf();

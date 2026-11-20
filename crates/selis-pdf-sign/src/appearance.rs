@@ -13,9 +13,10 @@
 //! * the appearance is **decorative**. It never changes the detached CMS byte
 //!   range, and the signature is still verified by the existing read-back in
 //!   [`crate::digital::sign_digital`] — this module cannot weaken that check;
-//! * a logo with **missing bytes** is a typed refusal, never a fetch. The
-//!   engine has no network and no filesystem; the caller must hand over the
-//!   pixels (ADR-P0017/P0021);
+//! * a logo with **missing or undecodable bytes** is a typed refusal, never a
+//!   fetch. The engine has no network and no filesystem; the caller hands over
+//!   either raw RGB pixels or (native builds) PNG/JPEG file bytes, which are
+//!   decoded here by the workspace's pure-Rust image decoder (ADR-P0017/P0021);
 //! * non-finite or oversized geometry is refused with a typed error before a
 //!   single byte is written;
 //! * the produced appearance stream is read back byte-for-byte from the
@@ -23,6 +24,7 @@
 
 use selis_bytes::Bytes;
 use selis_pdf_cos::Obj;
+#[cfg(not(target_arch = "wasm32"))]
 use selis_sandbox::{Budget, BudgetGuard};
 
 use crate::visual::{content_stream, VisualLine, VisualOptions, VisualStroke};
@@ -44,8 +46,9 @@ const MAX_LOGO_BYTES: usize = 16 * 1024 * 1024;
 /// Horizontal/vertical padding for a logo laid into the widget box.
 const LOGO_INSET: f64 = 3.0;
 
-/// A caller-supplied logo. All pixels are handed over by the caller; no
-/// decoder, file read or URL fetch happens in the engine (SL-5.SIGN.07).
+/// A caller-supplied logo. Pixels (or, on native builds, PNG/JPEG file bytes
+/// passed to [`Self::from_encoded`]) are handed over by the caller; there is no
+/// file read or URL fetch in the engine (SL-5.SIGN.07).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 pub struct SignatureLogo {
     /// Image width in pixels. Must be in `1..=4096`.
@@ -62,6 +65,71 @@ impl SignatureLogo {
     #[must_use]
     pub fn new(width: u32, height: u32, rgb: Vec<u8>) -> Self {
         Self { width, height, rgb }
+    }
+
+    /// Decode a standalone PNG or JPEG file into an 8-bit RGB logo.
+    ///
+    /// Bytes are supplied by the caller: nothing here reads a file or opens a
+    /// socket. Decoding goes through the workspace's pure-Rust
+    /// [`selis_image`] decoder (PNG: bit depth 8, grey/RGB/palette/grey+alpha/
+    /// RGBA, non-interlaced; JPEG: baseline/progressive grey/RGB/CMYK). The
+    /// decoded RGBA samples are flattened to RGB by **dropping alpha** — there
+    /// is no soft mask in this build, so a transparent pixel keeps its colour
+    /// but not its opacity.
+    ///
+    /// # Errors
+    ///
+    /// * [`SignError::Invalid`] when the bytes are not a PNG/JPEG this decoder
+    ///   understands, are empty, or decode to an image the appearance writer
+    ///   would refuse (zero size or a wrong pixel count);
+    /// * [`SignError::Limit`] when the encoded payload or decoded dimensions
+    ///   exceed this build's logo caps.
+    ///
+    /// # Budget
+    ///
+    /// The caller's [`BudgetGuard`] pays for the decoded pixel buffer and the
+    /// pixel count, exactly as it does for every other image decode in the
+    /// engine.
+    ///
+    /// This constructor is native-only: the sign WASM chunk is <1 KB under its
+    /// 2% regression gate, and linking the decoder there would breach it. The
+    /// raw-RGB constructor works on every target; a WASM caller can still
+    /// decode in the page (the browser's own codec) and hand over pixels.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn from_encoded(data: &[u8], g: &mut BudgetGuard<'_>) -> Result<Self, SignError> {
+        if data.is_empty() {
+            return Err(invalid(
+                "the logo has no image bytes; the caller must supply them",
+            ));
+        }
+        if data.len() > MAX_LOGO_BYTES {
+            return Err(SignError::Limit(format!(
+                "the encoded logo exceeds {MAX_LOGO_BYTES} bytes"
+            )));
+        }
+        let image = selis_image::decode(data, g).map_err(|e| {
+            invalid(format!(
+                "the logo is not a PNG or JPEG this build can decode: {e}"
+            ))
+        })?;
+        let pixels = u64::from(image.width).saturating_mul(u64::from(image.height));
+        if pixels > MAX_LOGO_PIXELS {
+            return Err(SignError::Limit(format!(
+                "the decoded logo has more than {MAX_LOGO_PIXELS} pixels"
+            )));
+        }
+        if image.rgba.len() != (pixels as usize).saturating_mul(4) {
+            return Err(invalid(
+                "the decoded logo does not carry four samples per pixel",
+            ));
+        }
+        let mut rgb = Vec::with_capacity((pixels as usize).saturating_mul(3));
+        for sample in image.rgba.chunks_exact(4) {
+            rgb.extend_from_slice(&sample[..3]);
+        }
+        let logo = Self::new(image.width, image.height, rgb);
+        logo.validate()?;
+        Ok(logo)
     }
 
     /// Check dimensions and payload lengths. A missing or short pixel buffer
@@ -519,6 +587,86 @@ mod tests {
         assert!(
             build_signature_appearance(page(), [0.0, 0.0, 0.0, 0.0], &template(), &[]).is_err()
         );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_png_logo_decodes_to_exact_rgb_pixels() {
+        let budget = Budget::unlimited();
+        let mut g = budget.guard();
+        let image = selis_image::Image {
+            width: 2,
+            height: 2,
+            rgba: vec![
+                255, 0, 0, 255, 0, 0, 255, 255, 0, 255, 0, 255, 255, 255, 0, 255,
+            ],
+        };
+        let png = selis_image::encode_png(&image, 6, &mut g).expect("encode png");
+        let logo = SignatureLogo::from_encoded(&png, &mut g).expect("decode png");
+        assert_eq!(logo.width, 2);
+        assert_eq!(logo.height, 2);
+        assert_eq!(logo.rgb.len(), 12);
+        for (source, decoded) in image.rgba.chunks_exact(4).zip(logo.rgb.chunks_exact(3)) {
+            assert_eq!(&source[..3], decoded);
+        }
+        let assets = build_signature_appearance(
+            page(),
+            [0.0, 0.0, 248.0, 90.0],
+            &template().with_logo(logo),
+            &[],
+        )
+        .expect("appearance with a decoded logo");
+        assert!(assets.has_logo);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_jpeg_logo_decodes_to_opaque_rgb_pixels() {
+        let budget = Budget::unlimited();
+        let mut g = budget.guard();
+        let image = selis_image::Image {
+            width: 4,
+            height: 4,
+            rgba: (0..16)
+                .flat_map(|i| [i * 16, 255 - i * 16, 128, 255])
+                .collect(),
+        };
+        let jpeg = selis_image::encode_jpeg(&image, 95, &mut g).expect("encode jpeg");
+        let logo = SignatureLogo::from_encoded(&jpeg, &mut g).expect("decode jpeg");
+        assert_eq!((logo.width, logo.height), (4, 4));
+        assert_eq!(logo.rgb.len(), 48);
+        // JPEG is lossy: demand the same approximate fidelity the codec's own
+        // round-trip test demands, and prove the alpha channel was dropped.
+        for (source, decoded) in image.rgba.chunks_exact(4).zip(logo.rgb.chunks_exact(3)) {
+            for channel in 0..3 {
+                assert!(
+                    i32::from(source[channel]).abs_diff(i32::from(decoded[channel])) <= 6,
+                    "channel {channel}: {} vs {}",
+                    source[channel],
+                    decoded[channel]
+                );
+            }
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn undecodable_or_oversized_logo_bytes_are_typed_refusals() {
+        let budget = Budget::unlimited();
+        let mut g = budget.guard();
+        assert!(matches!(
+            SignatureLogo::from_encoded(b"not an image", &mut g),
+            Err(SignError::Invalid(_))
+        ));
+        assert!(matches!(
+            SignatureLogo::from_encoded(&[], &mut g),
+            Err(SignError::Invalid(_))
+        ));
+        let huge = vec![0; MAX_LOGO_BYTES + 1];
+        assert!(matches!(
+            SignatureLogo::from_encoded(&huge, &mut g),
+            Err(SignError::Limit(_))
+        ));
     }
 
     #[test]
