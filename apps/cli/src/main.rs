@@ -584,6 +584,16 @@ enum Command {
         /// auto-run. Equivalent to the `SELIS_ALLOW_JS=1` environment flag.
         #[arg(long)]
         allow_js: bool,
+        /// Explicitly decline scripting for this document. Absolute: an
+        /// administrator --script-policy allow-list never overrides it
+        /// (SL-5.JS.03).
+        #[arg(long)]
+        deny_js: bool,
+        /// Administrator-supplied origin allow-list file. Each non-blank line
+        /// is `origin <value>` or `id <value>`; `#` starts a comment. An empty
+        /// file denies all. Never overrides --deny-js (SL-5.JS.03).
+        #[arg(long, value_name = "FILE")]
+        script_policy: Option<String>,
         /// Emit the verification object as JSON on stdout (SL-1A.UI.02).
         #[arg(long)]
         json: bool,
@@ -1373,10 +1383,22 @@ fn run() {
             output,
             set,
             allow_js,
+            deny_js,
+            script_policy,
             json,
         } => {
             let allow = allow_js || std::env::var_os("SELIS_ALLOW_JS").is_some();
-            finish(forms::fill(&path, &set, &output, allow), json)
+            finish(
+                forms::fill(
+                    &path,
+                    &set,
+                    &output,
+                    allow,
+                    deny_js,
+                    script_policy.as_deref(),
+                ),
+                json,
+            )
         }
         Command::Stamp {
             path,

@@ -5,6 +5,11 @@
 //! * a **visual stamp** ([`sign_visual`]) — typed text and freehand strokes
 //!   appended to one page's content as an incremental revision, so nothing
 //!   already in the file is rewritten;
+//! * a **typed signature appearance** ([`appearance::build_signature_appearance`])
+//!   — a signer name/reason/location/date template plus an optional
+//!   caller-supplied logo rendered into the signature widget's `/AP /N`
+//!   (SL-5.SIGN.07). It shares the visual renderer and never touches the CMS
+//!   byte range;
 //! * a **detached CMS signature** ([`sign_digital`]) — a signature field and
 //!   widget whose `/V` carries an `adbe.pkcs7.detached` blob over the file's
 //!   own `/ByteRange`, with the visible block as its appearance;
@@ -65,6 +70,7 @@ use selis_pdf_cos::obj::{Obj, Ref};
 use selis_pdf_cos::Doc;
 use selis_sandbox::{Budget, BudgetGuard};
 
+pub mod appearance;
 pub mod certification;
 pub mod digital;
 pub mod dss;
@@ -79,6 +85,9 @@ pub mod p12;
 #[cfg(test)]
 mod tests;
 
+pub use appearance::{
+    build_signature_appearance, AppearanceAssets, AppearanceTemplate, SignatureLogo, LOGO_RESOURCE,
+};
 pub use certification::{
     sign_certification, CertificationOptions, CertificationReport, DocMdpLevel,
 };
@@ -212,11 +221,17 @@ pub(crate) fn resolve(
 }
 
 /// A page the walk found: its object reference and geometry.
+///
+/// Public so a host can build a typed signature appearance
+/// ([`appearance::build_signature_appearance`]) for a page it has already
+/// located; the engine itself never opens a file to obtain one.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Page {
+pub struct Page {
+    /// The page object's indirect reference.
     pub reference: Ref,
-    /// Unrotated media-box size in points.
+    /// Unrotated media-box size in points (width).
     pub width: f64,
+    /// Unrotated media-box size in points (height).
     pub height: f64,
     /// Normalized `/Rotate` (0, 90, 180, 270).
     pub rotation: i64,

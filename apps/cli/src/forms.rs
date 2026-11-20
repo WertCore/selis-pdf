@@ -18,11 +18,21 @@
 //! that explicit grant does the form-fill path call
 //! [`selis_pdf_js::JsSandbox::run_authorized`], which re-checks the consent
 //! gate before the interpreter is touched. A script can never auto-run.
+//!
+//! # Administrator pre-approval (SL-5.JS.03)
+//!
+//! An administrator may supply an explicit, scoped allow-list with
+//! `--script-policy <FILE>` (or `SELIS_SCRIPT_POLICY=<FILE>`). Each line is
+//! `origin <value>` or `id <value>`; a malformed file is a typed refusal and
+//! enables nothing. The list may only narrow when a prompt/grant is needed for
+//! an explicitly named origin or id — it is **never** a silent override of a
+//! reader's `--deny-js` decline, which is checked first by the policy gate.
 
 use selis_pdf_form::{FormField, ScriptManifest};
 use selis_pdf_js::{EventKind, Field, JsBudget, JsRequest, JsSandbox};
 use selis_policy::{
-    ApprovedOrigins, ConsentPolicy, ConsentScope, DocumentIdentity, ScriptAuthorization,
+    ApprovedOrigins, ConsentPolicy, ConsentScope, DocumentIdentity, PolicyParseError,
+    ScriptAuthorization, ScriptPolicy,
 };
 
 use crate::{CliError, CliResult};
@@ -38,8 +48,42 @@ fn consent_required(path: &str) -> CliError {
         "{path}: this form contains JavaScript actions (/JS, /AA, /CO). \
          Selis never runs form scripts without consent. Grant one-time consent \
          with `--allow-js` (or set `SELIS_ALLOW_JS=1`) to evaluate its /CO \
-         calculations; no file was written."
+         calculations. An administrator may pre-approve this exact document id \
+         with `--script-policy <FILE>`; that never overrides --deny-js; \
+         no file was written."
     ))
+}
+
+/// Load the administrator's explicit scripting allow-list.
+///
+/// The engine crates never touch the filesystem; this is the shell boundary,
+/// where a configured file path is read and handed to the typed parser as
+/// text. A malformed file is a typed refusal (no entry from it is applied).
+fn load_admin_policy(path: Option<&str>) -> CliResult<(ScriptPolicy, String)> {
+    let path = path
+        .map(str::to_string)
+        .or_else(|| std::env::var("SELIS_SCRIPT_POLICY").ok());
+    let Some(path) = path else {
+        return Ok((ScriptPolicy::new(), "no policy supplied".to_string()));
+    };
+    let text = std::fs::read_to_string(&path).map_err(|e| {
+        CliError(format!(
+            "cannot read administrator scripting policy {path}: {e}; no scripts were enabled"
+        ))
+    })?;
+    let policy = parse_admin_policy(&text, &path)?;
+    Ok((policy, path))
+}
+
+/// Parse administrator policy text into the typed allow-list.
+fn parse_admin_policy(text: &str, source: &str) -> CliResult<ScriptPolicy> {
+    ScriptPolicy::parse(text).map_err(|e: PolicyParseError| {
+        CliError(format!(
+            "administrator scripting policy {source} is malformed ({}, {}): {e}; no scripts were enabled",
+            e.code().name(),
+            e
+        ))
+    })
 }
 
 /// `selis form-fields <path> [--output file]`
@@ -69,7 +113,9 @@ pub(crate) fn list(path: &str, output: Option<&str>) -> CliResult<()> {
 /// grant and every [`JsSandbox::run_authorized`] call returns
 /// `JS_CONSENT_REQUIRED` before touching the interpreter — defence in depth
 /// behind [`consent_required`]. When true the grant is recorded for exactly
-/// this document id, so a second document never inherits it.
+/// this document id, so a second document never inherits it. `deny_js` is the
+/// explicit reader refusal: it outranks both the grant and the admin list.
+/// `origins` is the administrator's parsed allow-list (empty by default).
 ///
 /// Returns the computed `(field, value)` pairs in `/CO` order.
 ///
@@ -94,28 +140,48 @@ fn evaluate_calculations(
     manifest: &ScriptManifest,
     fields: &[FormField],
     allow_js: bool,
+    deny_js: bool,
+    origins: &ApprovedOrigins,
     doc_id: &str,
+    policy_source: &str,
 ) -> CliResult<Vec<(String, String)>> {
     if manifest.calculations.is_empty() {
         return Ok(Vec::new());
     }
 
-    // The gate is rebuilt per call with an empty admin list. Only the reader's
-    // explicit `allow_js` grant can open it; no origin is ever pre-approved by
-    // the CLI. Consent is keyed on this document id alone (per-document scope).
-    let origins = ApprovedOrigins::new();
+    // The gate is rebuilt per call. Consent/decline is keyed on this document
+    // id alone (per-document scope); the admin list is the explicit, scoped
+    // exception. A decline is recorded first and outranks every other grant.
     let doc = DocumentIdentity::new(doc_id.to_string(), "local");
     let mut consent = ConsentPolicy::new();
-    if allow_js {
+    if deny_js {
+        consent.decline(&doc);
+    } else if allow_js {
         consent.grant(&doc, ConsentScope::Session);
     }
-    let gate = ScriptAuthorization::new(&consent, &origins);
+    let gate = ScriptAuthorization::new(&consent, origins);
 
     // Defense in depth: the gate denies before any interpreter work even if a
-    // future caller forgets the CLI's earlier `consent_required` refusal. The
-    // interactive shell never reaches this point without `allow_js`.
-    gate.authorize(&doc)
-        .map_err(|e| CliError(format!("form script refused: {e}")))?;
+    // future caller forgets the CLI's earlier refusal. The reader's decline is
+    // checked first by the gate, so an admin entry cannot silently re-enable it.
+    gate.authorize(&doc).map_err(|e| {
+        CliError(format!(
+            "form script refused ({}, {}): {e}",
+            e.code().name(),
+            e
+        ))
+    })?;
+
+    // Audit line: when the admin allow-list (not an explicit grant) is what
+    // opened the gate, say exactly which entry did it. This is printed to stderr
+    // before any interpreter work; a reader decline is impossible here because
+    // `authorize` refused it above.
+    if !allow_js && origins.is_approved(&doc) {
+        eprintln!(
+            "selis: {doc_id}: scripting enabled by explicit administrator policy from \
+             {policy_source} (a reader --deny-js decline always takes precedence)"
+        );
+    }
 
     let mut sandbox = JsSandbox::new().map_err(|e| CliError(format!("js runtime: {e}")))?;
     let budget = JsBudget::conservative();
@@ -180,6 +246,8 @@ pub(crate) fn fill(
     sets: &[String],
     output: &str,
     allow_js: bool,
+    deny_js: bool,
+    script_policy: Option<&str>,
 ) -> CliResult<crate::verify_report::Verification> {
     let mut fields = Vec::with_capacity(sets.len());
     for item in sets {
@@ -201,11 +269,29 @@ pub(crate) fn fill(
         });
     }
 
+    // Load the administrator's explicit allow-list before any decision. A
+    // malformed file is a typed refusal and enables nothing.
+    let (policy, policy_source) = load_admin_policy(script_policy)?;
+    let origins = policy.origins();
+
     // Read the field list first: it carries the typed script manifest the
     // consent decision is made on (no PDF text is scraped or interpreted here).
     let report = selis_pdf_tools::form_fields(path).map_err(CliError::from)?;
-    if report.has_scripts && !allow_js {
-        return Err(consent_required(path));
+    // Per-document identity: a grant or decline for this file never applies to
+    // another. The admin list can name this exact id or its (local) origin.
+    let doc_id = format!("file:{path}");
+    let doc = DocumentIdentity::new(doc_id.clone(), "local".to_string());
+
+    if report.has_scripts {
+        if deny_js {
+            return Err(CliError(format!(
+                "{path}: scripting was explicitly declined for this document (--deny-js); \
+                 an administrator allow-list never overrides a reader decline. No file was written."
+            )));
+        }
+        if !allow_js && !origins.is_approved(&doc) {
+            return Err(consent_required(path));
+        }
     }
 
     if report.has_scripts {
@@ -213,9 +299,15 @@ pub(crate) fn fill(
             has_scripts: report.has_scripts,
             calculations: report.calculations.clone(),
         };
-        // Per-document identity: a grant for this file never applies to another.
-        let doc_id = format!("file:{path}");
-        let computed = evaluate_calculations(&manifest, &report.fields, allow_js, &doc_id)?;
+        let computed = evaluate_calculations(
+            &manifest,
+            &report.fields,
+            allow_js,
+            deny_js,
+            origins,
+            &doc_id,
+            &policy_source,
+        )?;
         for (name, value) in computed {
             // Merge a calculated value into the fill. An existing --set wins
             // as the field's source of truth only when the script did not
@@ -254,6 +346,10 @@ mod tests {
     use selis_error::Code;
     use selis_pdf_form::CalcScript;
 
+    fn no_origins() -> ApprovedOrigins {
+        ApprovedOrigins::new()
+    }
+
     fn manifest_with(script: &str) -> ScriptManifest {
         ScriptManifest {
             has_scripts: true,
@@ -290,7 +386,10 @@ mod tests {
             &manifest_with("event.value = 'RAN';"),
             &form_fields(),
             false,
+            false,
+            &no_origins(),
             "file:scripted.pdf",
+            "no policy supplied",
         )
         .expect_err("default deny");
         assert!(err.0.contains("consent"), "{}", err.0);
@@ -311,7 +410,10 @@ mod tests {
             ),
             &form_fields(),
             true,
+            false,
+            &no_origins(),
             "file:scripted.pdf",
+            "no policy supplied",
         )
         .expect("consented run");
         assert!(computed.contains(&("Total".to_string(), "200".to_string())));
@@ -336,5 +438,68 @@ mod tests {
                 .code(),
             Code::JsConsentRequired
         );
+    }
+
+    /// SL-5.JS.03: an admin allow-list permits exactly the named document id
+    /// (or origin) and nothing else, even without `--allow-js`.
+    #[test]
+    fn admin_policy_permits_only_the_exact_scoped_document() {
+        let manifest = manifest_with("event.value = 'ADMIN';");
+        let policy =
+            parse_admin_policy("id file:scripted.pdf\n", "policy.txt").expect("valid admin policy");
+        let computed = evaluate_calculations(
+            &manifest,
+            &form_fields(),
+            false,
+            false,
+            policy.origins(),
+            "file:scripted.pdf",
+            "policy.txt",
+        )
+        .expect("admin pre-approved run");
+        assert!(computed.contains(&("Total".to_string(), "ADMIN".to_string())));
+
+        // A different document id is not covered by the exact-id entry.
+        let err = evaluate_calculations(
+            &manifest,
+            &form_fields(),
+            false,
+            false,
+            policy.origins(),
+            "file:other.pdf",
+            "policy.txt",
+        )
+        .expect_err("other document not approved");
+        assert!(err.0.contains(Code::JsConsentRequired.name()));
+    }
+
+    /// The load-bearing invariant: `--deny-js` (the CLI's "No") is absolute.
+    #[test]
+    fn a_reader_decline_is_never_overridden_by_admin_policy() {
+        let manifest = manifest_with("event.value = 'RAN';");
+        let policy = parse_admin_policy("origin local\nid file:scripted.pdf\n", "policy.txt")
+            .expect("valid admin policy");
+        let err = evaluate_calculations(
+            &manifest,
+            &form_fields(),
+            true, // even a simultaneous --allow-js grant must lose
+            true, // --deny-js
+            policy.origins(),
+            "file:scripted.pdf",
+            "policy.txt",
+        )
+        .expect_err("decline wins");
+        assert!(err.0.contains(Code::JsDeclined.name()), "{}", err.0);
+    }
+
+    /// A malformed admin policy is a typed refusal, not a skipped line that
+    /// might accidentally approve a document.
+    #[test]
+    fn malformed_admin_policy_is_a_typed_refusal() {
+        let err = parse_admin_policy("allow everything\n", "policy.txt")
+            .expect_err("malformed policy refused");
+        assert!(err.0.contains(Code::JsPolicyMalformed.name()), "{}", err.0);
+        assert!(err.0.contains("policy.txt"));
+        assert!(err.0.contains("no scripts were enabled"));
     }
 }

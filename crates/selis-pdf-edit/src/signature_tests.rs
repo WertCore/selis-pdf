@@ -105,6 +105,8 @@ fn digital_options() -> DigitalOptions {
         signing_time: SIGNING_TIME.to_string(),
         key_pem: LEAF_KEY.to_string(),
         certificates_pem: vec![LEAF.to_string(), ROOT.to_string()],
+        logo: None,
+        strokes: Vec::new(),
     }
 }
 

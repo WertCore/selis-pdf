@@ -731,6 +731,31 @@ user_msg = "This document's form script tried to use an action Selis does not al
 retryable = false
 doc_state = "Loaded"
 
+# SL-5.JS.03: an explicit reader decline is absolute. An admin allow-list entry
+# may narrow when a prompt is needed, but it can never re-enable a document the
+# reader said "No" to. This is a distinct code so an audit can tell the two
+# refusals apart (ADR-P0020).
+[[code]]
+id = 4305
+name = "JS_DECLINED"
+kind = "Policy"
+meaning = "A document's scripts were refused because the reader explicitly declined scripting for this document; an admin origin allow-list cannot override that decline."
+user_msg = "Scripts stay off for this document because you declined them."
+retryable = false
+doc_state = "Unchanged"
+
+# SL-5.JS.03: the administrator-supplied origin allow-list is parsed strictly.
+# A malformed entry is a typed refusal of the policy, not a silent skip that
+# could approve a document the admin never named.
+[[code]]
+id = 4306
+name = "JS_POLICY_MALFORMED"
+kind = "Invalid"
+meaning = "The administrator-supplied scripting origin policy was malformed and no entry from it was applied."
+user_msg = "The administrator scripting policy could not be read; no scripts were enabled."
+retryable = false
+doc_state = "Unchanged"
+
 # ---------------------------------------------------------------------------
 # 5000–5299 — I/O and sources
 # ---------------------------------------------------------------------------

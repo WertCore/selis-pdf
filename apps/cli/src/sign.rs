@@ -107,6 +107,8 @@ pub(crate) fn sign(
         signing_time,
         key_pem,
         certificates_pem,
+        logo: None,
+        strokes: Vec::new(),
     };
     let verification = selis_pdf_tools::sign_pdf(path, &options, output).map_err(CliError::from)?;
 

@@ -217,6 +217,32 @@ fn admin_origin_can_preapprove_auto_run() {
     assert_eq!(outcome.event_value.as_deref(), Some("AUTO"));
 }
 
+/// SL-5.JS.03: an explicit reader decline is absolute. Even an admin
+/// allow-list that covers this exact origin and id cannot re-enable the
+/// document, and the interpreter is never reached.
+#[test]
+fn a_reader_decline_is_never_overridden_by_admin_approval() {
+    let mut sandbox = sandbox();
+    let doc = DocumentIdentity::new("tax-form-2026", "https://forms.example");
+    let mut consent = ConsentPolicy::new();
+    consent.grant(&doc, ConsentScope::Session);
+    consent.decline(&doc);
+    let mut origins = ApprovedOrigins::new();
+    origins.approve_origin("https://forms.example");
+    origins.approve_document("tax-form-2026");
+    let gate = ScriptAuthorization::new(&consent, &origins);
+
+    let denied = sandbox
+        .run_authorized(
+            calc("event.value = 'RAN';"),
+            JsBudget::conservative(),
+            &gate,
+            &doc,
+        )
+        .expect_err("decline is absolute");
+    assert_eq!(denied.code(), Code::JsDeclined);
+}
+
 /// (e) A malicious-script corpus is contained: every sample either is refused
 /// before evaluation or is interrupted/contained by the engine. None escapes.
 #[test]

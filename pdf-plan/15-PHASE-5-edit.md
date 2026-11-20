@@ -409,6 +409,30 @@ Normative spec: `23-EDIT-MODEL-SPEC.md`. Read it before any task here.
     and document ids, empty = deny-all, with approve/revoke and `is_approved`. Combined in
     `ScriptAuthorization::authorize` / `authorizeScripting` as the explicit ADR-P0020 exception to
     reader consent. Default-deny, origin and per-id approval, and gate behaviour are tested.
+  - **Done (this slice — explicit, scoped, auditable, decline-proof):** `selis-policy::ScriptPolicy`
+    parses an administrator-supplied allow-list from caller-provided text (no file/network I/O in
+    the engine): only `origin <value>` / `id <value>` lines are accepted; blank lines and `#`
+    comments are ignored, and any other shape is a typed `JsPolicyMalformed` refusal (new registry
+    code 4306) that enables nothing. `ConsentPolicy` now records explicit reader declines with
+    `decline` / `is_declined` / `undecline`; `ScriptAuthorization::authorize` checks the decline
+    FIRST and returns the new typed `JsDeclined` (4305), so an admin allow-list can never silently
+    re-enable a document the reader said "No" to. Native CLI `fill-forms` gains `--script-policy
+    <FILE>` (or `SELIS_SCRIPT_POLICY`) and `--deny-js`: a malformed file is a typed refusal, only the
+    exact named id/origin is admitted, an audit line on stderr names the policy source when the
+    admin list (not `--allow-js`) opened the gate, and `--deny-js` wins over both. The TS mirror
+    (`js-policy.ts`, `js-consent.ts`) adds the same decline precedence, an explicit
+    `setAdminPolicy` / `parseAdminScriptPolicy` (no guessed origins) and tests; the browser gate
+    remains default-deny and the Worker runner still re-checks before creating a Worker.
+  - **Evidence (named tests):** Rust `selis-policy` (`a_reader_decline_is_never_overridden_by_admin_approval`,
+    `malformed_admin_policy_is_a_typed_refusal`, `an_admin_allow_list_admits_only_the_exact_scoped_origin`,
+    `an_allow_list_is_auditable`), `selis-pdf-js/tests/sandbox.rs`
+    (`a_reader_decline_is_never_overridden_by_admin_approval`), CLI `apps/cli/src/forms.rs`
+    (`admin_policy_permits_only_the_exact_scoped_document`, `a_reader_decline_is_never_overridden_by_admin_policy`,
+    `malformed_admin_policy_is_a_typed_refusal`), host vitest `js-policy.test.ts` / `js-consent.test.ts`.
+  - **Not claimed:** the allow-list is a static, caller-supplied list; there is no remote policy
+    service, signature over the policy file, or rotation/expiry of entries. An attacker who can edit
+    the local policy file can approve origins — the file is trusted administrator configuration,
+    not a trust boundary against a compromised host.
 
 ---
 
@@ -561,7 +585,36 @@ Normative spec: `23-EDIT-MODEL-SPEC.md`. Read it before any task here.
   - **Remaining (external/business):** a publicly trusted (AATL/EUTL) signing certificate and CA
     membership — procurement, not code. System/OS trust-store auto-loading is deliberately NOT
     done (the browser has none; we keep trust explicit and local-only).
-- [ ] **SL-5.SIGN.07 — Signature appearance generation** · deps: SIGN.03, ANNOT.01 · owner: AI+
+- [x] **SL-5.SIGN.07 — Signature appearance generation** · deps: SIGN.03, ANNOT.01 · owner: AI+
+  - **Done:** `selis-pdf-sign::appearance` adds a typed `AppearanceTemplate` (signer name, reason,
+    location, human-readable date, optional **caller-supplied** RGB logo) and
+    `build_signature_appearance(page, rect, template, strokes)`, which reuses
+    `crate::visual::content_stream` / `VisualOptions` / `VisualStroke` — the same renderer as a
+    standalone stamp — to produce the widget's `/AP /N` form XObject, its `/BBox`, `/Resources`
+    (font plus an image XObject for the logo) and the logo stream. The logo's bytes come from the
+    caller; non-finite/oversized geometry, a stroke with fewer than two finite points and missing
+    or mis-sized logo bytes are typed `SignError::Invalid` / `SignError::Limit` refusals — there is
+    no fetch, file read or decoder. `DigitalOptions` carries `logo` / `strokes` and the detached-CMS
+    writer (`sign_digital` and, through it, `sign_certification`) builds the widget appearance from
+    the template; the CMS byte range, detached signature and verify-only-on-read-back path are
+    unchanged. The incremental revision is checked to preserve the source bytes verbatim and the
+    written `/AP /N` stream (plus the logo XObject) is re-opened and compared byte-for-byte on
+    native builds. `DigitalReport` gains `appearance_bytes` / `has_logo`.
+  - **Evidence (named tests):** `crates/selis-pdf-sign/src/appearance.rs` unit tests (typed logo
+    validation, finite geometry, strokes, `/SelisSigLogo Do`); `crates/selis-pdf-sign/tests/appearance_e2e.rs`
+    (`a_typed_appearance_becomes_a_readable_ap_with_a_logo` — real detached CMS over the committed
+    PEM fixtures, independent `/AP` + image read-back, signature still verifies, source is a verbatim
+    prefix; `missing_logo_bytes_are_a_typed_refusal_before_any_write`;
+    `render_parity_holds_outside_the_appearance_rect` — engine RGBA before/after are identical
+    everywhere outside the masked widget rect and the appearance paints inside it).
+  - **Not claimed (honest gaps):** logos are raw 8-bit RGB pixels only (no PNG/JPEG decode, no
+    transparency/soft mask) to avoid a new dependency and keep the engine pure; text uses the
+    named standard-14 Helvetica faces and refuses non-WinAnsi characters instead of embedding a
+    font. The `/AP /N` byte-for-byte read-back is native-only (compiled out of the WASM chunk to
+    keep the sign artifact inside its 2% regression budget) — browser signing still writes and
+    renders the same appearance and still verifies the CMS on read-back; the signature report
+    already re-checks the byte range. AATL/trust membership and timestamp trust remain the external
+    long-lead (SL-0.LEAD.08 / SIGN.04) and are not touched here.
 
 ---
 
