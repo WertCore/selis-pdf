@@ -135,6 +135,7 @@ import {
 	resizeOptions,
 	rotatePage,
 	searchCandidates,
+	stampTextWidth,
 	watermarkOptions,
 } from "./operations.js";
 import {
@@ -154,6 +155,7 @@ import {
 	type PageGeometry,
 	type Rect,
 	displayRect,
+	displayToUser,
 	pageGeometry,
 	userRect,
 } from "./placement.js";
@@ -197,6 +199,12 @@ const TEXT_BOX_FONT_SIZE = 12;
  * because a free field invites a size the document's font cannot draw.
  */
 const BOX_SIZES = [8, 10, 12, 14, 18, 24] as const;
+
+/** The stamp's padding inside its rectangle, in points, plus a margin. */
+const BOX_PADDING = 8;
+
+/** The line height the stamp's font uses, as a multiple of its size. */
+const BOX_LINE_LEADING = 1.25;
 
 /** The zoom levels the zoom buttons step through, as factors of 100%. */
 const ZOOM_STEPS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4] as const;
@@ -3963,25 +3971,68 @@ async function applyTextBox(page: number, click: Rect, text: string): Promise<vo
 		setStatus("That page could not be drawn.", "error");
 		return;
 	}
-	const drawn = userRect(geometry, click);
 	const size = state.boxSize;
-	// A click (rather than a drag) has almost no area. Give the claimed box a
-	// usable extent: the engine writes the text at the lower-left corner.
-	const claimed = {
-		x: drawn.x,
-		y: drawn.y,
-		width: Math.max(drawn.width, size * 4),
-		height: Math.max(drawn.height, size * 1.4),
-	};
-	const done = await runOperation(
-		addTextBoxOp(
-			page,
-			claimed,
-			text,
-			size,
-			[state.boxColor.red, state.boxColor.green, state.boxColor.blue],
-		),
+	const colour: [number, number, number] = [
+		state.boxColor.red,
+		state.boxColor.green,
+		state.boxColor.blue,
+	];
+	// Keep the old placement: the click's display-space anchor, with the box
+	// sized from the engine's own coarse text table. Only the encoding changes
+	// — a first-class content-stream object instead of a visual stamp — so a
+	// line placed here still measures and redacts the same way it always did.
+	const anchor = displayRect(geometry, click);
+	const lines = text.split("\n");
+	const width = Math.max(
+		40,
+		...lines.map((line) => stampTextWidth(line, size) + BOX_PADDING * 2),
 	);
+	const height = lines.length * size * BOX_LINE_LEADING + BOX_PADDING;
+	const first = displayToUser(
+		geometry.rotation,
+		geometry.mediaWidth,
+		geometry.mediaHeight,
+		anchor.x0,
+		anchor.y0 - height,
+	);
+	const second = displayToUser(
+		geometry.rotation,
+		geometry.mediaWidth,
+		geometry.mediaHeight,
+		anchor.x0 + width,
+		anchor.y0,
+	);
+	const rect = {
+		x: Math.min(first.x, second.x),
+		y: Math.min(first.y, second.y),
+		width: Math.abs(second.x - first.x),
+		height: Math.abs(second.y - first.y),
+	};
+	// The chosen face and the underline are part of the document, not of the
+	// editor's own text. `add_text_box` takes a base-14 face; underline is a
+	// rule, drawn with the first-class `add_shape` line op beneath the text.
+	const font = state.boxStyle.bold
+		? state.boxStyle.italic
+			? "Helvetica-BoldOblique"
+			: "Helvetica-Bold"
+		: state.boxStyle.italic
+			? "Helvetica-Oblique"
+			: "Helvetica";
+	// Draw the rule first so the final status line is the text box the reader
+	// asked for (the harness and the reader both key off that label).
+	if (state.boxStyle.underline) {
+		await runOperation(
+			addShapeOp(
+				page,
+				{ x: rect.x, y: rect.y - 2, width: rect.width, height: 0.5 },
+				"line",
+				null,
+				colour,
+				1,
+			),
+		);
+	}
+	const done = await runOperation(addTextBoxOp(page, rect, text, size, colour, font));
 	if (done) {
 		closeInline();
 	}
@@ -6877,6 +6928,17 @@ function wire(): void {
 		const action = target.closest<HTMLElement>("button[data-action]")?.dataset.action;
 		if (action !== undefined) {
 			void runAction(action);
+			return;
+		}
+		// The add-content/object buttons use their own attribute on purpose:
+		// they run an operation directly, while `data-action` is the set the
+		// command palette mirrors. Keeping them out of the palette means a
+		// search for "watermark" still opens the watermark PANEL rather than
+		// stamping a watermark on the page.
+		const contentAction = target.closest<HTMLElement>("button[data-content-action]")
+			?.dataset.contentAction;
+		if (contentAction !== undefined) {
+			void runAction(contentAction);
 		}
 	});
 
