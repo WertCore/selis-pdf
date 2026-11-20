@@ -37,6 +37,9 @@ pub mod batch;
 #[cfg(feature = "text")]
 pub mod compare;
 pub mod compress;
+/// SL-5.TEXTEDIT.05/06/07/08: CLI/wasm bridge to the add-content and
+/// object-edit engines (no filesystem or network in the engine crates).
+pub mod content_edit;
 pub mod edit;
 pub mod fingerprint;
 pub mod flatten;

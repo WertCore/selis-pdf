@@ -266,3 +266,16 @@ budget = 400000
 chunk = "compare"
 artifact = "selis_pdf_wasm_compare"
 budget = 700000
+
+# The content chunk (ops 48..=62: first-class add-content and object-edit).
+# Like compare, it cannot live in the tools chunk: the add-content engine links
+# standard-14 font matching (the Liberation subset tables and their renderer)
+# on top of the image decoder the tools chunk already has, a measured +204 KB
+# brotli that would take the all-purpose chunk past its 440 000 ceiling. The
+# editor fetches this module only when the reader adds or edits content; no
+# baseline is recorded yet, so the ceiling gates the first measurement and the
+# 2% rule gates every later slice. It stays import-free like every tools chunk.
+[[budget]]
+chunk = "content"
+artifact = "selis_pdf_wasm_content"
+budget = 900000

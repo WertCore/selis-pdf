@@ -21,6 +21,12 @@ export interface EditorOperation {
 	readonly options: Readonly<Record<string, unknown>>;
 	/** The label the history records the change under. */
 	readonly label: string;
+	/**
+	 * Extra input files for ops that need one (an image to place, or a
+	 * replacement image). The document is always the first input; these follow
+	 * it in order, so `add_image` and `replace_image` read the second file.
+	 */
+	readonly extraFiles?: readonly { readonly name: string; readonly bytes: Uint8Array }[];
 }
 
 /**
@@ -610,4 +616,320 @@ export function batesOptions(
  */
 export function nupOptions(perSheet: number): Record<string, unknown> {
 	return { per_sheet: perSheet };
+}
+
+// ── first-class add-content and object editing (TEXTEDIT.05/06/07/08) ──────
+
+/**
+ * The ops served by the dedicated content chunk, not by the tools chunk.
+ *
+ * They link font matching and image decoding, which would push the all-purpose
+ * tools chunk past its size budget. Routing is a pure lookup, so a builder that
+ * grows a new op cannot silently send it to the wrong module.
+ */
+export const CONTENT_OPS: ReadonlySet<string> = new Set([
+	"add_text_box",
+	"add_image",
+	"add_shape",
+	"add_link",
+	"add_header_footer",
+	"add_watermark",
+	"add_bates",
+	"add_background",
+	"list_objects",
+	"list_vectors",
+	"move_object",
+	"resize_object",
+	"delete_object",
+	"replace_image",
+	"extract_image",
+]);
+
+/**
+ * A stable object handle, as the engine reports it from `list_objects` and
+ * accepts it for the object mutators. `name` is the XObject resource name
+ * (empty for a vector path); `op_index` indexes the page's content operators.
+ */
+export interface AddObjectId {
+	readonly name: string;
+	readonly op_index: number;
+}
+
+/** Convert an editor colour (0..1 floats) to the engine's 0..255 RGB triple. */
+export function engineColor(rgb: readonly [number, number, number]): [number, number, number] {
+	const part = (v: number): number => {
+		if (!Number.isFinite(v) || v < 0 || v > 1) {
+			throw new RangeError("a colour component must be between 0 and 1");
+		}
+		return Math.round(v * 255);
+	};
+	return [part(rgb[0]), part(rgb[1]), part(rgb[2])];
+}
+
+/** A `[x0, y0, x1, y1]` user-space array from a user rectangle. */
+export function userRectArray(rect: UserRect): [number, number, number, number] {
+	return [rect.x, rect.y, rect.x + rect.width, rect.y + rect.height];
+}
+
+function pageIndex(page: number): number {
+	if (!Number.isInteger(page) || page < 0) {
+		throw new RangeError("a page index is a whole number, 0 or greater");
+	}
+	return page;
+}
+
+/** Add a proper new text box (not a stamp workaround). */
+export function addTextBoxOp(
+	page: number,
+	rect: UserRect,
+	text: string,
+	fontSize: number,
+	color: readonly [number, number, number] = [0, 0, 0],
+	font = "Helvetica",
+): EditorOperation {
+	if (text.trim() === "") {
+		throw new RangeError("a text box needs some text");
+	}
+	return {
+		op: "add_text_box",
+		options: {
+			page: pageIndex(page),
+			rect: userRectArray(rect),
+			text,
+			font,
+			font_size: fontSize,
+			color: engineColor(color),
+		},
+		label: `Added a text box on page ${page + 1}`,
+	};
+}
+
+/** Add a caller-supplied image. The PNG/JPEG bytes ride as a second input file. */
+export function addImageOp(page: number, rect: UserRect, angleDegrees = 0): EditorOperation {
+	return {
+		op: "add_image",
+		options: {
+			page: pageIndex(page),
+			rect: userRectArray(rect),
+			angle_degrees: angleDegrees,
+		},
+		label: `Added an image on page ${page + 1}`,
+	};
+}
+
+/** Add a rect, inscribed ellipse or line. */
+export function addShapeOp(
+	page: number,
+	rect: UserRect,
+	kind: "rect" | "ellipse" | "line",
+	fill: readonly [number, number, number] | null,
+	stroke: readonly [number, number, number] | null,
+	strokeWidth = 1,
+): EditorOperation {
+	return {
+		op: "add_shape",
+		options: {
+			page: pageIndex(page),
+			rect: userRectArray(rect),
+			kind,
+			fill: fill === null ? null : engineColor(fill),
+			stroke: stroke === null ? null : engineColor(stroke),
+			stroke_width: strokeWidth,
+		},
+		label: `Added a ${kind} on page ${page + 1}`,
+	};
+}
+
+/** Add a clickable link annotation (a URI or an internal page target). */
+export function addLinkOp(
+	page: number,
+	rect: UserRect,
+	target: { readonly uri: string } | { readonly page: number },
+	color: readonly [number, number, number] = [0, 0, 0.8],
+	border = true,
+): EditorOperation {
+	const options: Record<string, unknown> = {
+		page: pageIndex(page),
+		rect: userRectArray(rect),
+		color: engineColor(color),
+		border,
+	};
+	if ("uri" in target) {
+		options.uri = target.uri;
+	} else {
+		options.target_page = pageIndex(target.page);
+	}
+	return { op: "add_link", options, label: `Added a link on page ${page + 1}` };
+}
+
+/** Add a header or a footer, positioned from the page's media box. */
+export function addHeaderFooterOp(
+	page: number,
+	text: string,
+	header: boolean,
+	align: "left" | "center" | "right",
+	fontSize: number,
+	margin = 36,
+	color: readonly [number, number, number] = [0, 0, 0],
+): EditorOperation {
+	return {
+		op: "add_header_footer",
+		options: {
+			page: pageIndex(page),
+			text,
+			font: "Helvetica",
+			font_size: fontSize,
+			color: engineColor(color),
+			margin,
+			align,
+			header,
+		},
+		label: `Added a ${header ? "header" : "footer"} on page ${page + 1}`,
+	};
+}
+
+/** Stamp a translucent watermark on one page. */
+export function addWatermarkOp(
+	page: number,
+	text: string,
+	fontSize: number,
+	opacity: number,
+	angleDegrees = 45,
+	color: readonly [number, number, number] = [0.5, 0.5, 0.5],
+): EditorOperation {
+	return {
+		op: "add_watermark",
+		options: {
+			page: pageIndex(page),
+			text,
+			font: "Helvetica",
+			font_size: fontSize,
+			color: engineColor(color),
+			angle_degrees: angleDegrees,
+			opacity,
+		},
+		label: `Added a watermark on page ${page + 1}`,
+	};
+}
+
+/** Stamp sequential Bates ids across the document. */
+export function addBatesOp(
+	pattern: string,
+	start: number,
+	align: "left" | "center" | "right" = "left",
+	fontSize = 10,
+	margin = 36,
+	color: readonly [number, number, number] = [0, 0, 0],
+): EditorOperation {
+	if (!/\d/.test(pattern)) {
+		throw new RangeError("a Bates pattern needs a digit run");
+	}
+	return {
+		op: "add_bates",
+		options: {
+			pattern,
+			start,
+			font: "Helvetica",
+			font_size: fontSize,
+			color: engineColor(color),
+			margin,
+			align,
+		},
+		label: "Added Bates numbering",
+	};
+}
+
+/** Paint a solid background beneath one page's existing content. */
+export function addBackgroundOp(
+	page: number,
+	rect: UserRect,
+	color: readonly [number, number, number],
+): EditorOperation {
+	return {
+		op: "add_background",
+		options: {
+			page: pageIndex(page),
+			rect: userRectArray(rect),
+			color: engineColor(color),
+		},
+		label: `Added a background on page ${page + 1}`,
+	};
+}
+
+/** List the image objects on a page (a read-only JSON report). */
+export function listObjectsOp(page: number): EditorOperation {
+	return {
+		op: "list_objects",
+		options: { page: pageIndex(page) },
+		label: `Listed the image objects on page ${page + 1}`,
+	};
+}
+
+/** List the painted vector paths on a page (a read-only JSON report). */
+export function listVectorsOp(page: number): EditorOperation {
+	return {
+		op: "list_vectors",
+		options: { page: pageIndex(page) },
+		label: `Listed the vector objects on page ${page + 1}`,
+	};
+}
+
+function idOptions(id: AddObjectId): Record<string, unknown> {
+	if (!Number.isInteger(id.op_index) || id.op_index < 0 || typeof id.name !== "string") {
+		throw new RangeError("an object id needs a name and a non-negative operator index");
+	}
+	return { id: { name: id.name, op_index: id.op_index } };
+}
+
+/** Move a drawn object by a user-space delta. */
+export function moveObjectOp(
+	page: number,
+	id: AddObjectId,
+	dx: number,
+	dy: number,
+): EditorOperation {
+	if (!Number.isFinite(dx) || !Number.isFinite(dy)) {
+		throw new RangeError("a move needs finite deltas");
+	}
+	return {
+		op: "move_object",
+		options: { page: pageIndex(page), ...idOptions(id), dx, dy },
+		label: `Moved an object on page ${page + 1}`,
+	};
+}
+
+/** Resize a drawn object to a user-space rectangle. */
+export function resizeObjectOp(page: number, id: AddObjectId, rect: UserRect): EditorOperation {
+	return {
+		op: "resize_object",
+		options: { page: pageIndex(page), ...idOptions(id), rect: userRectArray(rect) },
+		label: `Resized an object on page ${page + 1}`,
+	};
+}
+
+/** Delete a drawn object. */
+export function deleteObjectOp(page: number, id: AddObjectId): EditorOperation {
+	return {
+		op: "delete_object",
+		options: { page: pageIndex(page), ...idOptions(id) },
+		label: `Deleted an object on page ${page + 1}`,
+	};
+}
+
+/** Replace an image's pixels. The PNG/JPEG bytes ride as a second input file. */
+export function replaceImageOp(page: number, id: AddObjectId): EditorOperation {
+	return {
+		op: "replace_image",
+		options: { page: pageIndex(page), ...idOptions(id) },
+		label: `Replaced an image on page ${page + 1}`,
+	};
+}
+
+/** Extract an image object as a standalone file. */
+export function extractImageOp(page: number, id: AddObjectId): EditorOperation {
+	return {
+		op: "extract_image",
+		options: { page: pageIndex(page), ...idOptions(id) },
+		label: `Extracted an image from page ${page + 1}`,
+	};
 }

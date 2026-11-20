@@ -20,6 +20,7 @@ use std::collections::BTreeMap;
 use clap::{Parser, Subcommand};
 use selis_error::{Code, Result};
 
+mod add_content;
 mod batch;
 mod check;
 mod clear_permissions;
@@ -316,6 +317,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    // SL-5.TEXTEDIT.05/06/07/08 — first-class add-content and object-edit
+    // commands, flattened onto the top level so they are `selis add-text`,
+    // `selis list-objects`, and so on.
+    #[command(flatten)]
+    AddContent(add_content::Command),
     /// Structural dump of a PDF (revisions, xref, deviations).
     Inspect {
         /// The PDF file to inspect.
@@ -1312,6 +1318,7 @@ fn run() {
     // `selis-pdf-wasm`/`selis-pdf-ffi` bindings install the same wrapper.
     let result = selis_sandbox::trampoline::catch("cli-command", || -> CliResult<()> {
         match cli.command {
+        Command::AddContent(command) => add_content::run(command),
         Command::Inspect { path, json } => inspect::run(&path, json),
         Command::Render {
             path,

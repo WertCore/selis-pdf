@@ -76,7 +76,23 @@ export type ToolOp =
 	| "subset_fonts"
 	| "linearize"
 	| "compare"
-	| "redact_patterns";
+	| "redact_patterns"
+	// SL-5.TEXTEDIT.05/06/07/08 — first-class add-content and object-edit ops.
+	| "add_text_box"
+	| "add_image"
+	| "add_shape"
+	| "add_link"
+	| "add_header_footer"
+	| "add_watermark"
+	| "add_bates"
+	| "add_background"
+	| "list_objects"
+	| "list_vectors"
+	| "move_object"
+	| "resize_object"
+	| "delete_object"
+	| "replace_image"
+	| "extract_image";
 
 /** The wire operation number for each operation. */
 const OP_CODE: Record<ToolOp, number> = {
@@ -131,6 +147,27 @@ const OP_CODE: Record<ToolOp, number> = {
 	// the engine's text ladder, so op 47 lives in its own lazy chunk and never
 	// in this engine-free tools chunk.
 	redact_patterns: 47,
+	// 48..=62: first-class edit ops, served by the dedicated
+	// `selis-pdf-wasm-content` chunk (see crates/selis-pdf-wasm-content). The
+	// codes are shared here so the typed `ToolOp` and its codec stay in one
+	// place; the tools chunk does NOT dispatch these. The numbers skip the
+	// chunks that moved out (41/43/45/47) so a persisted wire reference can
+	// never name two different operations.
+	add_text_box: 48,
+	add_image: 49,
+	add_shape: 50,
+	add_link: 51,
+	add_header_footer: 52,
+	add_watermark: 53,
+	add_bates: 54,
+	add_background: 55,
+	list_objects: 56,
+	list_vectors: 57,
+	move_object: 58,
+	resize_object: 59,
+	delete_object: 60,
+	replace_image: 61,
+	extract_image: 62,
 };
 
 /** One input file on the wire. */
