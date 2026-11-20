@@ -95,8 +95,25 @@ import {
 } from "./selection.js";
 import { PLAIN_STYLE, type TextStyle, withStyle } from "./text-style.js";
 import {
+	type AddObjectId,
 	type EditorOperation,
+	CONTENT_OPS,
 	PAGE_SIZES,
+	addBackgroundOp,
+	addBatesOp,
+	addHeaderFooterOp,
+	addImageOp,
+	addLinkOp,
+	addShapeOp,
+	addTextBoxOp,
+	addWatermarkOp,
+	deleteObjectOp,
+	extractImageOp,
+	listObjectsOp,
+	listVectorsOp,
+	moveObjectOp,
+	replaceImageOp,
+	resizeObjectOp,
 	batesOptions,
 	compressOptions,
 	cropOptions,
@@ -107,7 +124,6 @@ import {
 	fillFormsOptions,
 	flipOptions,
 	headerFooterOptions,
-	imageOptions,
 	insertBlankPages,
 	metadataOptions,
 	movePage,
@@ -119,8 +135,6 @@ import {
 	resizeOptions,
 	rotatePage,
 	searchCandidates,
-	stampTextWidth,
-	textBoxOptions,
 	watermarkOptions,
 } from "./operations.js";
 import {
@@ -129,12 +143,17 @@ import {
 	filterCommands,
 	readCommands,
 } from "./palette.js";
+import {
+	type ContentWasm,
+	loadContent,
+	runContent,
+} from "./content-protocol.js";
+import { objectAt, overlayRects, type PlacedObject } from "./object-hit-test.js";
 import { canvasRect } from "./placement.js";
 import {
 	type PageGeometry,
 	type Rect,
 	displayRect,
-	fitImage,
 	pageGeometry,
 	userRect,
 } from "./placement.js";
@@ -179,9 +198,6 @@ const TEXT_BOX_FONT_SIZE = 12;
  */
 const BOX_SIZES = [8, 10, 12, 14, 18, 24] as const;
 
-/** The stamp's padding inside its rectangle, in points, plus a margin. */
-const BOX_PADDING = 8;
-
 /** The zoom levels the zoom buttons step through, as factors of 100%. */
 const ZOOM_STEPS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4] as const;
 
@@ -204,6 +220,7 @@ const SURFACE_GUTTER = 72;
 /** What the workspace is armed to do on the page. */
 export type EditorTool =
 	| "select"
+	| "object"
 	| "draw"
 	| "erase"
 	| "text"
@@ -236,6 +253,9 @@ interface EditorState {
 	engine: EngineClient | null;
 	tools: ToolsWasm | null;
 	toolsPromise: Promise<ToolsWasm> | null;
+	/** The lazy content chunk: font/image-heavy add-content and object ops. */
+	content: ContentWasm | null;
+	contentPromise: Promise<ContentWasm> | null;
 	/** The signing chunk, which draws the text boxes. */
 	sign: SignWasm | null;
 	signPromise: Promise<SignWasm> | null;
@@ -307,12 +327,18 @@ interface EditorState {
 	characters: Map<number, SelectionLine[]>;
 	/** Where the reader's selection starts and ends. */
 	selection: { readonly from: SelectionEnd; readonly to: SelectionEnd } | null;
+	/** Image/vector objects the engine reported, per page, for click-to-select. */
+	objects: Map<number, PlacedObject[]>;
+	/** The object currently selected with the Objects tool. */
+	selectedObject: { readonly page: number; readonly id: AddObjectId } | null;
 }
 
 const state: EditorState = {
 	engine: null,
 	tools: null,
 	toolsPromise: null,
+	content: null,
+	contentPromise: null,
 	sign: null,
 	signPromise: null,
 	doc: 0,
@@ -350,6 +376,8 @@ const state: EditorState = {
 	thumbnails: new Map(),
 	characters: new Map(),
 	selection: null,
+	objects: new Map(),
+	selectedObject: null,
 };
 
 let recorder: RequestRecorder | null = null;
@@ -560,6 +588,18 @@ async function tools(): Promise<ToolsWasm> {
 		return instance;
 	});
 	return state.toolsPromise;
+}
+
+/** The content chunk, loaded on the first add/object edit, never on page load. */
+async function content(): Promise<ContentWasm> {
+	if (state.content !== null) {
+		return state.content;
+	}
+	state.contentPromise ??= loadContent().then((instance) => {
+		state.content = instance;
+		return instance;
+	});
+	return state.contentPromise;
 }
 
 /**
@@ -1121,6 +1161,117 @@ async function runAction(action: string): Promise<void> {
 		case "tool:redact":
 			setTool("redact");
 			selectTab("selis-editor-tab-edit");
+			return;
+		// SL-5.TEXTEDIT.07/08 — first-class add-content ops with sensible
+		// page-sized defaults. The drag-based tools (text box, image) have
+		// their own placement flows; these are the whole-page furniture ops.
+		case "add:watermark":
+			await runOperation(addWatermarkOp(state.page, "DRAFT", 48, 0.22, 45));
+			return;
+		case "add:bates":
+			await runOperation(addBatesOp("CASE-000001", 1));
+			return;
+		case "add:header":
+			await runOperation(addHeaderFooterOp(state.page, "Selis", true, "left", 10));
+			return;
+		case "add:footer":
+			await runOperation(addHeaderFooterOp(state.page, "Page {page}", false, "center", 9));
+			return;
+		case "add:background": {
+			const size = state.pageSizes[state.page];
+			if (size !== undefined) {
+				await runOperation(
+					addBackgroundOp(
+						state.page,
+						{ x: 0, y: 0, width: size.width, height: size.height },
+						[0.97, 0.97, 0.94],
+					),
+				);
+			}
+			return;
+		}
+		case "add:shape": {
+			const size = state.pageSizes[state.page];
+			if (size !== undefined) {
+				await runOperation(
+					addShapeOp(
+						state.page,
+						{
+							x: size.width * 0.1,
+							y: size.height * 0.35,
+							width: size.width * 0.8,
+							height: size.height * 0.3,
+						},
+						"rect",
+						null,
+						[0.1, 0.2, 0.6],
+						1.5,
+					),
+				);
+			}
+			return;
+		}
+		case "add:link": {
+			const size = state.pageSizes[state.page];
+			if (size !== undefined) {
+				await runOperation(
+					addLinkOp(
+						state.page,
+						{
+							x: size.width * 0.1,
+							y: size.height * 0.1,
+							width: size.width * 0.35,
+							height: 18,
+						},
+						{ uri: "https://example.com" },
+					),
+				);
+			}
+			return;
+		}
+		// SL-5.TEXTEDIT.05/06 — object mutators act on the picked object.
+		case "object:delete":
+			if (state.selectedObject !== null) {
+				await runOperation(
+					deleteObjectOp(state.selectedObject.page, state.selectedObject.id),
+				);
+				state.selectedObject = null;
+			}
+			return;
+		case "object:move":
+			if (state.selectedObject !== null) {
+				await runOperation(
+					moveObjectOp(state.selectedObject.page, state.selectedObject.id, 10, 10),
+				);
+			}
+			return;
+		case "object:resize": {
+			const selected = state.selectedObject;
+			const size = selected === null ? undefined : state.pageSizes[selected.page];
+			if (selected !== null && size !== undefined) {
+				await runOperation(
+					resizeObjectOp(selected.page, selected.id, {
+						x: size.width * 0.15,
+						y: size.height * 0.15,
+						width: size.width * 0.5,
+						height: size.height * 0.4,
+					}),
+				);
+			}
+			return;
+		}
+		case "object:extract":
+			if (state.selectedObject !== null) {
+				await runOperation(extractImageOp(state.selectedObject.page, state.selectedObject.id));
+			}
+			return;
+		case "object:replace":
+			if (state.selectedObject !== null && state.image !== null) {
+				await runOperation({
+					...replaceImageOp(state.selectedObject.page, state.selectedObject.id),
+					extraFiles: [{ name: state.image.name, bytes: state.image.bytes }],
+				});
+			}
 			return;
 		case "strip-metadata":
 			await stripMetadata();
@@ -2201,15 +2352,27 @@ async function runOperation(operation: EditorOperation): Promise<boolean> {
 	dom.download.disabled = true;
 	setStatus(`${operation.label}…`);
 	try {
-		const chunk = await tools();
-		const result = runTool(chunk, {
+		// First-class content ops live in their own lazy chunk — the font and
+		// image code they link would otherwise inflate the all-purpose tools
+		// chunk past its published size budget. Everything else uses tools.
+		const request = {
 			op: operation.op,
 			options: operation.options,
-			files: [{ name: state.name, bytes }],
-		});
+			files: [{ name: state.name, bytes }, ...(operation.extraFiles ?? [])],
+		};
+		const result = CONTENT_OPS.has(operation.op)
+			? runContent(await content(), request)
+			: runTool(await tools(), request);
 		const produced = result.outputs[0];
 		if (produced === undefined) {
 			throw new Error("the engine produced no document");
+		}
+		// Listings and extractions produce a report or an image, not a PDF.
+		// Download those instead of trying to reopen them as a document.
+		if (!produced.name.toLowerCase().endsWith(".pdf")) {
+			downloadBytes(produced.name, produced.bytes, "application/octet-stream");
+			setStatus(`Saved ${produced.name}`);
+			return true;
 		}
 		await commit(produced.bytes, operation.label, { op: operation.op });
 		return true;
@@ -2758,6 +2921,8 @@ async function lineChanged(
 const TOOL_HINTS: Record<EditorTool, string> = {
 	select:
 		"Drag over the words to select them, then press Ctrl+C to copy. This is the tool for reading a document rather than changing it, nothing you select is written into the file.",
+	object:
+		"Click an image or a vector path to select it. Their outlines come from the objects the engine reports on the page; the selected object can then be moved, resized, replaced or deleted.",
 	text: "Click a line of text to change it. The text is replaced where it is drawn, and what follows it on the same line is pushed along to make room. The paragraph does not re-flow, so a line that grows past the margin still runs off it.",
 	draw:
 		"Drag on the page to draw. The pen follows the pointer; the line, the rectangle, the ellipse and the arrow are drawn from where you start to where you stop. What you draw is a mark on the page, so you can pick it up and take it off again.",
@@ -2774,11 +2939,6 @@ const TOOL_HINTS: Record<EditorTool, string> = {
 	markup:
 		"Drag over the words to mark them up. A mark is a standard PDF annotation, so every other reader sees it too.",
 };
-
-/** The font size a new text box is drawn at, in points. */
-
-/** The line height the stamp's font uses, as a multiple of its size. */
-const BOX_LINE_LEADING = 1.25;
 
 /**
  * The text the reader has selected.
@@ -3536,6 +3696,14 @@ function setTool(tool: EditorTool): void {
 	if (tool !== "sign") {
 		clearSignature();
 	}
+	// The object outlines belong to the Objects tool: load the engine's boxes
+	// when it is armed, and take them off the page when another tool is picked.
+	if (tool === "object") {
+		void loadObjects(state.page);
+	} else {
+		clearObjectOverlays();
+		state.selectedObject = null;
+	}
 	closeInline();
 }
 
@@ -3598,7 +3766,7 @@ function startDrag(event: PointerEvent): void {
 	// The text tool and the select tool are the two that place nothing: the
 	// first opens an editor over a line, the second selects the words under
 	// the pointer. Neither draws a rubber band.
-	if (state.tool === "text" || state.tool === "select") {
+	if (state.tool === "text" || state.tool === "select" || state.tool === "object") {
 		return;
 	}
 	const hit = pointerOnCanvas(event);
@@ -3776,10 +3944,12 @@ function endDrag(event: PointerEvent): void {
 /**
  * Put a text box on a page.
  *
- * The engine draws it with its visual stamp: typed lines inside a rectangle,
- * appended to the page's content stream. The rectangle is placed at the point
- * the reader clicked, and sized to the text — the stamp does not wrap, so the
- * box is the text's own extent rather than a frame around it.
+ * This is the first-class `add_text_box` engine op (TEXTEDIT.07), replacing
+ * the old visual-stamp workaround: a NEW content-stream object is appended to
+ * the page through an incremental save, so the original bytes stay a verbatim
+ * prefix and every other draw is untouched. The rectangle the reader drew is
+ * converted from canvas pixels to the page's own user space — the same inverse
+ * transform the redaction uses — before it is sent.
  */
 async function applyTextBox(page: number, click: Rect, text: string): Promise<void> {
 	if (text.trim() === "") {
@@ -3788,71 +3958,52 @@ async function applyTextBox(page: number, click: Rect, text: string): Promise<vo
 		return;
 	}
 	const geometry = state.geometry.get(page);
-	const bytes = state.bytes;
-	if (geometry === undefined || bytes === null) {
+	if (geometry === undefined || state.bytes === null) {
 		closeInline();
 		setStatus("That page could not be drawn.", "error");
 		return;
 	}
-	state.busy = true;
-	dom.download.disabled = true;
-	setStatus("Adding the text…");
-	try {
-		const chunk = await signChunk();
-		const anchor = displayRect(geometry, click);
-		const lines = text.split("\n");
-		const size = state.boxSize;
-		const width = Math.max(
-			40,
-			...lines.map((line) => stampTextWidth(line, size) + BOX_PADDING * 2),
-		);
-		const height = lines.length * size * BOX_LINE_LEADING + BOX_PADDING;
-		const options = textBoxOptions(
+	const drawn = userRect(geometry, click);
+	const size = state.boxSize;
+	// A click (rather than a drag) has almost no area. Give the claimed box a
+	// usable extent: the engine writes the text at the lower-left corner.
+	const claimed = {
+		x: drawn.x,
+		y: drawn.y,
+		width: Math.max(drawn.width, size * 4),
+		height: Math.max(drawn.height, size * 1.4),
+	};
+	const done = await runOperation(
+		addTextBoxOp(
 			page,
-			{
-				x0: anchor.x0,
-				y0: anchor.y0 - height,
-				x1: anchor.x0 + width,
-				y1: anchor.y0,
-			},
+			claimed,
 			text,
 			size,
 			[state.boxColor.red, state.boxColor.green, state.boxColor.blue],
-			state.boxStyle,
-		);
-		const response = runSign(chunk, {
-			op: "stamp",
-			options,
-			file: { name: state.name, bytes },
-		});
-		if (response.kind !== "document") {
-			throw new Error("the signing chunk returned no document");
-		}
-		await commit(response.output.bytes, `Added a text box on page ${page + 1}`, { op: "stamp" });
+		),
+	);
+	if (done) {
 		closeInline();
-	} catch (error) {
-		setStatus(`The text box could not be added: ${messageOf(error)}`, "error");
-	} finally {
-		state.busy = false;
-		renderHistory();
 	}
 }
 
 /**
  * Put the picked image on a page.
  *
- * The image keeps its own aspect ratio and is centred in the rectangle the
- * reader drew, because the writer scales an image to the rectangle it is
- * given and would otherwise stretch it.
+ * This is the first-class `add_image` engine op (TEXTEDIT.07), replacing the
+ * old `image_watermark` workaround: the PNG/JPEG bytes are decoded in memory
+ * and written as a fresh Flate/DeviceRGB XObject, and the draw is appended in
+ * an incremental revision. The image keeps its own aspect ratio and is centred
+ * in the rectangle the reader drew, because the engine scales it to the rect
+ * it is given and would otherwise stretch it.
  */
 async function placeImage(page: number, rect: Rect, geometry: PageGeometry): Promise<void> {
 	const image = state.image;
-	const bytes = state.bytes;
 	if (image === null) {
 		setStatus("Pick an image first.", "error");
 		return;
 	}
-	if (bytes === null) {
+	if (state.bytes === null) {
 		setStatus("Open a PDF first.", "error");
 		return;
 	}
@@ -3860,31 +4011,25 @@ async function placeImage(page: number, rect: Rect, geometry: PageGeometry): Pro
 		setStatus("Drag a rectangle to put the image in.", "error");
 		return;
 	}
-	state.busy = true;
-	dom.download.disabled = true;
-	setStatus("Adding the image…");
-	try {
-		const chunk = await tools();
-		const fitted = fitImage(displayRect(geometry, rect), image.width, image.height);
-		const result = runTool(chunk, {
-			op: "image_watermark",
-			options: imageOptions(page, fitted.x, fitted.y, fitted.scale),
-			files: [
-				{ name: state.name, bytes },
-				{ name: image.name, bytes: image.bytes },
-			],
-		});
-		const output = result.outputs[0];
-		if (output === undefined) {
-			throw new Error("the engine produced no document");
-		}
-		await commit(output.bytes, `Added an image on page ${page + 1}`, { op: "image_watermark" });
-	} catch (error) {
-		setStatus(`The image could not be added: ${messageOf(error)}`, "error");
-	} finally {
-		state.busy = false;
-		renderHistory();
-	}
+	// Work in the page's own user space: the drag is a canvas rectangle, and
+	// the inverse of the render's transform gives the exact user rectangle.
+	const drawn = userRect(geometry, rect);
+	const natural = Math.min(
+		drawn.width / Math.max(1, image.width),
+		drawn.height / Math.max(1, image.height),
+	);
+	const width = image.width * natural;
+	const height = image.height * natural;
+	const placement = {
+		x: drawn.x + (drawn.width - width) / 2,
+		y: drawn.y + (drawn.height - height) / 2,
+		width,
+		height,
+	};
+	await runOperation({
+		...addImageOp(page, placement),
+		extraFiles: [{ name: image.name, bytes: image.bytes }],
+	});
 }
 
 /**
@@ -4551,6 +4696,168 @@ function drawSignaturePath(page: number, points: readonly { x: number; y: number
 	const path = overlay.querySelector(".selis-editor-sign__path");
 	if (path instanceof SVGPolylineElement) {
 		path.setAttribute("points", points.map((point) => `${point.x},${point.y}`).join(" "));
+	}
+}
+
+// ── object picking (TEXTEDIT.05/06) ──────────────────────────────────────────
+
+/** The SVG overlay that outlines the reported objects on one page. */
+function objectOverlay(page: number): SVGSVGElement | null {
+	const wrap = dom.doc.querySelector(`.selis-editor-page[data-page="${page}"]`);
+	if (wrap === null) {
+		return null;
+	}
+	let overlay = wrap.querySelector<SVGSVGElement>(".selis-editor-objects");
+	if (overlay === null) {
+		overlay = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+		overlay.classList.add("selis-editor-objects");
+		wrap.appendChild(overlay);
+	}
+	return overlay;
+}
+
+/** Take the object outlines off every page. */
+function clearObjectOverlays(): void {
+	for (const overlay of dom.doc.querySelectorAll(".selis-editor-objects")) {
+		overlay.remove();
+	}
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null;
+}
+
+function finiteField(value: Record<string, unknown>, key: string): number {
+	const field = value[key];
+	if (typeof field !== "number" || !Number.isFinite(field)) {
+		throw new Error(`the object report has no usable ${key}`);
+	}
+	return field;
+}
+
+/** Decode one `list_objects` / `list_vectors` JSON report into placed objects. */
+function reportedObjects(json: Uint8Array, image: boolean): PlacedObject[] {
+	const parsed: unknown = JSON.parse(new TextDecoder().decode(json));
+	if (!isRecord(parsed) || !Array.isArray(parsed.objects)) {
+		throw new Error("the object report is malformed");
+	}
+	const out: PlacedObject[] = [];
+	for (const raw of parsed.objects) {
+		if (!isRecord(raw) || !isRecord(raw.id) || !isRecord(raw.rect)) {
+			continue;
+		}
+		const name = raw.id.name;
+		if (typeof name !== "string") {
+			continue;
+		}
+		const opIndex = raw.id.op_index;
+		if (typeof opIndex !== "number" || !Number.isInteger(opIndex) || opIndex < 0) {
+			continue;
+		}
+		const box = raw.rect;
+		out.push({
+			id: { name, op_index: opIndex },
+			image,
+			rect: {
+				x: finiteField(box, "x0"),
+				y: finiteField(box, "y0"),
+				width: finiteField(box, "x1") - finiteField(box, "x0"),
+				height: finiteField(box, "y1") - finiteField(box, "y0"),
+			},
+		});
+	}
+	return out;
+}
+
+/** Paint the reported objects' boxes, marking the selected one. */
+function paintObjectOverlay(page: number): void {
+	const geometry = state.geometry.get(page);
+	const overlay = objectOverlay(page);
+	const objects = state.objects.get(page) ?? [];
+	if (geometry === undefined || overlay === null) {
+		return;
+	}
+	overlay.setAttribute("viewBox", `0 0 ${geometry.cssWidth} ${geometry.cssHeight}`);
+	overlay.replaceChildren();
+	for (const { object, box } of overlayRects(geometry, objects)) {
+		const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+		rect.classList.add("selis-editor-object");
+		const selected = state.selectedObject?.page === page && state.selectedObject.id === object.id;
+		if (selected) {
+			rect.classList.add("selis-editor-object--selected");
+		}
+		rect.setAttribute("x", String(box.x));
+		rect.setAttribute("y", String(box.y));
+		rect.setAttribute("width", String(box.width));
+		rect.setAttribute("height", String(box.height));
+		overlay.appendChild(rect);
+	}
+}
+
+/** Ask the engine which objects a page carries, then outline them. */
+async function loadObjects(page: number): Promise<void> {
+	const bytes = state.bytes;
+	if (bytes === null) {
+		setStatus("Open a PDF first.", "error");
+		return;
+	}
+	state.busy = true;
+	try {
+		const chunk = await content();
+		const imageOp = listObjectsOp(page);
+		const vectorOp = listVectorsOp(page);
+		const images = runContent(chunk, {
+			op: imageOp.op,
+			options: imageOp.options,
+			files: [{ name: state.name, bytes }],
+		}).outputs[0];
+		const vectors = runContent(chunk, {
+			op: vectorOp.op,
+			options: vectorOp.options,
+			files: [{ name: state.name, bytes }],
+		}).outputs[0];
+		if (images === undefined || vectors === undefined) {
+			throw new Error("the engine reported no object listing");
+		}
+		const objects = [
+			...reportedObjects(images.bytes, true),
+			...reportedObjects(vectors.bytes, false),
+		];
+		state.objects.set(page, objects);
+		paintObjectOverlay(page);
+		setStatus(
+			objects.length === 0
+				? `No image or vector objects on page ${page + 1}.`
+				: `${objects.length} object${objects.length === 1 ? "" : "s"} on page ${page + 1}. Click one to select it.`,
+		);
+	} catch (error) {
+		setStatus(`The objects could not be read: ${messageOf(error)}`, "error");
+	} finally {
+		state.busy = false;
+	}
+}
+
+/** Select the object under a click, using the engine's reported boxes. */
+function pickObject(event: PointerEvent): void {
+	const hit = pointerOnCanvas(event);
+	if (hit === null) {
+		return;
+	}
+	const geometry = state.geometry.get(hit.page);
+	const objects = state.objects.get(hit.page);
+	if (geometry === undefined || objects === undefined) {
+		void loadObjects(hit.page).then(() => pickObject(event));
+		return;
+	}
+	const found = objectAt(geometry, objects, { x: hit.x, y: hit.y });
+	state.selectedObject =
+		found === null ? null : { page: hit.page, id: found.object.id };
+	paintObjectOverlay(hit.page);
+	if (found === null) {
+		setStatus("No object under that click.");
+	} else {
+		const kind = found.object.image ? "image" : "vector path";
+		setStatus(`Selected ${kind} ${found.object.id.name || `path@${found.object.id.op_index}`}.`);
 	}
 }
 
@@ -6392,6 +6699,10 @@ function wire(): void {
 	// pointer leaving the canvas.
 	dom.doc.addEventListener("pointerdown", (event) => {
 		if (event.button !== 0) {
+			return;
+		}
+		if (state.tool === "object") {
+			pickObject(event);
 			return;
 		}
 		if (state.tool === "select") {

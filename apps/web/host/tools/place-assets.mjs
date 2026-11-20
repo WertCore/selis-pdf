@@ -128,6 +128,14 @@ const WASM_RAW = "wasm32-unknown-unknown/release/selis_pdf_wasm.wasm";
 const TOOLS_WASM_OPT = "wasm32-unknown-unknown/release/selis_pdf_wasm_tools.opt.wasm";
 /** The unoptimised tools chunk, for developers who only ran `cargo build`. */
 const TOOLS_WASM_RAW = "wasm32-unknown-unknown/release/selis_pdf_wasm_tools.wasm";
+
+// The first-class content chunk (add-content / object-edit). It is fetched only
+// by the editor, never by the tools page, and carries the same import-free
+// contract as every tools-protocol module.
+/** The optimised content chunk. */
+const CONTENT_WASM_OPT = "wasm32-unknown-unknown/release/selis_pdf_wasm_content.opt.wasm";
+/** The unoptimised content chunk. */
+const CONTENT_WASM_RAW = "wasm32-unknown-unknown/release/selis_pdf_wasm_content.wasm";
 /** The optimise chunk (font subset op 41, linearize op 43), optimised first. */
 const OPTIMIZE_WASM_OPT = "wasm32-unknown-unknown/release/selis_pdf_wasm_optimize.opt.wasm";
 /** The unoptimised optimise chunk, for developers who only ran `cargo build`. */
@@ -189,6 +197,17 @@ function findEngine() {
 function findToolsEngine() {
 	for (const dir of targetDirs()) {
 		for (const name of [TOOLS_WASM_OPT, TOOLS_WASM_RAW]) {
+			const candidate = join(dir, name);
+			if (existsSync(candidate)) return candidate;
+		}
+	}
+	return null;
+}
+
+/** The first content chunk that exists, optimised preferred over raw. */
+function findContentEngine() {
+	for (const dir of targetDirs()) {
+		for (const name of [CONTENT_WASM_OPT, CONTENT_WASM_RAW]) {
 			const candidate = join(dir, name);
 			if (existsSync(candidate)) return candidate;
 		}
@@ -651,6 +670,47 @@ if (toolsImports.length > 0) {
 	process.exit(1);
 }
 
+// The content chunk carries the font/image-heavy add-content and object-edit
+// ops. The editor fetches it on first use; a missing or import-bearing artifact
+// is a build failure, as with the tools chunk, so an add-content button can
+// never silently do nothing in a shipped build.
+const content = findContentEngine();
+if (content === null) {
+	console.error(
+		[
+			"place-assets: no content WASM chunk found - the editor's add-content and object",
+			"operations cannot run without one, so this is a build failure rather than a skip.",
+			"Build it first:",
+			"",
+			"  cargo build -p selis-pdf-wasm-content --target wasm32-unknown-unknown --release",
+			"",
+			"(`cargo xtask size-check` builds it with fat LTO. Set CARGO_TARGET_DIR if the",
+			"build is redirected; this script reads it.)",
+		].join("\n"),
+	);
+	process.exit(1);
+}
+const contentOut = join(publicRoot, "wasm/selis_pdf_wasm_content.wasm");
+mkdirSync(dirname(contentOut), { recursive: true });
+copyFileSync(content, contentOut);
+const contentBytes = readFileSync(contentOut).length;
+let contentImports;
+try {
+	contentImports = WebAssembly.Module.imports(new WebAssembly.Module(readFileSync(contentOut)));
+} catch (error) {
+	console.error(`place-assets: the content chunk at ${contentOut} is not valid WebAssembly: ${error}`);
+	process.exit(1);
+}
+if (contentImports.length > 0) {
+	console.error(
+		[
+			"place-assets: the content chunk has host imports; the add-content ops must run with none.",
+			...contentImports.map((entry) => `  ${entry.module}.${entry.name}`),
+		].join("\n"),
+	);
+	process.exit(1);
+}
+
 // The optimise chunk is a second tools-family engine: font subset (op 41) and
 // linearize (op 43) moved here from the tools chunk. Only the two cards that
 // invoke those ops fetch it. It carries the same import-free contract as the
@@ -1051,6 +1111,10 @@ writeFileSync(
 				url: "/wasm/selis_pdf_wasm_tools.wasm",
 				bytes: toolsBytes,
 			},
+			content: {
+				url: "/wasm/selis_pdf_wasm_content.wasm",
+				bytes: contentBytes,
+			},
 			optimize: {
 				url: "/wasm/selis_pdf_wasm_optimize.wasm",
 				bytes: optimizeBytes,
@@ -1093,7 +1157,9 @@ writeFileSync(
 console.log(
 	`place-assets: copied ${modules.length} modules, ${ASSET_COPIES.length} asset files, ` +
 		`the engine (${engineBytes} B, from ${relative(workspaceRoot, engine)}) and the ` +
-		`tools chunk (${toolsBytes} B, 0 imports) and the optimise chunk (${optimizeBytes} B, 0 imports) ` +
+		`tools chunk (${toolsBytes} B, 0 imports) ` +
+		`and the content chunk (${contentBytes} B, 0 imports) ` +
+		`and the optimise chunk (${optimizeBytes} B, 0 imports) ` +
 		`and the compare chunk (${compareBytes} B, 0 imports) ` +
 		`and the pattern-redaction chunk (${redactPatternsBytes} B, 0 imports) ` +
 		`and the convert chunk (${convertBytes} B, 0 imports) ` +

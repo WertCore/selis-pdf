@@ -33,7 +33,7 @@
 		<link
 			rel="stylesheet"
 			href="/assets/editor.css"
-			integrity="sha384-Pjq2wHYXeJTr3zN1UPqUwaRXp8qc2d1JwIwQDUhG0KyKHe1bbilLicSBP4kxxxdO"
+			integrity="sha384-Hwl2Sr0gF5VsPYVKBvWh910A3ZJwISS2jup9ywwoLjoLB4n80Yj95wZLbiMPPuu4"
 			crossorigin="anonymous"
 		/>
 	</head>
@@ -414,6 +414,15 @@
 						<button
 							type="button"
 							class="selis-editor-tool"
+							data-tool="object"
+							data-icon="select"
+							aria-pressed="false"
+						>
+							<span class="selis-editor-tool__label">Objects</span>
+						</button>
+						<button
+							type="button"
+							class="selis-editor-tool"
 							data-tool="draw"
 							data-icon="draw"
 							aria-pressed="false"
@@ -491,6 +500,26 @@
 						hidden
 					/>
 					<p class="selis-editor-group__label">On the page</p>
+				</div>
+				<div class="selis-editor-group">
+					<p class="selis-editor-group__label">Add content</p>
+					<div class="selis-editor-group__buttons selis-editor-toolrow" role="group" aria-label="Add proper new content">
+						<button type="button" class="selis-editor-tool" data-action="add:watermark"><span class="selis-editor-tool__label">Watermark</span></button>
+						<button type="button" class="selis-editor-tool" data-action="add:bates"><span class="selis-editor-tool__label">Bates</span></button>
+						<button type="button" class="selis-editor-tool" data-action="add:header"><span class="selis-editor-tool__label">Header</span></button>
+						<button type="button" class="selis-editor-tool" data-action="add:footer"><span class="selis-editor-tool__label">Footer</span></button>
+						<button type="button" class="selis-editor-tool" data-action="add:background"><span class="selis-editor-tool__label">Background</span></button>
+						<button type="button" class="selis-editor-tool" data-action="add:shape"><span class="selis-editor-tool__label">Shape</span></button>
+						<button type="button" class="selis-editor-tool" data-action="add:link"><span class="selis-editor-tool__label">Link</span></button>
+					</div>
+					<p class="selis-editor-group__label">Selected object</p>
+					<div class="selis-editor-group__buttons selis-editor-toolrow" role="group" aria-label="Edit the selected object">
+						<button type="button" class="selis-editor-tool" data-action="object:move"><span class="selis-editor-tool__label">Move</span></button>
+						<button type="button" class="selis-editor-tool" data-action="object:resize"><span class="selis-editor-tool__label">Resize</span></button>
+						<button type="button" class="selis-editor-tool" data-action="object:replace"><span class="selis-editor-tool__label">Replace</span></button>
+						<button type="button" class="selis-editor-tool" data-action="object:extract"><span class="selis-editor-tool__label">Extract</span></button>
+						<button type="button" class="selis-editor-tool selis-editor-tool--danger" data-action="object:delete"><span class="selis-editor-tool__label">Delete</span></button>
+					</div>
 				</div>
 				<div class="selis-editor-group">
 					<div

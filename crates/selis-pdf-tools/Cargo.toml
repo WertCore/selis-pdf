@@ -41,6 +41,7 @@ selis-error = { workspace = true }
 selis-bytes = { workspace = true }
 selis-archive = { workspace = true }
 selis-io = { workspace = true }
+selis-geom = { workspace = true }
 selis-sandbox = { workspace = true }
 selis-pdf-cos = { workspace = true }
 selis-pdf-filter = { workspace = true }
