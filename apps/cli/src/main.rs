@@ -20,6 +20,7 @@ use std::collections::BTreeMap;
 use clap::{Parser, Subcommand};
 use selis_error::{Code, Result};
 
+mod annot;
 mod batch;
 mod check;
 mod clear_permissions;
@@ -396,6 +397,50 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Rebuild missing or stale markup appearance streams (`/AP /N`) in one
+    /// incremental revision. Widgets and a document's `/NeedAppearances` flag
+    /// are reported but left to the FORM layer.
+    AnnotAppearances {
+        /// The input PDF.
+        path: String,
+        /// The output PDF.
+        #[arg(short, long)]
+        output: String,
+        /// Emit the verification object as JSON on stdout.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Add a multi-stroke ink annotation to a page as an incremental revision.
+    /// Each `--stroke` is `x,y;x,y;...` in the page's own user space; the
+    /// rectangle is derived from the points.
+    AnnotInk {
+        /// The input PDF.
+        path: String,
+        /// The output PDF.
+        #[arg(short, long)]
+        output: String,
+        /// The 1-based page the ink mark goes on.
+        #[arg(long, default_value_t = 1)]
+        page: u32,
+        /// A stroke: two or more `x,y` points separated by semicolons (repeatable).
+        #[arg(long = "stroke", required = true, value_name = "POINTS")]
+        strokes: Vec<String>,
+        /// Stroke width in points.
+        #[arg(long, default_value_t = 1.5)]
+        width: f64,
+        /// Stroke colour as `r,g,b` in 0..=1 (default: ink blue).
+        #[arg(long)]
+        colour: Option<String>,
+        /// The reader's comment.
+        #[arg(long)]
+        contents: Option<String>,
+        /// Who left the mark.
+        #[arg(long)]
+        author: Option<String>,
+        /// Emit the verification object as JSON on stdout.
+        #[arg(long)]
+        json: bool,
+    },
     /// Edit text: replace the first occurrence of `--find` with `--replace` on a
     /// page, saved as an incremental update — the original bytes are preserved,
     /// so a signature over the original revision stays valid. In-place only: a
@@ -725,6 +770,10 @@ enum Command {
         /// The signing time as `YYYYMMDDHHMMSSZ` (default: now, UTC).
         #[arg(long)]
         time: Option<String>,
+        /// A PNG or JPEG logo for the visible signature block (native builds).
+        /// Decoded to RGB here; alpha is dropped and no soft mask is written.
+        #[arg(long, value_name = "FILE")]
+        logo: Option<String>,
         /// OPT-IN: after printing a consent notice to stderr, connect to the
         /// TSA configured by SELIS_TSA_URL and send a SHA-256 HASH of this
         /// signature (never the document or any key) for an RFC 3161 token.
@@ -1338,6 +1387,44 @@ fn run() {
             output,
             json,
         } => finish(tools::flatten_forms(&path, &output), json),
+        Command::AnnotAppearances { path, output, json } => {
+            finish(annot::regenerate_appearances(&path, &output), json)
+        }
+        Command::AnnotInk {
+            path,
+            output,
+            page,
+            strokes,
+            width,
+            colour,
+            contents,
+            author,
+            json,
+        } => {
+            let colour = match colour.as_deref() {
+                None => selis_pdf_tools::annot::INK_COLOUR,
+                Some(value) => annot::parse_colour(value)?,
+            };
+            if !width.is_finite() || width < 0.0 {
+                return Err(CliError(
+                    "--width must be a finite, non-negative number".to_string(),
+                ));
+            }
+            finish(
+                annot::ink(
+                    &path,
+                    &output,
+                    page,
+                    None,
+                    &strokes,
+                    width,
+                    colour,
+                    contents.as_deref().unwrap_or(""),
+                    author.as_deref().unwrap_or(""),
+                ),
+                json,
+            )
+        }
         Command::EditText {
             path,
             find,
@@ -1472,6 +1559,7 @@ fn run() {
             reason,
             location,
             time,
+            logo,
             connect_tsa,
             tsa_url,
             tsa_anchor,
@@ -1491,6 +1579,7 @@ fn run() {
                 reason.as_deref(),
                 location.as_deref(),
                 time.as_deref(),
+                logo.as_deref(),
                 connect_tsa,
                 tsa_url.as_deref(),
                 &tsa_anchor,

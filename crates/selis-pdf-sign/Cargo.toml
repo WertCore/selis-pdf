@@ -25,6 +25,11 @@ serde_json = { workspace = true }
 # (ADR-P0011); `p12-keystore` 0.4.1 is MIT OR Apache-2.0, pure Rust, MSRV 1.85.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 p12-keystore = { workspace = true }
+# SL-5.SIGN.07: PNG/JPEG logo decoding reuses the workspace's pure-Rust
+# `selis-image` decoder. Native-only, like the PKCS#12 key source: a linked
+# WASM call site measured +29 877 B brotli over the sign chunk's 2% gate
+# (see pdf-plan/15-PHASE-5-edit.md). No new dependency and no WASM growth.
+selis-image = { workspace = true }
 
 [dev-dependencies]
 # The identity/TSA tests generate a real RSA key locally from the OS CSPRNG.

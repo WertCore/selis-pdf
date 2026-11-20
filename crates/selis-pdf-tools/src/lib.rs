@@ -117,6 +117,10 @@ pub use rewrite_verify::{
     save_rewritten_verified, save_rewritten_verified_atomic, verify_render_text,
     EngineRenderTextVerifier,
 };
+// SL-5.ANNOT.02/03: the native CLI calls the core writers through this shared
+// boundary. `annotate_spec` is the bytes-in/bytes-out core entry point; the
+// `annotate` above is the file-and-write-gate wrapper with the same short name.
+pub use selis_pdf_annot::{annotate as annotate_spec, regenerate_appearances};
 pub use selis_pdf_optimize::LinearizeMode;
 pub use selis_pdf_optimize::{CompressionLevel, SubsetError, SubsetReport};
 #[cfg(feature = "sign")]
