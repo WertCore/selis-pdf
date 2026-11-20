@@ -108,8 +108,10 @@ use std::fmt;
 
 use selis_bytes::Bytes;
 use selis_pdf_cos::copy::{collect_objects, resolve_ref};
-use selis_pdf_cos::doc_writer::write_objects_as_document_with_trailer;
-use selis_pdf_cos::{Obj, Ref};
+use selis_pdf_cos::doc_writer::{
+    write_incremental_update_full, write_objects_as_document_with_trailer,
+};
+use selis_pdf_cos::{Doc, Obj, Ref};
 use selis_sandbox::{Budget, BudgetGuard};
 use serde::{Deserialize, Serialize};
 
@@ -1649,6 +1651,117 @@ fn object_dict_mut(objects: &mut [(u32, Obj)], num: u32) -> Option<&mut Vec<(Byt
             Obj::Dict(pairs) => Some(pairs),
             _ => None,
         })
+}
+
+/// The live object graph (numbers, values) plus its object-number remap. For
+/// the incremental writers the remap is identity — every object keeps its
+/// original number — so the existing synthesis helpers work unchanged.
+type LiveObjects = (Vec<(u32, Obj)>, HashMap<u32, u32>);
+
+/// Collect the object graph reachable from `roots` while KEEPING each object's
+/// original number — the read side of the incremental form writers.
+///
+/// Unlike [`collect_objects`] (which renumbers for a full rewrite/merge), this
+/// materialises the live model with the numbers the source already uses, so a
+/// changed object can be redefined in an appended revision while every
+/// untouched byte of `src` stays a verbatim prefix. The returned `remap` maps
+/// each number to itself: the synthesis helpers all take a remap and this keeps
+/// them unchanged. `next_num` is advanced to one past the highest number seen,
+/// the safe allocation floor for newly generated appearance streams.
+///
+/// # Budget / Malformed Input
+///
+/// Charges one resolve per reachable object, bounded by the budget. An
+/// unresolvable reachable object is a typed [`FormError::Unresolvable`].
+fn collect_objects_incremental(
+    src: &[u8],
+    doc: &Doc,
+    roots: &[Ref],
+    next_num: &mut u32,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<LiveObjects, FormError> {
+    let mut remap: HashMap<u32, u32> = HashMap::new();
+    let mut pending: Vec<Ref> = roots.to_vec();
+    let mut objects: Vec<(u32, Obj)> = Vec::new();
+    let mut visited: std::collections::BTreeSet<(u32, u16)> = std::collections::BTreeSet::new();
+    while let Some(reference) = pending.pop() {
+        if !visited.insert((reference.num, reference.gen)) {
+            continue;
+        }
+        let obj = resolve_ref(src, doc, reference, budget, g).map_err(|e| {
+            FormError::Unresolvable(format!("cannot resolve object {}: {e}", reference.num))
+        })?;
+        collect_refs_of(&obj, &mut pending);
+        remap.insert(reference.num, reference.num);
+        *next_num = (*next_num).max(reference.num.saturating_add(1));
+        objects.push((reference.num, obj));
+    }
+    Ok((objects, remap))
+}
+
+/// Every indirect reference inside `obj`, for the incremental object walk.
+fn collect_refs_of(obj: &Obj, pending: &mut Vec<Ref>) {
+    match obj {
+        Obj::Ref(reference) => pending.push(*reference),
+        Obj::Array(items) => {
+            for item in items {
+                collect_refs_of(item, pending);
+            }
+        }
+        Obj::Dict(pairs) => {
+            for (_, value) in pairs {
+                collect_refs_of(value, pending);
+            }
+        }
+        Obj::Stream { dict, .. } => {
+            for (_, value) in dict {
+                collect_refs_of(value, pending);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Write a form change as an INCREMENTAL update: only objects whose value
+/// differs from `original` (plus newly allocated ones, absent from `original`)
+/// are appended, with a fresh xref and a `/Prev` back to the source revision.
+/// `src` is preserved verbatim as a prefix, so any signature over its bytes
+/// keeps verifying. Returns `src` unchanged when nothing actually changed.
+///
+/// `original` is the snapshot taken before synthesis; comparing whole `Obj`
+/// values is exact here because untouched objects are the very values the
+/// reader resolved from `src` (no renumbering, no normalisation).
+///
+/// # Budget / Malformed Input
+///
+/// As [`write_incremental_update_full`] (charges the prefix and appended bytes);
+/// a write failure is a typed [`FormError::Unresolvable`].
+fn write_form_incremental(
+    src: &[u8],
+    original: &HashMap<u32, Obj>,
+    objects: &[(u32, Obj)],
+    root: Ref,
+    info: Option<Ref>,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<Vec<u8>, FormError> {
+    let changes: Vec<(u32, Option<Obj>)> = objects
+        .iter()
+        .filter(|(num, obj)| original.get(num) != Some(obj))
+        .map(|(num, obj)| (*num, Some(obj.clone())))
+        .collect();
+    if changes.is_empty() {
+        return Ok(src.to_vec());
+    }
+    // Carry /Root and /Info forward with the ORIGINAL numbers (the graph was
+    // not renumbered); the low-level writer fills /Size and /Prev.
+    let mut trailer: Vec<(Vec<u8>, Obj)> = vec![(b"Root".to_vec(), Obj::Ref(root))];
+    if let Some(info) = info {
+        trailer.push((b"Info".to_vec(), Obj::Ref(info)));
+    }
+    write_incremental_update_full(src, &changes, &trailer, budget, g)
+        .map_err(|e| FormError::Unresolvable(format!("cannot write the document: {e}")))
 }
 
 /// Resolve through references up to a fixed depth, returning the object

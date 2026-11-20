@@ -19,3 +19,11 @@ selis-pdf-cos = { workspace = true }
 selis-pdf-filter = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+# Read-back evidence for FORM.02: sign a document with the committed PEM
+# fixtures, regenerate appearances, and prove the signature still verifies over
+# the preserved verbatim prefix. Dev-only, so no WASM form chunk grows. The
+# dependency points one way (sign does not depend on form); no normal-build cycle.
+selis-pdf-sign = { workspace = true }
+selis-crypto = { workspace = true }

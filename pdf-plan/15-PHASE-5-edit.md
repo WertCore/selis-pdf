@@ -343,15 +343,27 @@ Normative spec: `23-EDIT-MODEL-SPEC.md`. Read it before any task here.
     The result is re-opened and each generated `/AP` read back before it is returned. Exposed as
     `selis form-appearances <in> --output <out>` through
     `selis-pdf-tools::regenerate_field_appearances` (write-gate verified).
-  - **Not claimed (honest gaps):** like the rest of `selis-pdf-form`, this writes a verified
-    **full rewrite** (renumbered objects), **not** an incremental revision — the source bytes are
-    not a verbatim prefix; the incremental writer in `selis-pdf-edit` is not reusable from this
-    layer without a large dependency inversion. The checkbox/radio marks are simple vector glyphs,
-    not Acrobat's exact bundled checkmark/dingbat art. Push-button `/MK /BC` (border colour),
-    `/BG` (background) and `/R` (rotation) are read but the generated appearance uses a fixed black
-    border / no fill / no rotation — a visible simplification. A signature appearance is a
-    *drawing of the name*, not a cryptographic visual, and no signing is performed. Comb fields,
-    rich text and auto-size beyond the shared text generator are not separately implemented.
+  - **Incremental save (FORM.02 gap closed 2026-11-20):** `regenerate_appearances` now appends an
+    **incremental revision**: the input bytes are a byte-for-byte verbatim prefix, so a signature
+    over the source keeps verifying. It materialises the live graph with ORIGINAL object numbers,
+    snapshots it, and appends only the objects the synthesis actually changed (changed widgets,
+    the `/AcroForm` whose `/NeedAppearances` changed, and the new Form XObjects) through the SAME
+    low-level primitive `selis-pdf-edit` uses — `selis_pdf_cos::doc_writer::write_incremental_update_full`.
+    The reusable primitive already lived in COS, so no dependency inversion was needed and
+    `selis-pdf-form` still depends only on COS (no edit crate in the WASM form chunk). A test signs
+    a document with the committed PEM fixtures, regenerates, proves the signed source is a prefix,
+    and re-verifies the signature with the real report; size-check stays 16/16.
+  - **Not claimed (honest gaps):** the other two `selis-pdf-form` write paths — `fill_form` and
+    `create_form_fields` — still emit verified **full rewrites** (renumbered objects), not
+    incremental revisions; the shared helper (`collect_objects_incremental` +
+    `write_form_incremental` in `selis-pdf-form::lib`) is ready for them but wiring them would change
+    their documented full-rewrite/signature-invalidation semantics and byte-level tests. The
+    checkbox/radio marks are simple vector glyphs, not Acrobat's exact bundled checkmark/dingbat
+    art. Push-button `/MK /BC` (border colour), `/BG` (background) and `/R` (rotation) are read but
+    the generated appearance uses a fixed black border / no fill / no rotation — a visible
+    simplification. A signature appearance is a *drawing of the name*, not a cryptographic visual,
+    and no signing is performed. Comb fields, rich text and auto-size beyond the shared text
+    generator are not separately implemented.
 - [x] **SL-5.FORM.03 — Calculation, validation, and format order** · deps: FORM.01, SL-5.JS.01 · owner: AI+
   - **Do:** `/CO` calculation order and the format/validate/calculate event sequence. Most real
     forms depend on this working exactly like Acrobat.

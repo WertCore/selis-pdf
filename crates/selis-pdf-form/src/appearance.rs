@@ -25,9 +25,16 @@
 //! annotation crate uses (ANNOT.02). Font substitution is always disclosed in
 //! [`AppearanceReport::disclosures`]; nothing changes silently.
 //!
-//! Like the rest of this crate, the writer copies the reachable graph, mutates
-//! the copies, emits a fresh document and **re-opens the bytes** to prove every
-//! generated appearance reads back before anything is returned.
+//! The writer materialises the live object graph with its ORIGINAL object
+//! numbers, mutates the copies, and appends ONLY the changed objects (the
+//! widgets that gained an `/AP`, the `/AcroForm` whose `/NeedAppearances`
+//! changed, and the new Form XObjects) as an incremental revision. `src` is a
+//! verbatim prefix of the output, so a signature over the original bytes keeps
+//! verifying. The bytes are **re-opened** to prove every generated appearance
+//! reads back before anything is returned. The reusable incremental primitive
+//! is the same low-level COS writer `selis-pdf-edit` uses
+//! (`selis_pdf_cos::doc_writer::write_incremental_update_full`); form depends
+//! only on COS, never on edit, so no edit crate enters the WASM form chunk.
 
 use super::*;
 use serde::{Deserialize, Serialize};
@@ -86,10 +93,12 @@ pub struct AppearanceReport {
 
 /// Regenerate appearances for every widget in the document's AcroForm.
 ///
-/// The caller owns the bytes: there is no filesystem or network access. Every
-/// generated stream is re-read from the produced bytes before they are
-/// returned; a widget that was meant to be drawn but does not read back is a
-/// typed [`FormError::ReadBack`], not a deliverable.
+/// The caller owns the bytes: there is no filesystem or network access. The
+/// output is an INCREMENTAL revision: the input bytes are a verbatim prefix,
+/// so signatures over the source keep verifying. Every generated stream is
+/// re-read from the produced bytes before they are returned; a widget that was
+/// meant to be drawn but does not read back is a typed [`FormError::ReadBack`],
+/// not a deliverable.
 ///
 /// # Budget
 ///
@@ -140,9 +149,14 @@ pub fn regenerate_appearances(
     if let Some(info) = info {
         roots.push(info);
     }
+    // Materialise the live graph with its ORIGINAL object numbers so this can
+    // be an incremental append rather than a full rewrite. Snapshot the
+    // originals first: the diff between this snapshot and the mutated graph is
+    // exactly the set of objects the appended revision must redefine.
     let mut next_num = 1u32;
-    let (mut objects, remap) = collect_objects(src, &roots, &mut next_num, budget, g)
-        .map_err(|e| FormError::Unresolvable(format!("cannot copy the document: {e}")))?;
+    let (mut objects, remap) =
+        collect_objects_incremental(src, &doc, &roots, &mut next_num, budget, g)?;
+    let original: HashMap<u32, Obj> = objects.iter().cloned().collect();
 
     let (default_da, form_fonts) = form_defaults(&objects, &remap, root.num, acroform_ref);
     let mut report = AppearanceReport::default();
@@ -209,15 +223,11 @@ pub fn regenerate_appearances(
     let all_generated = report.skipped.is_empty();
     clear_or_set_need_appearances(&mut objects, &remap, root.num, acroform_ref, !all_generated);
 
-    let root_ref = Ref::new(remap.get(&root.num).copied().unwrap_or(root.num), 0);
-    let mut trailer: Vec<(Vec<u8>, Obj)> = Vec::new();
-    if let Some(info) = info {
-        if let Some(&new_num) = remap.get(&info.num) {
-            trailer.push((b"Info".to_vec(), Obj::Ref(Ref::new(new_num, 0))));
-        }
-    }
-    let bytes = write_objects_as_document_with_trailer(&objects, root_ref, &trailer, budget, g)
-        .map_err(|e| FormError::Unresolvable(format!("cannot write the document: {e}")))?;
+    // Incremental append: changed widgets + AcroForm + new Form XObjects only.
+    // `src` stays a verbatim prefix (I3), so prior signature byte ranges and all
+    // untouched objects keep their exact bytes. Read-back below still walks the
+    // merged revision view so the generated `/AP`s are proven live.
+    let bytes = write_form_incremental(src, &original, &objects, root, info, budget, g)?;
 
     // Read-back: reopen and verify the fields we claimed to draw still carry
     // an /AP. One walk of the output for all of them (not one per widget).
@@ -888,6 +898,9 @@ mod tests {
         let budget = Budget::unlimited();
         let mut g = budget.guard();
         let (out, report) = regenerate_appearances(&pdf, &budget, &mut g).expect("regenerate");
+        // I3: the source is a byte-for-byte verbatim prefix of the revision.
+        assert!(out.starts_with(&pdf), "source is not a verbatim prefix");
+        assert_eq!(&out[..pdf.len()], pdf.as_slice());
         assert!(
             out.len() > pdf.len(),
             "new appearance streams were appended"
@@ -898,13 +911,35 @@ mod tests {
             "{report:?}"
         );
         // The signed field had a /Name, so no signature skip; the /NeedAppearances
-        // flag is cleared because every widget was drawn.
+        // flag is cleared because every widget was drawn. Check the LIVE value
+        // (the flag still appears in the reserved prefix), not the raw bytes.
         assert!(report.skipped.is_empty(), "{report:?}");
-        let text = String::from_utf8_lossy(&out);
-        assert!(
-            !text.contains("/NeedAppearances true"),
+        assert_eq!(
+            live_need_appearances(&out, &budget, &mut g),
+            None,
             "flag cleared on full generation"
         );
+    }
+
+    /// The live (newest-revision) value of the AcroForm `/NeedAppearances` flag.
+    /// `None` means the key is absent, i.e. no viewer rebuild is requested.
+    fn live_need_appearances(
+        bytes: &[u8],
+        budget: &Budget,
+        g: &mut BudgetGuard<'_>,
+    ) -> Option<bool> {
+        let start = selis_pdf_cos::xref::find_startxref(bytes, 4096)?;
+        let doc = selis_pdf_cos::parse_revisions(bytes, start, budget, g).ok()?;
+        let acro =
+            selis_pdf_cos::reconcile::catalog_entry(bytes, &doc, b"AcroForm", budget, g).ok()??;
+        let acro = resolve_deep(bytes, &doc, acro, 0, budget, g);
+        match acro {
+            Obj::Dict(pairs) => match dict_get(&pairs, b"NeedAppearances") {
+                Some(Obj::Bool(value)) => Some(*value),
+                _ => None,
+            },
+            _ => None,
+        }
     }
 
     #[test]
@@ -929,8 +964,7 @@ mod tests {
             }]
         );
         // A skipped widget keeps /NeedAppearances so a viewer can rebuild it.
-        let text = String::from_utf8_lossy(&out);
-        assert!(text.contains("/NeedAppearances true"));
+        assert_eq!(live_need_appearances(&out, &budget, &mut g), Some(true));
     }
 
     #[test]
@@ -950,5 +984,64 @@ mod tests {
         let (_, report) = regenerate_appearances(&pdf, &budget, &mut g).expect("regenerate");
         assert_eq!(report.kept_existing, 1, "{report:?}");
         assert_eq!(report.generated, 0, "{report:?}");
+    }
+
+    /// FORM.02 honest-gap close: regenerating appearances appends a revision,
+    /// so an existing signature over the original bytes must still verify.
+    /// Uses the committed PEM fixtures (leaf signer + root CA) from selis-pdf-sign.
+    #[test]
+    fn regeneration_preserves_the_prefix_and_an_existing_signature() {
+        const LEAF: &str = include_str!("../../selis-pdf-sign/tests/fixtures/leaf.crt");
+        const LEAF_KEY: &str = include_str!("../../selis-pdf-sign/tests/fixtures/leaf.key");
+        const ROOT: &str = include_str!("../../selis-pdf-sign/tests/fixtures/root.crt");
+
+        // A plain one-page PDF; sign_digital creates the signature field,
+        // widget and AcroForm itself.
+        let pdf = build_pdf(&[
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+            (
+                3,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> /Contents 4 0 R >>",
+            ),
+            (4, b"<< /Length 0 >>\nstream\n\nendstream"),
+        ]);
+        let budget = Budget::unlimited();
+        let mut g = budget.guard();
+        let options = selis_pdf_sign::DigitalOptions {
+            page: 1,
+            rect: [72.0, 600.0, 320.0, 690.0],
+            field_name: "Signature1".to_string(),
+            signer_name: "Ada Lovelace".to_string(),
+            reason: Some("Approved".to_string()),
+            location: Some("London".to_string()),
+            signing_time: "20261104120000Z".to_string(),
+            key_pem: LEAF_KEY.to_string(),
+            certificates_pem: vec![LEAF.to_string(), ROOT.to_string()],
+            logo: None,
+            strokes: Vec::new(),
+        };
+        let (signed, sig_report) = selis_pdf_sign::sign_digital(&pdf, &options, &budget, &mut g)
+            .expect("sign with the committed PEM fixtures");
+        assert!(sig_report.verified, "the source signature must start valid");
+
+        let (out, report) =
+            regenerate_appearances(&signed, &budget, &mut g).expect("regenerate appearances");
+        // I3: the signed source is preserved verbatim, so its /ByteRange still
+        // names the exact same bytes.
+        assert!(out.starts_with(&signed), "signed source is not a prefix");
+        assert_eq!(&out[..signed.len()], signed.as_slice());
+        assert!(out.len() > signed.len());
+        // The signature widget had a /V /Name, so it was drawn, not skipped.
+        assert!(report.skipped.is_empty(), "{report:?}");
+
+        // Verify with the real report: the signature still cryptographically
+        // verifies, now over a prefix of a larger file.
+        let root_der = selis_crypto::cert::pem_body(ROOT, "CERTIFICATE").expect("root PEM");
+        let read = selis_pdf_sign::signatures(&out, &[root_der], 1_793_793_600, &budget, &mut g)
+            .expect("verify after regeneration");
+        assert_eq!(read.signatures.len(), 1, "{read:?}");
+        assert!(read.signatures[0].verified, "signature broke: {read:?}");
+        assert_eq!(read.signatures[0].field, "Signature1");
     }
 }
