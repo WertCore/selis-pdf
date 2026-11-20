@@ -1093,6 +1093,59 @@ impl Session {
         None
     }
 
+    /// The `/BaseFont` of a font resource whose codes are served by the lazy
+    /// CJK subset rather than by a program the document embeds (SL-3.FONT.10).
+    ///
+    /// Only a `Uni…UCS2…` Type0 font with **no** embedded program on either the
+    /// wrapper or its descendant qualifies: that is the one mapping the render
+    /// walk treats as Unicode-valued CJK codes, so it is the one that gets a
+    /// subset substitute. A font the document carries itself is not
+    /// substituted and is not disclosed. The lookup reads no font bytes and
+    /// performs no I/O — the caller turns the returned name into a typed
+    /// [`selis_font::cjk::CjkSubstitutionNote`].
+    pub fn text_cjk_font_base(
+        &self,
+        page_num: usize,
+        font_name: &Bytes,
+        budget: &Budget,
+        g: &mut BudgetGuard<'_>,
+    ) -> Option<String> {
+        fn base_of(font: &selis_font::FontDict) -> Option<String> {
+            let ucs2 = font
+                .cmap_name
+                .as_deref()
+                .is_some_and(selis_font::cmapfile::is_ucs2_cmap_name);
+            let embedded = font.font_file.is_some()
+                || font
+                    .descendant
+                    .as_ref()
+                    .is_some_and(|d| d.font_file.is_some());
+            (ucs2 && !embedded).then(|| font.base_font.clone())
+        }
+
+        let page = self.document.pages.get(page_num)?;
+        let augmented = augment_page_font_resources(self, page.resources.as_ref(), budget, g);
+        let resources = augmented.as_ref().or(page.resources.as_ref());
+        let mut resolver = self.new_resolver(budget);
+        if let Some(font) = resolve_font_dict(&mut resolver, resources, font_name, g) {
+            if let Some(base) = base_of(&font) {
+                return Some(base);
+            }
+        }
+        // A font declared only on an annotation appearance (SL-3.TEXT.14).
+        for annot_res in self.annotation_resources_for_page(page, budget, g) {
+            let mut annot_resolver = self.new_resolver(budget);
+            if let Some(font) =
+                resolve_font_dict(&mut annot_resolver, annot_res.as_ref(), font_name, g)
+            {
+                if let Some(base) = base_of(&font) {
+                    return Some(base);
+                }
+            }
+        }
+        None
+    }
+
     /// The face each font resource on a page names: `(resource name, /BaseFont)`.
     ///
     /// The extractors recover text by the resource name the content stream uses

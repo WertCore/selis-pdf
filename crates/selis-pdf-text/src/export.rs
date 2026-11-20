@@ -140,6 +140,24 @@ pub fn to_text(lines: &[TextLine], line_texts: &[String], low_confidence: bool) 
     to_text_from_line_texts(texts, low_confidence)
 }
 
+/// Plain text with the typed verdict's marker (SL-3.TEXT.15).
+///
+/// The web/text-tools path has the real [`ExtractionVerdict`] from
+/// [`crate::classify_verdict`], so it must append the verdict's marker — not
+/// just the fully-silent one — to keep a ≥5 % undecodable page from passing as
+/// clean text. `DivergentNoRecovery` gets its own distinct marker, never the
+/// silent-page one.
+#[must_use]
+pub fn to_text_with_verdict(
+    lines: &[TextLine],
+    line_texts: &[String],
+    verdict: ExtractionVerdict,
+) -> String {
+    let paired = lines.len().min(line_texts.len());
+    let texts = line_texts.get(..paired).unwrap_or_default();
+    to_text_with_verdict_from_line_texts(texts, verdict)
+}
+
 /// Plain text from a page's line texts alone, one line per newline.
 ///
 /// The formatter [`to_text`] and the text layer
@@ -155,6 +173,24 @@ pub fn to_text(lines: &[TextLine], line_texts: &[String], low_confidence: bool) 
 /// confused with a genuinely blank page.
 #[must_use]
 pub fn to_text_from_line_texts(line_texts: &[String], low_confidence: bool) -> String {
+    let verdict = if low_confidence {
+        ExtractionVerdict::ZeroRecovery
+    } else {
+        ExtractionVerdict::Recovered
+    };
+    to_text_with_verdict_from_line_texts(line_texts, verdict)
+}
+
+/// Plain text from line texts and the typed verdict, one line per newline.
+///
+/// The single place the marker is appended for both the legacy low-confidence
+/// callers and the verdict-carrying web path, so the two cannot drift. A clean
+/// verdict appends nothing; a flagged one appends its own distinct marker.
+#[must_use]
+pub fn to_text_with_verdict_from_line_texts(
+    line_texts: &[String],
+    verdict: ExtractionVerdict,
+) -> String {
     let mut out = String::new();
     for (i, text) in line_texts.iter().enumerate() {
         if i > 0 {
@@ -162,11 +198,11 @@ pub fn to_text_from_line_texts(line_texts: &[String], low_confidence: bool) -> S
         }
         out.push_str(text);
     }
-    if low_confidence {
+    if let Some(marker) = verdict.marker() {
         if !out.is_empty() {
             out.push('\n');
         }
-        out.push_str(LOW_CONFIDENCE_MARKER);
+        out.push_str(marker);
     }
     out
 }
@@ -394,6 +430,26 @@ mod tests {
         assert!(to_json(&flagged).contains("\"verdict\": \"zero_recovery\""));
         flagged.verdict = crate::ExtractionVerdict::Blank;
         assert!(to_json(&flagged).contains("\"verdict\": \"blank\""));
+    }
+
+    /// SL-3.TEXT.15: the verdict-carrying formatter emits the *distinct*
+    /// partial-divergence marker, never the silent-page one, on the web/text
+    /// tools path.
+    #[test]
+    fn to_text_with_verdict_emits_the_distinct_marker() {
+        let texts = vec!["T".to_string()];
+        let lines: Vec<TextLine> = Vec::new();
+        let out = to_text_with_verdict(
+            &lines,
+            &texts,
+            crate::ExtractionVerdict::DivergentNoRecovery,
+        );
+        assert!(out.contains(crate::DIVERGENT_NO_RECOVERY_MARKER), "{out}");
+        assert!(!out.contains(LOW_CONFIDENCE_MARKER), "{out}");
+        assert_eq!(
+            to_text_with_verdict(&lines, &texts, crate::ExtractionVerdict::Recovered),
+            "T"
+        );
     }
 
     /// The low-confidence marker rendered as text reads exactly the constant

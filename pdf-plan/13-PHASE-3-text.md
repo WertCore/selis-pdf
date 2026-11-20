@@ -200,6 +200,35 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
     produce. Cohort verdict `corpus/expect/cjk-subset-payload/verdicts.jsonl`
     (`measured: false`) records the honest state.
 
+    **Bucket 2 (2026-11-20) — web production caller + harness leg + cache
+    adapter; the render-side web gaps are still open.** The typed note now has a
+    real caller in the **text extraction wasm path**, not just a data-layer test:
+    `Session::text_cjk_font_base` (`crates/selis-pdf-engine/src/session.rs`)
+    identifies a `Uni…UCS2…` Type0 font with no embedded program; the text
+    tools build `CjkSubstitutionNote`s from the raw drawn CJK codes
+    (`crates/selis-pdf-tools/src/text.rs`); and the text chunk emits them as
+    `report-substitutions.json` (`selis-font-substitution/1`) alongside the
+    `.txt` and quality JSON (`crates/selis-pdf-wasm-text/src/lib.rs`). No font
+    payload is embedded — the note is pure data and the CJK size-check chunk is
+    unchanged at **0 B delta**. End-to-end fixture:
+    `font10_the_wasm_text_path_discloses_the_cjk_subset` (synthetic unembedded
+    `UniGB-UCS2-H` page with a U+4E2D code ⇒ `STSong-Light`, `ideographs-1`,
+    `subset: true`, no embedded bytes). A small Cache Storage-backed
+    `LazyByteSource` adapter (`packages/wasm-loader/src/cjk-cache-source.ts`,
+    `cacheStoragePayloadCache` + `CjkCacheSource`) and a browser harness leg
+    (`cjk-cache-source.test.ts`: the typed disclosure drives `drainCjk` through
+    an in-memory Cache Storage double, cached on the second pass, no document
+    bytes in any key) close the "no browser harness / no cache adapter" half
+    **for the text path**.
+
+    Still unclosed and annotated as such in the cohort verdict (`measured:
+    false`, unchanged): (a) a production caller of `drainCjk` in the **render**
+    loop of a shipped viewer, and (b) a `wasm-browser` leg that opens a CJK
+    document and observes pass-1 notdef → repaint in a real browser. The
+    harness leg added here is a vitest/contract leg over a fixture, not a
+    browser-driven measurement of the real guest render loop. Do NOT close this
+    box on the strength of the text-path wiring.
+
 - [x] **SL-3.FONT.11 — Font subsetting and re-embedding** · deps: FONT.03, FONT.04 · owner: AI+
   - **Do:** Subset TrueType and CFF to a glyph set, rebuild `loca`/`hmtx`/`cmap`/charstrings, and
     **merge new glyphs into an existing subset** — required by ADR-P0024, because editing text adds
@@ -757,6 +786,28 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
     undecodable glyphs only. `xtask text-sweep`'s `text_err` wiring and a corpus
     case pin are unmeasured here (no corpus/pdfs, no oracles), recorded as
     `corpus/expect/divergent-no-recovery/verdicts.jsonl` (`measured: false`).
+
+    **Bucket 2 (2026-11-20) — the literal threshold check is now wired into the
+    web text report/export JSON.** The CLI's typed verdict was already local;
+    the wasm/tools text path previously used the non-counted recovery and
+    emitted a coarse `verdict()` string that ignored partial divergence.
+    `crates/selis-pdf-tools/src/text.rs::page_lines_with_verdict` now uses
+    `apply_unicode_recovery_counted` + `classify_verdict`, and
+    `PageQuality`/`ExtractionQuality` (`crates/selis-pdf-text/src/quality.rs`)
+    carry the typed per-page verdict, a `divergent_no_recovery_pages` count, a
+    `divergent-no-recovery` report verdict and the distinct marker string in
+    the `selis-extract-quality/1` JSON. The plain-text export gets the same
+    distinct marker via `to_text_with_verdict`. Synthetic fixture:
+    `text15_the_wasm_quality_report_flags_a_divergent_tail` (2 surrogate codes
+    of 4 drawn = 50 % ⇒ flagged verdict + distinct marker, and the
+    fully-silent marker is *not* used) plus `a_clean_page_carries_no_marker_in_
+    the_report_json` and the existing CLI boundary pins. This closes the
+    "wire the typed verdict into the JSON flag" half of the DoD. It does NOT
+    close the differential half: the literal ">5 % divergence with zero
+    recovery" needs selis *vs* an oracle on real corpus files; `xtask
+    text-sweep`'s `text_err` wiring and the corpus case pin remain unmeasured
+    here and the cohort verdict stays `measured: false`. No cohort is claimed
+    closed.
 - [x] **SL-3.CONF.03 — Recalibrate the Extract gate; triage the diff≥25 long tail** ·
   deps: CONF.02, ORACLE.04 · owner: AI+
   - **Do:** ORACLE.04 measured that independent extractors top out at 79.0 % (pdfium↔pdfjs)
@@ -1273,8 +1324,17 @@ what is genuinely verified locally:
   RTL preserved + bidi primitive)**: synthetic fixtures verify each mechanism;
   the cohorts themselves are unmeasured and stay open.
 * **FONT.10 — typed subset-substitution disclosure** (`CjkSubstitutionNote`);
-  the web-half gaps (no production caller, no browser harness, no cache
-  adapter) are unchanged and cannot be closed from this branch.
+  a later pass gave it a real web production caller in the **text extraction
+  wasm path** (typed `selis-font-substitution/1` JSON alongside the text), a
+  vitest harness leg and a Cache Storage-backed `LazyByteSource` adapter —
+  no font payload embedded, CJK size-check chunk at 0 B delta. The
+  **render-loop** caller and the real-browser `wasm-browser` CJK leg are still
+  open, so the cohort verdict stays `measured: false`.
+* **Bucket 2 web wiring (same pass).** The literal ≥5 % threshold now reaches
+  the wasm text report/export JSON through `classify_verdict` → `PageQuality`
+  → `selis-extract-quality/1`, with a synthetic ≥5 % fixture pinning the
+  distinct marker; the differential `xtask text-sweep`/corpus case pin is
+  still unmeasured and no cohort is claimed closed.
 * **ROB.06 — containment hardening**: synthetic hostile CMap/SFNT/Type1 inputs
   terminate with typed deviations, no panic (`selis-font/tests/fuzz_regressions.rs`
   + a malformed-embedded-font CLI pin). The upstream-upgrade + instrumented-soak

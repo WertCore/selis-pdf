@@ -36,8 +36,8 @@ pub use assembly::{
     assemble_runs, assemble_words, gather_glyphs, TextLine, TextRun, TextWord,
 };
 pub use export::{
-    structured, to_json, to_markdown, to_text, to_text_from_line_texts, Line, Span, Structured,
-    LOW_CONFIDENCE_MARKER,
+    structured, to_json, to_markdown, to_text, to_text_from_line_texts, to_text_with_verdict,
+    to_text_with_verdict_from_line_texts, Line, Span, Structured, LOW_CONFIDENCE_MARKER,
 };
 pub use html::{
     read_positioned_html, to_positioned_html, verify_positioned_html, HtmlPage, ReadDocument,
