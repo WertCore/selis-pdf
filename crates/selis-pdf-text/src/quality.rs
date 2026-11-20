@@ -14,6 +14,8 @@
 
 use std::fmt::Write as _;
 
+use crate::verdict::{classify_verdict, ExtractionVerdict, RecoveryCounts};
+
 /// One page's extraction facts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PageQuality {
@@ -27,6 +29,12 @@ pub struct PageQuality {
     pub drew_text: bool,
     /// SL-3.TEXT.10: text was drawn and nothing was recovered.
     pub low_confidence: bool,
+    /// SL-3.TEXT.15: the typed page-level verdict, derived from the *same*
+    /// recovery counts the text was assembled from. A caller that only knows
+    /// line texts falls back to [`ExtractionVerdict::Recovered`]; the web text
+    /// path supplies the real verdict via [`PageQuality::from_counts`]. Never
+    /// a bare "success" when a ≥5 % undecodable tail was flagged.
+    pub verdict: ExtractionVerdict,
 }
 
 impl PageQuality {
@@ -50,7 +58,34 @@ impl PageQuality {
             lines,
             drew_text,
             low_confidence: drew_text && !recovered,
+            verdict: ExtractionVerdict::Recovered,
         }
+    }
+
+    /// One page's record, with the typed verdict from its recovery counts.
+    ///
+    /// This is the constructor the extraction paths use: the ≥5 % undecodable
+    /// threshold in [`classify_verdict`] produces the flag, so the report JSON
+    /// cannot drift from the marker the plain-text formatter emits. The
+    /// low-confidence flag is kept independent — a page that drew only
+    /// whitespace still counts as silent for TEXT.10, while the verdict
+    /// describes the recovery chain's own counts.
+    #[must_use]
+    pub fn from_counts(
+        number: u32,
+        line_texts: &[String],
+        drew_text: bool,
+        counts: &RecoveryCounts,
+    ) -> Self {
+        let mut page = Self::from_lines(number, line_texts, drew_text);
+        page.verdict = classify_verdict(counts);
+        page
+    }
+
+    /// The marker this page must surface, if its verdict is flagged.
+    #[must_use]
+    pub fn marker(&self) -> Option<&'static str> {
+        self.verdict.marker()
     }
 
     /// Whether this page carries no recovered character at all.
@@ -75,6 +110,10 @@ pub struct ExtractionQuality {
     pub pages_with_text: u64,
     /// Pages that drew glyphs and recovered nothing (SL-3.TEXT.10).
     pub low_confidence_pages: u64,
+    /// Pages whose ≥5 % undecodable tail was flagged (SL-3.TEXT.15). Kept
+    /// separate from `low_confidence_pages`: a partially recovered page is not
+    /// silent, yet it still carries a distinct marker the consumer must see.
+    pub divergent_no_recovery_pages: u64,
     /// One record per page, in document order.
     pub per_page: Vec<PageQuality>,
 }
@@ -100,6 +139,10 @@ impl ExtractionQuality {
             if page.low_confidence {
                 report.low_confidence_pages = report.low_confidence_pages.saturating_add(1);
             }
+            if page.verdict == ExtractionVerdict::DivergentNoRecovery {
+                report.divergent_no_recovery_pages =
+                    report.divergent_no_recovery_pages.saturating_add(1);
+            }
         }
         report.per_page = per_page;
         report
@@ -107,12 +150,16 @@ impl ExtractionQuality {
 
     /// The verdict a reader acts on.
     ///
-    /// `ok` when the export recovered text and no page was lost to an
-    /// undecodable font; `low-confidence` when at least one page drew text the
-    /// extractor could not read; `empty` when nothing was recovered at all.
+    /// `divergent-no-recovery` when a page's ≥5 % undecodable tail was flagged
+    /// (SL-3.TEXT.15); `low-confidence` when at least one page drew text the
+    /// extractor could not read at all; `empty` when nothing was recovered;
+    /// `ok` otherwise. The divergent flag is checked first so a partial page
+    /// cannot hide behind a clean "ok" summary that only looks at totals.
     #[must_use]
     pub fn verdict(&self) -> &'static str {
-        if self.low_confidence_pages > 0 {
+        if self.divergent_no_recovery_pages > 0 {
+            "divergent-no-recovery"
+        } else if self.low_confidence_pages > 0 {
             "low-confidence"
         } else if self.characters == 0 {
             "empty"
@@ -140,13 +187,32 @@ impl ExtractionQuality {
             "  \"low_confidence_pages\": {},",
             self.low_confidence_pages
         );
+        let _ = writeln!(
+            out,
+            "  \"divergent_no_recovery_pages\": {},",
+            self.divergent_no_recovery_pages
+        );
         out.push_str("  \"per_page\": [\n");
         for (index, page) in self.per_page.iter().enumerate() {
+            // SL-3.TEXT.15: the typed per-page verdict comes from the same
+            // threshold check the text marker uses. A flagged page also carries
+            // its distinct marker string so a consumer that ignores the verdict
+            // enum still sees why the page is not clean.
+            let marker = page
+                .marker()
+                .map(|m| format!(", \"marker\": {}", json_str(m)))
+                .unwrap_or_default();
             let _ = write!(
                 out,
                 "    {{\"page\": {}, \"characters\": {}, \"lines\": {}, \
-                 \"drew_text\": {}, \"low_confidence\": {}}}",
-                page.number, page.characters, page.lines, page.drew_text, page.low_confidence
+                 \"drew_text\": {}, \"low_confidence\": {}, \"verdict\": {}{}}}",
+                page.number,
+                page.characters,
+                page.lines,
+                page.drew_text,
+                page.low_confidence,
+                json_str(page.verdict.as_str()),
+                marker
             );
             if index.saturating_add(1) < self.per_page.len() {
                 out.push(',');
@@ -258,6 +324,51 @@ mod tests {
         assert!(json.contains("\"page\": 2"));
         assert!(json.contains("\"characters\": 3"));
         assert!(json.contains("\"low_confidence\": false"));
+    }
+
+    #[test]
+    fn a_divergent_page_flags_the_report_json_with_its_distinct_marker() {
+        // SL-3.TEXT.15: a ≥5 % undecodable tail that still recovered text is a
+        // distinct, flagged page — not a clean "ok" hidden by the totals.
+        let mut page = PageQuality::from_lines(1, &["T".to_string()], true);
+        page.verdict = crate::ExtractionVerdict::DivergentNoRecovery;
+        let report = ExtractionQuality::from_pages(vec![page]);
+        assert_eq!(report.divergent_no_recovery_pages, 1);
+        assert_eq!(report.low_confidence_pages, 0);
+        assert_eq!(report.verdict(), "divergent-no-recovery");
+        let json = report.to_json();
+        assert!(
+            json.contains("\"divergent_no_recovery_pages\": 1"),
+            "{json}"
+        );
+        assert!(
+            json.contains("\"verdict\": \"divergent-no-recovery\""),
+            "{json}"
+        );
+        assert!(
+            json.contains("\"verdict\": \"divergent_no_recovery\""),
+            "{json}"
+        );
+        assert!(
+            json.contains(crate::DIVERGENT_NO_RECOVERY_MARKER),
+            "distinct marker missing: {json}"
+        );
+        // The silent-page marker must not be conflated with the partial one.
+        assert!(!json.contains(crate::LOW_CONFIDENCE_MARKER), "{json}");
+    }
+
+    #[test]
+    fn a_clean_page_carries_no_marker_in_the_report_json() {
+        let report = ExtractionQuality::from_pages(vec![PageQuality::from_lines(
+            1,
+            &["Test".to_string()],
+            true,
+        )]);
+        assert_eq!(report.divergent_no_recovery_pages, 0);
+        assert_eq!(report.verdict(), "ok");
+        let json = report.to_json();
+        assert!(json.contains("\"verdict\": \"recovered\""), "{json}");
+        assert!(!json.contains("\"marker\""), "{json}");
     }
 
     #[test]

@@ -12,8 +12,13 @@
 //! The module is behind the `text` feature because it links the engine, which
 //! is deliberately absent from the plain tools chunk.
 
+use std::collections::HashMap;
+
+use selis_font::cjk::CjkSubstitutionNote;
 use selis_pdf_engine::Session;
-use selis_pdf_text::{ExtractionQuality, PageQuality, ReflowPage, Table, TextLine};
+use selis_pdf_text::{
+    ExtractionQuality, ExtractionVerdict, PageQuality, ReflowPage, Table, TextLine,
+};
 use selis_sandbox::{Budget, BudgetGuard};
 
 use crate::{read_file, CliError, SplitPart, ToolResult, MAX_SPLIT_OUTPUTS};
@@ -34,6 +39,53 @@ pub struct TextExport {
     pub text: String,
     /// What the export recovered, per page.
     pub quality: ExtractionQuality,
+    /// SL-3.FONT.10: typed disclosures that an unembedded CJK font was
+    /// rendered with an on-demand subset face. Pure data — no font bytes are
+    /// carried here — so the web caller receives the substitution alongside
+    /// the text without the payload being embedded in this chunk.
+    pub substitutions: Vec<CjkSubstitutionNote>,
+}
+
+impl TextExport {
+    /// The typed CJK substitution disclosures as JSON (`selis-font-substitution/1`).
+    ///
+    /// Emitted alongside the extracted text by the web text chunk so a browser
+    /// caller can tell the user their Chinese glyphs came from a lazy subset,
+    /// and which chunk served them, without downloading a font to find out.
+    #[must_use]
+    pub fn substitutions_json(&self) -> String {
+        #[derive(serde::Serialize)]
+        struct Report<'a> {
+            schema: &'static str,
+            notes: Vec<Note<'a>>,
+        }
+        #[derive(serde::Serialize)]
+        struct Note<'a> {
+            requested_base_font: &'a str,
+            code: u32,
+            chunk: Option<&'a str>,
+            subset: bool,
+            disclosure: String,
+        }
+        let notes = self
+            .substitutions
+            .iter()
+            .map(|note| Note {
+                requested_base_font: note.requested_base_font.as_str(),
+                code: note.code,
+                chunk: note.chunk,
+                subset: note.subset,
+                disclosure: note.disclosure(),
+            })
+            .collect();
+        serde_json::to_string_pretty(&Report {
+            schema: "selis-font-substitution/1",
+            notes,
+        })
+        .unwrap_or_else(|_| {
+            "{\"schema\": \"selis-font-substitution/1\", \"notes\": []}".to_string()
+        })
+    }
 }
 
 /// A table export: the CSV a reader opens and the JSON a program reads.
@@ -88,6 +140,32 @@ pub(crate) fn page_lines(
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
 ) -> ToolResult<(Vec<TextLine>, Vec<String>, bool)> {
+    let (lines, line_texts, low_confidence, _, _) =
+        page_lines_with_verdict(session, page, budget, g)?;
+    Ok((lines, line_texts, low_confidence))
+}
+
+/// The same ladder as [`page_lines`], plus the typed page verdict and the
+/// typed CJK substitution disclosures (SL-3.FONT.10).
+///
+/// `selis extract` and the WASM text chunk both recover glyphs through this
+/// one helper, so the ≥5 % threshold that flags a page is the very check
+/// [`selis_pdf_text::classify_verdict`] defines — the report JSON and the
+/// plain-text marker can never drift from it. The substitution notes are built
+/// from the raw drawn codes *before* recovery rewrites them, so a code the
+/// recovery chain later maps elsewhere is still disclosed correctly.
+pub(crate) fn page_lines_with_verdict(
+    session: &Session,
+    page: usize,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> ToolResult<(
+    Vec<TextLine>,
+    Vec<String>,
+    bool,
+    ExtractionVerdict,
+    Vec<CjkSubstitutionNote>,
+)> {
     let number = page.saturating_add(1);
     let dl = session
         .page_text_display_list(page, budget, g)
@@ -95,9 +173,13 @@ pub(crate) fn page_lines(
     let visible = session.page_visible_box(page);
     let mut glyphs = selis_pdf_text::gather_glyphs(&dl, visible);
     let drew_text = !glyphs.is_empty();
-    selis_pdf_text::apply_unicode_recovery(&mut glyphs, &mut |font, code| {
+    // Disclose CJK subset substitution from the raw codes before recovery
+    // rewrites them. No font payload is read or embedded: the note is pure data.
+    let substitutions = cjk_substitution_notes(session, page, &glyphs, budget, g);
+    let counts = selis_pdf_text::apply_unicode_recovery_counted(&mut glyphs, &mut |font, code| {
         session.text_unicode(page, font, code, budget, g)
     });
+    let verdict = selis_pdf_text::classify_verdict(&counts);
     let lines = selis_pdf_text::assemble(glyphs);
     let mcid_order = session
         .mcid_order(budget, g)
@@ -118,7 +200,48 @@ pub(crate) fn page_lines(
         .map_err(|e| CliError(format!("page {number}: cannot order text: {e}")))?;
     let line_texts: Vec<String> = ordered.lines.iter().map(line_text).collect();
     let recovered = line_texts.iter().any(|text| !text.trim().is_empty());
-    Ok((ordered.lines, line_texts, drew_text && !recovered))
+    Ok((
+        ordered.lines,
+        line_texts,
+        drew_text && !recovered,
+        verdict,
+        substitutions,
+    ))
+}
+
+/// Typed disclosures for the CJK codes on this page whose font has no embedded
+/// program (SL-3.FONT.10). One lookup per distinct font resource; one note per
+/// distinct `(base font, code)` pair, in glyph order.
+fn cjk_substitution_notes(
+    session: &Session,
+    page: usize,
+    glyphs: &[selis_pdf_text::assembly::TextGlyph],
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Vec<CjkSubstitutionNote> {
+    let mut bases: HashMap<Vec<u8>, Option<String>> = HashMap::new();
+    let mut seen: HashMap<(String, u32), ()> = HashMap::new();
+    let mut notes = Vec::new();
+    for glyph in glyphs {
+        let code = u32::from(glyph.code);
+        if selis_font::cjk::chunk_for(code).is_none() {
+            continue;
+        }
+        let key = glyph.font.as_slice().to_vec();
+        let base = bases
+            .entry(key)
+            .or_insert_with(|| session.text_cjk_font_base(page, &glyph.font, budget, g));
+        let Some(base) = base.as_ref() else {
+            continue;
+        };
+        if seen.insert((base.clone(), code), ()).is_some() {
+            continue;
+        }
+        if let Some(note) = CjkSubstitutionNote::for_code(base, code) {
+            notes.push(note);
+        }
+    }
+    notes
 }
 
 /// The recovered text of a line, one space between words.
@@ -220,26 +343,39 @@ pub fn extract_text(path: &str, pages: Option<&str>) -> ToolResult<TextExport> {
         let selected = parse_pages(pages, session.len())?;
         let mut exported: Vec<(u32, String)> = Vec::with_capacity(selected.len());
         let mut quality: Vec<PageQuality> = Vec::with_capacity(selected.len());
+        let mut substitutions: Vec<CjkSubstitutionNote> = Vec::new();
         for page in selected {
             let number = u32::try_from(page.saturating_add(1)).unwrap_or(u32::MAX);
             let mut g = crate::runtime::cli_guard(budget, &clock);
-            let (lines, line_texts, low_confidence) = page_lines(session, page, budget, &mut g)?;
+            let (lines, line_texts, low_confidence, verdict, page_substitutions) =
+                page_lines_with_verdict(session, page, budget, &mut g)?;
+            substitutions.extend(page_substitutions);
             let drew_text = low_confidence || !lines.is_empty();
-            let text = selis_pdf_text::to_text(&lines, &line_texts, low_confidence);
-            quality.push(PageQuality {
-                number,
-                characters: line_texts.iter().fold(0u64, |total, line| {
-                    total.saturating_add(u64::try_from(line.chars().count()).unwrap_or(u64::MAX))
-                }),
-                lines: u64::try_from(line_texts.len()).unwrap_or(u64::MAX),
-                drew_text,
-                low_confidence,
-            });
+            // The typed verdict drives the report JSON; a flagged page also
+            // gets its distinct marker in the plain-text export. A page whose
+            // only recovered characters were whitespace keeps the legacy
+            // silent marker even though its chain verdict is otherwise clean.
+            let text_verdict = if verdict.is_flagged() {
+                verdict
+            } else if low_confidence {
+                ExtractionVerdict::ZeroRecovery
+            } else {
+                verdict
+            };
+            let text = selis_pdf_text::to_text_with_verdict(&lines, &line_texts, text_verdict);
+            // Keep the typed verdict on the quality record too, so the report
+            // JSON carries the same flag the plain-text marker just emitted.
+            // `text_verdict` can differ only for a whitespace-only page (the
+            // legacy silent case); the report describes the recovery chain.
+            let mut page_quality = PageQuality::from_lines(number, &line_texts, drew_text);
+            page_quality.verdict = verdict;
+            quality.push(page_quality);
             exported.push((number, text));
         }
         Ok(TextExport {
             text: selis_pdf_text::to_text_with_page_separators(&exported),
             quality: ExtractionQuality::from_pages(quality),
+            substitutions,
         })
     })
 }

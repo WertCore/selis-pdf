@@ -496,17 +496,25 @@ fn run_impl(input: &[u8], op: Op, options: &str) -> Result<(Outputs, u32), Strin
             let export = selis_pdf_tools::extract_text("in/0", pages.as_deref())
                 .map_err(|e| e.to_string())?;
             let pages_out = u32::try_from(export.quality.pages).unwrap_or(u32::MAX);
-            Ok((
-                vec![
-                    (format!("{stem}.txt"), "text", export.text.into_bytes()),
-                    (
-                        format!("{stem}-quality.json"),
-                        "report",
-                        export.quality.to_json().into_bytes(),
-                    ),
-                ],
-                pages_out,
-            ))
+            let substitutions_json = (!export.substitutions.is_empty())
+                .then(|| export.substitutions_json().into_bytes());
+            let mut outputs: Outputs = vec![
+                (format!("{stem}.txt"), "text", export.text.into_bytes()),
+                (
+                    format!("{stem}-quality.json"),
+                    "report",
+                    export.quality.to_json().into_bytes(),
+                ),
+            ];
+            // FONT.10: the browser caller receives the typed subset-substitution
+            // disclosure alongside the extracted text, as its own small JSON
+            // report. No font bytes are embedded — this is pure data from the
+            // document's font dictionary. Only emitted when a substitution
+            // actually happened, so ordinary exports keep the two-output shape.
+            if let Some(json) = substitutions_json {
+                outputs.push((format!("{stem}-substitutions.json"), "report", json));
+            }
+            Ok((outputs, pages_out))
         }
         Op::Tables => {
             let export = selis_pdf_tools::extract_tables("in/0", pages.as_deref())
@@ -919,6 +927,126 @@ mod tests {
         );
         out
     }
+    /// A synthetic `UniGB-UCS2-H` page with **no embedded font program**: one
+    /// code recovers through `/ToUnicode`, two surrogate codes are undecodable
+    /// (2/4 = 50 %, a ≥5 % tail), and one CJK code recovers through the UCS2
+    /// reading. The document never embeds a font — the viewer substitutes a
+    /// lazy subset face, which the text chunk must disclose as typed data
+    /// (SL-3.FONT.10 + SL-3.TEXT.15).
+    fn ucs2_cjk_pdf() -> Vec<u8> {
+        let content = "BT /F1 24 Tf 10 100 Td <0001D800DFFF4E2D> Tj ET\n";
+        let cmap = "/CIDInit /ProcSet findresource begin\nbegincmap\n1 beginbfchar\n<0001> <0054>\nendbfchar\nendcmap\n";
+        let objects: Vec<Vec<u8>> = vec![
+            b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n".to_vec(),
+            b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n".to_vec(),
+            b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+              /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>\nendobj\n"
+                .to_vec(),
+            format!(
+                "4 0 obj\n<< /Length {} >>\nstream\n{content}endstream\nendobj\n",
+                content.len()
+            )
+            .into_bytes(),
+            b"5 0 obj\n<< /Type /Font /Subtype /Type0 /BaseFont /STSong-Light \
+              /Encoding /UniGB-UCS2-H /DescendantFonts [6 0 R] /ToUnicode 7 0 R >>\nendobj\n"
+                .to_vec(),
+            b"6 0 obj\n<< /Type /Font /Subtype /CIDFontType0 /BaseFont /STSong-Light \
+              /CIDSystemInfo << /Registry (Adobe) /Ordering (GB1) /Supplement 2 >> \
+              /DW 1000 >>\nendobj\n"
+                .to_vec(),
+            format!(
+                "7 0 obj\n<< /Length {} >>\nstream\n{cmap}endstream\nendobj\n",
+                cmap.len()
+            )
+            .into_bytes(),
+        ];
+        let mut out = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::new();
+        for object in &objects {
+            offsets.push(out.len());
+            out.extend_from_slice(object);
+        }
+        let xref = out.len();
+        let size = offsets.len().saturating_add(1);
+        out.extend_from_slice(format!("xref\n0 {size}\n").as_bytes());
+        out.extend_from_slice(b"0000000000 65535 f \n");
+        for offset in &offsets {
+            out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        out.extend_from_slice(
+            format!("trailer\n<< /Size {size} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n")
+                .as_bytes(),
+        );
+        out
+    }
+
+    /// SL-3.TEXT.15: the wasm text export's quality JSON carries the typed
+    /// verdict from the literal ≥5 % check and the distinct marker, so a
+    /// browser caller cannot mistake a partially unreadable page for a clean
+    /// one. The clean neighbour of the threshold is pinned in
+    /// `quality.rs::a_clean_page_carries_no_marker_in_the_report_json`.
+    #[test]
+    fn text15_the_wasm_quality_report_flags_a_divergent_tail() {
+        let pdf = ucs2_cjk_pdf();
+        let (outputs, pages) = run(&pdf, Op::Text, r#"{"name":"cjk.pdf"}"#);
+        assert_eq!(pages, 1);
+        let text = String::from_utf8(outputs[0].2.clone()).expect("utf-8");
+        assert!(
+            text.contains(selis_pdf_text::DIVERGENT_NO_RECOVERY_MARKER),
+            "distinct marker missing from text: {text}"
+        );
+        assert!(
+            !text.contains(selis_pdf_text::LOW_CONFIDENCE_MARKER),
+            "fully-silent marker must not be used for a partial page: {text}"
+        );
+        let quality = String::from_utf8(outputs[1].2.clone()).expect("utf-8");
+        assert!(
+            quality.contains("\"verdict\": \"divergent-no-recovery\""),
+            "flagged report verdict missing: {quality}"
+        );
+        assert!(
+            quality.contains("\"verdict\": \"divergent_no_recovery\""),
+            "typed page verdict missing: {quality}"
+        );
+        assert!(
+            quality.contains(selis_pdf_text::DIVERGENT_NO_RECOVERY_MARKER),
+            "distinct marker missing from report: {quality}"
+        );
+        assert!(
+            quality.contains("\"divergent_no_recovery_pages\": 1"),
+            "flagged page count missing: {quality}"
+        );
+    }
+
+    /// FONT.10 + TEXT.15: the same synthetic page also produces the typed CJK
+    /// subset-substitution disclosure alongside the text — with **no** font
+    /// payload embedded in this chunk (the note is pure data).
+    #[test]
+    fn font10_the_wasm_text_path_discloses_the_cjk_subset() {
+        let pdf = ucs2_cjk_pdf();
+        let (outputs, _) = run(&pdf, Op::Text, r#"{"name":"cjk.pdf"}"#);
+        assert_eq!(
+            outputs.len(),
+            3,
+            "substitution report must ride alongside the text"
+        );
+        let (name, kind, bytes) = &outputs[2];
+        assert_eq!(name, "cjk-substitutions.json");
+        assert_eq!(*kind, "report");
+        let json = String::from_utf8(bytes.clone()).expect("utf-8");
+        assert!(
+            json.contains("\"schema\": \"selis-font-substitution/1\""),
+            "{json}"
+        );
+        assert!(json.contains("STSong-Light"), "{json}");
+        assert!(json.contains("\"code\": 20013"), "{json}"); // U+4E2D
+        assert!(json.contains("\"subset\": true"), "{json}");
+        assert!(
+            json.contains("on-demand subset chunk"),
+            "typed disclosure sentence missing: {json}"
+        );
+    }
+
     #[test]
     fn epub_package_is_readable() {
         // `run` already serialises on `TEST_LOCK`; taking it here as well would
