@@ -20,6 +20,7 @@ import {
 	type ConsentScope,
 	type DocumentIdentity,
 	type ScriptAuthorization,
+	authorizeScripting,
 } from "./js-policy.js";
 import {
 	type FormScriptOutcome,
@@ -71,7 +72,7 @@ export const browserConsentElement: ConsentElementFactory = (tag: string): Conse
  */
 export class ScriptConsentController {
 	private readonly grants = new ConsentPolicy();
-	private readonly origins = new ApprovedOrigins();
+	private origins = new ApprovedOrigins();
 
 	/** A fresh authorization view over the current policy state. */
 	authorization(): ScriptAuthorization {
@@ -93,7 +94,22 @@ export class ScriptConsentController {
 		return this.grants.revoke(doc);
 	}
 
-	/** Withdraw every grant (e.g. a "block all scripts" setting). */
+	/** Record an explicit reader "No" for one document. Absolute. */
+	decline(doc: DocumentIdentity): void {
+		this.grants.decline(doc);
+	}
+
+	/** Whether this exact document was explicitly declined. */
+	isDeclined(doc: DocumentIdentity): boolean {
+		return this.grants.isDeclined(doc);
+	}
+
+	/** Explicitly retract a recorded decline (a separate reader action). */
+	undecline(doc: DocumentIdentity): boolean {
+		return this.grants.undecline(doc);
+	}
+
+	/** Withdraw every grant and decline. */
 	clear(): void {
 		this.grants.clear();
 	}
@@ -101,6 +117,21 @@ export class ScriptConsentController {
 	/** How many documents are currently consented. */
 	get grantCount(): number {
 		return this.grants.grantCount;
+	}
+
+	/** How many documents have an explicit decline recorded. */
+	get declineCount(): number {
+		return this.grants.declineCount;
+	}
+
+	/**
+	 * Install an EXPLICIT administrator-provided allow-list (SL-5.JS.03).
+	 * The host must pass a list it obtained from configuration — the consent UI
+	 * never guesses an origin. An empty list is deny-all, and no entry here can
+	 * override a recorded reader decline.
+	 */
+	setAdminPolicy(origins: ApprovedOrigins): void {
+		this.origins = origins;
 	}
 
 	/** An admin origin pre-approval (the narrow ADR-P0020 exception). */
@@ -199,7 +230,10 @@ export function showConsentPrompt(options: ConsentPromptOptions): Promise<boolea
 			dialog.remove();
 			resolve(granted);
 		};
-		decline.addEventListener("click", () => finish(false));
+		decline.addEventListener("click", () => {
+			options.consent.decline(options.document);
+			finish(false);
+		});
 		allow.addEventListener("click", () => {
 			if (!check.checked) {
 				return;
@@ -260,10 +294,22 @@ export async function runFormScriptWithConsent(
 	}
 
 	let promptShown = false;
-	if (!options.consent.isConsented(options.document)) {
+	const decision = authorizeScripting(options.consent.authorization(), options.document);
+	if (decision.kind === "deny" && decision.code === "js-declined") {
+		// The reader already said "No". An admin allow-list is never consulted
+		// as an override, and no prompt/worker is created.
+		return {
+			outcome: { ok: false, code: "js-consent-required" },
+			hadScripts: true,
+			promptShown: false,
+			consentGranted: false,
+		};
+	}
+	if (decision.kind === "deny") {
 		promptShown = true;
 		const granted = await options.prompter(options.document);
 		if (!granted) {
+			options.consent.decline(options.document);
 			return {
 				outcome: { ok: false, code: "js-consent-required" },
 				hadScripts: true,
@@ -273,6 +319,8 @@ export async function runFormScriptWithConsent(
 		}
 		options.consent.grant(options.document, "session");
 	}
+	// When an explicit admin allow-list (or a prior grant) allowed the run, no
+	// prompt was needed. `runFormScript` re-checks the gate before any Worker.
 
 	// exactOptionalPropertyTypes: only set knobs the caller actually supplied.
 	const runOptions: RunOptions = {

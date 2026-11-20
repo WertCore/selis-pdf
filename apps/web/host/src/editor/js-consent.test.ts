@@ -10,7 +10,7 @@
 
 import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
-import { documentIdentity } from "./js-policy.js";
+import { ApprovedOrigins, documentIdentity, parseAdminScriptPolicy } from "./js-policy.js";
 import {
 	type ConsentElement,
 	CONSENT_QUESTION,
@@ -292,5 +292,64 @@ describe("SL-5.JS.02 visible consent gate", () => {
 		expect(consent.grantCount).toBe(2);
 		// Three runs, three workers: each was gated, none created on a deny.
 		expect(realm.created()).toBe(3);
+	});
+
+	it("(e) an explicit admin allow-list narrows the prompt for that exact origin", async () => {
+		const consent = new ScriptConsentController();
+		consent.setAdminPolicy(parseAdminScriptPolicy("origin https://forms.example\n"));
+		const realm = realmWorkerFactory();
+		let prompted = 0;
+		const result = await runFormScriptWithConsent("/CO [6 0 R]", calcRequest(), {
+			document: docA,
+			consent,
+			prompter: async () => {
+				prompted += 1;
+				return true;
+			},
+			workerFactory: realm.factory,
+		});
+		expect(prompted).toBe(0);
+		expect(result.promptShown).toBe(false);
+		expect(realm.created()).toBe(1);
+		expect(result.outcome.ok).toBe(true);
+		// A different origin still needs a prompt.
+		const otherOrigin = documentIdentity("form-c", "https://other.example");
+		const other = await runFormScriptWithConsent("/JS (1)", calcRequest(), {
+			document: otherOrigin,
+			consent,
+			prompter: async () => {
+				prompted += 1;
+				return false;
+			},
+			workerFactory: realm.factory,
+		});
+		expect(other.promptShown).toBe(true);
+		expect(realm.created()).toBe(1);
+	});
+
+	it("(f) a reader decline is never overridden by an admin allow-list", async () => {
+		const consent = new ScriptConsentController();
+		consent.decline(docA);
+		const admin = new ApprovedOrigins();
+		admin.approveOrigin(docA.origin);
+		admin.approveDocument(docA.id);
+		consent.setAdminPolicy(admin);
+		const realm = realmWorkerFactory();
+		let prompted = 0;
+		const result = await runFormScriptWithConsent("/CO [6 0 R]", calcRequest(), {
+			document: docA,
+			consent,
+			prompter: async () => {
+				prompted += 1;
+				return true;
+			},
+			workerFactory: realm.factory,
+		});
+		expect(prompted).toBe(0);
+		expect(result.promptShown).toBe(false);
+		expect(realm.created()).toBe(0);
+		expect(result.consentGranted).toBe(false);
+		expect(result.outcome).toEqual({ ok: false, code: "js-consent-required" });
+		expect(consent.isDeclined(docA)).toBe(true);
 	});
 });

@@ -32,6 +32,7 @@
 //! choke point an engine calls before it runs any script. Both default to deny.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 
 /// The standard PDF permission bits (ISO 32000-2 Table 23).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -278,9 +279,13 @@ pub enum ConsentScope {
 ///
 /// A fresh policy grants nothing: a script never runs until the host calls
 /// [`ConsentPolicy::grant`] with an explicit reader action for that document.
+/// It also records explicit *declines* (SL-5.JS.03). A decline is absolute:
+/// it outranks both a stale grant and any administrator allow-list entry, so
+/// an allow-list can never silently re-enable a document the reader refused.
 #[derive(Debug, Clone, Default)]
 pub struct ConsentPolicy {
     grants: BTreeMap<String, ConsentScope>,
+    declined: BTreeSet<String>,
 }
 
 impl ConsentPolicy {
@@ -303,25 +308,63 @@ impl ConsentPolicy {
     }
 
     /// Record an explicit reader consent for one document.
+    ///
+    /// A recorded decline is never overwritten by a grant: a reader who said
+    /// "No" must explicitly retract that refusal (see [`Self::undecline`])
+    /// before a grant can take effect.
     pub fn grant(&mut self, doc: &DocumentIdentity, scope: ConsentScope) {
+        if self.is_declined(doc) {
+            return;
+        }
         let _ = self.grants.insert(doc.id.clone(), scope);
     }
 
+    /// Record an explicit reader decline for one document (SL-5.JS.03).
+    ///
+    /// This removes any existing grant and is honoured ahead of every admin
+    /// allow-list entry by [`ScriptAuthorization::authorize`]. It is the
+    /// typed equivalent of the browser's "No" button and the native CLI's
+    /// `--deny-js` flag.
+    pub fn decline(&mut self, doc: &DocumentIdentity) {
+        let _ = self.grants.remove(&doc.id);
+        let _ = self.declined.insert(doc.id.clone());
+    }
+
+    /// Whether the reader explicitly declined this document.
+    #[must_use]
+    pub fn is_declined(&self, doc: &DocumentIdentity) -> bool {
+        self.declined.contains(&doc.id)
+    }
+
+    /// Explicitly retract a recorded decline. A decline is never cleared
+    /// implicitly: calling this is itself an affirmative reader action.
+    pub fn undecline(&mut self, doc: &DocumentIdentity) -> bool {
+        self.declined.remove(&doc.id)
+    }
+
     /// Withdraw consent for one document. Returns whether a grant was removed.
+    /// A recorded decline is deliberately *not* removed by a revoke.
     pub fn revoke(&mut self, doc: &DocumentIdentity) -> bool {
         self.grants.remove(&doc.id).is_some()
     }
 
-    /// Withdraw every grant (for example when the reader enables a "block all
-    /// scripts" setting).
+    /// Withdraw every grant and decline (for example when the reader resets
+    /// their scripting preferences).
     pub fn clear(&mut self) {
         self.grants.clear();
+        self.declined.clear();
     }
 
     /// Number of documents with a recorded grant.
     #[must_use]
     pub fn grant_count(&self) -> usize {
         self.grants.len()
+    }
+
+    /// Number of documents with a recorded, explicit decline.
+    #[must_use]
+    pub fn decline_count(&self) -> usize {
+        self.declined.len()
     }
 }
 
@@ -379,13 +422,166 @@ impl ApprovedOrigins {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// A stable, sorted view of every explicit entry, for the audit trail.
+    /// The `"origin"` / `"id"` tag is engine-controlled, never text lifted
+    /// from a document (ADR-P0017).
+    #[must_use]
+    pub fn entries(&self) -> Vec<(&'static str, &str)> {
+        let mut out: Vec<(&'static str, &str)> = Vec::with_capacity(self.len());
+        out.extend(self.origins.iter().map(|value| ("origin", value.as_str())));
+        out.extend(self.ids.iter().map(|value| ("id", value.as_str())));
+        out.sort_unstable();
+        out
+    }
+}
+
+/// Why an administrator-supplied scripting policy was refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PolicyParseError {
+    /// A line exceeded the bounded length.
+    LineTooLong {
+        /// 1-based line number in the supplied policy text.
+        line: usize,
+    },
+    /// The list holds more entries than this build accepts.
+    TooManyEntries,
+    /// The line is neither blank, a comment, `origin …` nor `id …`.
+    UnknownDirective {
+        /// 1-based line number in the supplied policy text.
+        line: usize,
+    },
+    /// A directive carried no value.
+    MissingValue {
+        /// 1-based line number in the supplied policy text.
+        line: usize,
+    },
+    /// A directive carried trailing tokens after its value.
+    ExtraToken {
+        /// 1-based line number in the supplied policy text.
+        line: usize,
+    },
+}
+
+impl fmt::Display for PolicyParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::LineTooLong { line } => write!(f, "policy line {line} is too long"),
+            Self::TooManyEntries => write!(f, "policy has too many entries"),
+            Self::UnknownDirective { line } => {
+                write!(f, "policy line {line} is not an 'origin' or 'id' entry")
+            }
+            Self::MissingValue { line } => write!(f, "policy line {line} has no value"),
+            Self::ExtraToken { line } => {
+                write!(f, "policy line {line} has trailing tokens")
+            }
+        }
+    }
+}
+
+impl std::error::Error for PolicyParseError {}
+
+impl PolicyParseError {
+    /// The registered code a caller should attach to this refusal.
+    #[must_use]
+    pub const fn code(&self) -> selis_error::Code {
+        selis_error::Code::JsPolicyMalformed
+    }
+}
+
+/// The administrator-supplied scripting origin policy (SL-5.JS.03).
+///
+/// Parsed from a caller-supplied **string** — this crate never reads a file.
+/// An empty list denies everything; only explicit `origin <value>` and
+/// `id <value>` lines pre-approve anything. Blank lines and `#` comments are
+/// ignored; every other shape is a typed refusal, never a skipped line that
+/// might approve a document the administrator did not name.
+#[derive(Debug, Clone, Default)]
+pub struct ScriptPolicy {
+    origins: ApprovedOrigins,
+}
+
+/// The longest single policy line this build accepts.
+const MAX_POLICY_LINE: usize = 4096;
+/// The most entries a policy may carry. Bounds the audit walk as well as the
+/// memory the allow-list can consume.
+const MAX_POLICY_ENTRIES: usize = 1024;
+
+impl ScriptPolicy {
+    /// A deny-all policy.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Parse an administrator-supplied policy from text.
+    ///
+    /// # Errors
+    ///
+    /// [`PolicyParseError`] on the first malformed line. The text of a value is
+    /// never echoed in the error (only a 1-based line number), so a hostile
+    /// policy cannot smuggle content into a log (ADR-P0017).
+    pub fn parse(text: &str) -> Result<Self, PolicyParseError> {
+        let mut origins = ApprovedOrigins::new();
+        for (index, raw) in text.lines().enumerate() {
+            let line = index.saturating_add(1);
+            if raw.len() > MAX_POLICY_LINE {
+                return Err(PolicyParseError::LineTooLong { line });
+            }
+            let trimmed = raw.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            let mut parts = trimmed.split_whitespace();
+            let directive = parts
+                .next()
+                .ok_or(PolicyParseError::MissingValue { line })?;
+            let value = parts
+                .next()
+                .ok_or(PolicyParseError::MissingValue { line })?;
+            if parts.next().is_some() {
+                return Err(PolicyParseError::ExtraToken { line });
+            }
+            match directive {
+                "origin" => origins.approve_origin(value),
+                "id" => origins.approve_document(value),
+                _ => return Err(PolicyParseError::UnknownDirective { line }),
+            }
+            if origins.len() > MAX_POLICY_ENTRIES {
+                return Err(PolicyParseError::TooManyEntries);
+            }
+        }
+        Ok(Self { origins })
+    }
+
+    /// The parsed allow-list.
+    #[must_use]
+    pub const fn origins(&self) -> &ApprovedOrigins {
+        &self.origins
+    }
+
+    /// A stable, sorted, human-readable form of the policy for the audit log.
+    /// It contains only the approved values and never a document byte.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        let entries = self.origins.entries();
+        if entries.is_empty() {
+            return "admin scripting policy: deny-all (no entries)".to_string();
+        }
+        let mut out = String::from("admin scripting policy:");
+        for (kind, value) in entries {
+            out.push_str(&format!(" {kind}={value}"));
+        }
+        out
+    }
 }
 
 /// The combined gate an engine calls before running any document script.
 ///
 /// A run is allowed only when the reader consented for this document **or** an
 /// administrator pre-approved its origin/id. Admin pre-approval is the explicit
-/// ADR-P0020 exception to "no script without reader consent".
+/// ADR-P0020 exception to "no script without reader consent" — but an explicit
+/// reader decline is absolute and outranks both grants (SL-5.JS.03).
 #[derive(Debug, Clone, Copy)]
 pub struct ScriptAuthorization<'a> {
     /// Reader consent state.
@@ -403,11 +599,24 @@ impl<'a> ScriptAuthorization<'a> {
 
     /// Decide whether a script may run, returning a typed policy refusal.
     ///
+    /// The order is load-bearing (SL-5.JS.03):
+    /// 1. an explicit reader decline → `JS_DECLINED`, never overridden;
+    /// 2. reader consent **or** an exact admin allow-list entry → allowed;
+    /// 3. otherwise → `JS_CONSENT_REQUIRED`.
+    ///
     /// # Errors
     ///
-    /// `JS_CONSENT_REQUIRED` when neither the reader nor the admin approved
-    /// this document. The caller must not run the script on `Err`.
+    /// `JS_DECLINED` when the reader said "No" for this document, or
+    /// `JS_CONSENT_REQUIRED` when neither the reader nor the admin approved it.
+    /// The caller must not run the script on `Err`.
     pub fn authorize(&self, doc: &DocumentIdentity) -> selis_error::Result<()> {
+        if self.consent.is_declined(doc) {
+            return Err(selis_error::err!(
+                selis_error::Code::JsDeclined,
+                during = "scripting-consent",
+                detail = "reader declined scripting for this document"
+            ));
+        }
         if self.consent.is_consented(doc) || self.origins.is_approved(doc) {
             return Ok(());
         }
@@ -642,5 +851,94 @@ mod tests {
         assert!(ScriptAuthorization::new(&consent, &origins)
             .authorize(&d)
             .is_ok());
+    }
+
+    // ---- SL-5.JS.03: explicit, scoped, auditable admin policy ----
+
+    #[test]
+    fn an_admin_allow_list_admits_only_the_exact_scoped_origin() {
+        let d = doc();
+        let policy = ScriptPolicy::parse("# trusted forms\norigin https://forms.example\n")
+            .expect("valid policy");
+        assert!(ScriptPolicy::new().origins().is_empty());
+        assert!(policy.origins().is_approved(&d));
+        // Same origin but a different document id is fine; a different origin
+        // is NOT covered by the origin entry.
+        let other = DocumentIdentity::new("doc-999", "https://other.example");
+        assert!(!policy.origins().is_approved(&other));
+        let exact = ScriptPolicy::parse("id doc-999\n").expect("id policy");
+        assert!(exact.origins().is_approved(&other));
+        assert!(!exact.origins().is_approved(&d));
+    }
+
+    /// The load-bearing invariant: an allow-list entry never re-enables a
+    /// document the reader explicitly declined (browser "No" / CLI --deny-js).
+    #[test]
+    fn a_reader_decline_is_never_overridden_by_admin_approval() {
+        let d = doc();
+        let mut consent = ConsentPolicy::new();
+        consent.grant(&d, ConsentScope::Session);
+        consent.decline(&d);
+        assert!(consent.is_declined(&d));
+        assert!(!consent.is_consented(&d), "a decline clears a stale grant");
+
+        let mut origins = ApprovedOrigins::new();
+        origins.approve_origin("https://forms.example");
+        origins.approve_document("doc-123");
+        let gate = ScriptAuthorization::new(&consent, &origins);
+        let err = gate.authorize(&d).expect_err("decline is absolute");
+        assert_eq!(err.code(), selis_error::Code::JsDeclined);
+
+        // A later grant cannot quietly undo it either; only an explicit
+        // retraction can, and that is a separate reader action.
+        consent.grant(&d, ConsentScope::Session);
+        assert!(consent.is_declined(&d));
+        assert_eq!(
+            ScriptAuthorization::new(&consent, &origins)
+                .authorize(&d)
+                .unwrap_err()
+                .code(),
+            selis_error::Code::JsDeclined
+        );
+        assert!(consent.undecline(&d));
+        assert!(ScriptAuthorization::new(&consent, &origins)
+            .authorize(&d)
+            .is_ok());
+    }
+
+    /// Malformed policy is a typed refusal, not a silently skipped line: an
+    /// admin who mistypes a directive must not accidentally approve a doc.
+    #[test]
+    fn malformed_admin_policy_is_a_typed_refusal() {
+        for text in [
+            "origin\n",
+            "id\n",
+            "orgin https://forms.example\n",
+            "origin https://forms.example extra\n",
+            "origin https://forms.example\nid\n",
+        ] {
+            let err = ScriptPolicy::parse(text).expect_err("malformed policy");
+            assert_eq!(err.code(), selis_error::Code::JsPolicyMalformed);
+        }
+        // Blank lines and comments are fine; an empty policy is deny-all.
+        let empty = ScriptPolicy::parse("# nothing\n\n").expect("empty policy");
+        assert!(empty.origins().is_empty());
+        assert!(!empty.origins().is_approved(&doc()));
+    }
+
+    #[test]
+    fn an_allow_list_is_auditable() {
+        let policy = ScriptPolicy::parse("id doc-1\norigin https://a.example\nid doc-2\n")
+            .expect("valid policy");
+        let description = policy.describe();
+        assert!(
+            description.contains("origin=https://a.example"),
+            "{description}"
+        );
+        assert!(description.contains("id=doc-1"), "{description}");
+        assert!(description.contains("id=doc-2"), "{description}");
+        // Stable across repeated reads so a log line is reproducible.
+        assert_eq!(description, policy.describe());
+        assert_eq!(policy.origins().entries().len(), 3);
     }
 }

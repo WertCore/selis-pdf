@@ -78,7 +78,9 @@ impl JsSandbox {
     ///
     /// # Errors
     ///
-    /// `JS_CONSENT_REQUIRED`, or any error from [`JsSandbox::run`].
+    /// `JS_CONSENT_REQUIRED` (no grant), `JS_DECLINED` (an explicit reader
+    /// decline which no admin allow-list can override), or any error from
+    /// [`JsSandbox::run`]. The gate is checked before the interpreter is touched.
     pub fn run_authorized(
         &mut self,
         request: JsRequest,

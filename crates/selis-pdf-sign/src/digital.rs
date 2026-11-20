@@ -28,8 +28,13 @@ use selis_pdf_cos::doc_writer::write_incremental_update;
 use selis_pdf_cos::{Doc, Obj, Ref};
 use selis_sandbox::{Budget, BudgetGuard};
 
+#[cfg(not(target_arch = "wasm32"))]
+use crate::appearance::verify_appearance;
+use crate::appearance::{
+    build_signature_appearance, AppearanceTemplate, SignatureLogo, LOGO_RESOURCE,
+};
 use crate::certification::DocMdpLevel;
-use crate::visual::{content_stream, VisualLine, VisualOptions};
+use crate::visual::VisualStroke;
 use crate::{
     bytes, carried_trailer, dict_get, dict_set, invalid, malformed, next_object_number, resolve,
     trailer, SignError, MAX_KEY_BYTES, MAX_TEXT_BYTES,
@@ -74,6 +79,14 @@ pub struct DigitalOptions {
     pub key_pem: String,
     /// The certificate chain, leaf first, as PEM blocks.
     pub certificates_pem: Vec<String>,
+    /// Optional visible logo, supplied as raw pixels by the caller. The engine
+    /// never fetches it (SL-5.SIGN.07).
+    #[serde(default)]
+    pub logo: Option<SignatureLogo>,
+    /// Optional freehand strokes drawn into the widget appearance, normalized
+    /// `0..=1` inside the rectangle (reuses `VisualStroke`).
+    #[serde(default)]
+    pub strokes: Vec<VisualStroke>,
 }
 
 /// What was written.
@@ -93,6 +106,10 @@ pub struct DigitalReport {
     pub byte_range: [u64; 4],
     /// Size of the CMS blob.
     pub cms_bytes: usize,
+    /// Size of the widget's generated `/AP /N` appearance stream.
+    pub appearance_bytes: usize,
+    /// Whether a caller-supplied logo is embedded in the appearance.
+    pub has_logo: bool,
     /// Always `true`: the produced bytes were re-opened and verified.
     pub verified: bool,
 }
@@ -222,31 +239,22 @@ pub(crate) fn sign_impl(
     let user_width = (bx - ax).abs();
     let user_height = (by - ay).abs();
 
-    let lines = appearance_lines(options);
-    let appearance_options = VisualOptions {
-        page: options.page,
-        rect: [0.0, 0.0, rect[2] - rect[0], rect[3] - rect[1]],
-        lines,
-        strokes: Vec::new(),
-        color: [0.05, 0.05, 0.12],
-        stroke_width: 1.0,
-        font_size: 9.0,
-        border: true,
+    // SL-5.SIGN.07: build the widget's /AP /N from a typed template. The same
+    // visual renderer draws standalone stamps and this block, so layout cannot
+    // drift; the detached CMS byte range below is untouched by the appearance.
+    let template = AppearanceTemplate::new(
+        options.signer_name.clone(),
+        options.reason.clone(),
+        options.location.clone(),
+        human_time(&options.signing_time),
+    );
+    let template = match options.logo.clone() {
+        Some(logo) => template.with_logo(logo),
+        None => template,
     };
-    // The synthetic page reproduces the real page's rotation but with the
-    // annotation's own user-space extent, so `content_stream` emits
-    // annotation-local coordinates.
-    let local_page = crate::Page {
-        reference: target.reference,
-        width: user_width,
-        height: user_height,
-        rotation: target.rotation,
-    };
-    let appearance = content_stream(
-        &appearance_options,
-        local_page,
-        [0.0, 0.0, rect[2] - rect[0], rect[3] - rect[1]],
-    )?;
+    let appearance_assets = build_signature_appearance(target, rect, &template, &options.strokes)?;
+    let appearance = appearance_assets.stream;
+    let bbox = appearance_assets.bbox;
 
     let base = next_object_number(&doc);
     let signature_num = base;
@@ -257,6 +265,10 @@ pub(crate) fn sign_impl(
     // cannot collide with an existing object (`base` is past every revision).
     let reference_num = base.saturating_add(4);
     let params_num = base.saturating_add(5);
+    // SL-5.SIGN.07: logo image / soft-mask objects are allocated above every
+    // other slot so neither an approval nor a certification signature can
+    // collide with them.
+    let logo_base = base.saturating_add(6);
 
     let signature_ref = Obj::Ref(Ref::new(signature_num, 0));
     let appearance_ref = Obj::Ref(Ref::new(appearance_num, 0));
@@ -310,33 +322,40 @@ pub(crate) fn sign_impl(
         ));
     }
 
+    let mut appearance_resources = vec![(
+        bytes(b"Font"),
+        Obj::Dict(vec![(
+            bytes(FONT_NAME.as_bytes()),
+            Obj::Dict(vec![
+                (bytes(b"Type"), Obj::Name(bytes(b"Font"))),
+                (bytes(b"Subtype"), Obj::Name(bytes(b"Type1"))),
+                (bytes(b"BaseFont"), Obj::Name(bytes(b"Helvetica"))),
+                (bytes(b"Encoding"), Obj::Name(bytes(b"WinAnsiEncoding"))),
+            ]),
+        )]),
+    )];
+    if appearance_assets.has_logo {
+        appearance_resources.push((
+            bytes(b"XObject"),
+            Obj::Dict(vec![(
+                bytes(LOGO_RESOURCE.as_bytes()),
+                Obj::Ref(Ref::new(logo_base, 0)),
+            )]),
+        ));
+    }
     let appearance_dict = vec![
         (bytes(b"Type"), Obj::Name(bytes(b"XObject"))),
         (bytes(b"Subtype"), Obj::Name(bytes(b"Form"))),
         (
             bytes(b"BBox"),
             Obj::Array(vec![
-                Obj::Int(0),
-                Obj::Int(0),
-                crate::visual::coordinate(user_width),
-                crate::visual::coordinate(user_height),
+                crate::visual::coordinate(bbox[0]),
+                crate::visual::coordinate(bbox[1]),
+                crate::visual::coordinate(bbox[2]),
+                crate::visual::coordinate(bbox[3]),
             ]),
         ),
-        (
-            bytes(b"Resources"),
-            Obj::Dict(vec![(
-                bytes(b"Font"),
-                Obj::Dict(vec![(
-                    bytes(FONT_NAME.as_bytes()),
-                    Obj::Dict(vec![
-                        (bytes(b"Type"), Obj::Name(bytes(b"Font"))),
-                        (bytes(b"Subtype"), Obj::Name(bytes(b"Type1"))),
-                        (bytes(b"BaseFont"), Obj::Name(bytes(b"Helvetica"))),
-                        (bytes(b"Encoding"), Obj::Name(bytes(b"WinAnsiEncoding"))),
-                    ]),
-                )]),
-            )]),
-        ),
+        (bytes(b"Resources"), Obj::Dict(appearance_resources)),
     ];
 
     let field_dict = vec![
@@ -403,6 +422,11 @@ pub(crate) fn sign_impl(
         (field_num, Obj::Dict(field_dict)),
         (target.reference.num, Obj::Dict(page_dict)),
     ];
+    // SL-5.SIGN.07: the caller-supplied logo and optional soft mask ride in
+    // the same incremental revision as the widget and its appearance.
+    for (index, obj) in appearance_assets.extra_objects.into_iter().enumerate() {
+        objects.push((logo_base.saturating_add(index as u32), obj));
+    }
     if let Some(level) = doc_mdp {
         objects.push((
             reference_num,
@@ -455,6 +479,13 @@ pub(crate) fn sign_impl(
     let carried = carried_trailer(revision);
     let out = write_incremental_update(src, &objects, &carried, budget, g)
         .map_err(|e| malformed(format!("the incremental revision failed: {e}")))?;
+    // Incremental invariant: every byte of the source survives verbatim as the
+    // output's prefix. Refuse rather than return a rewritten document.
+    if !out.starts_with(src) {
+        return Err(SignError::ReadBack(
+            "the incremental revision did not preserve the source bytes".to_string(),
+        ));
+    }
 
     let (patched, byte_range) = patch_byte_range(&out)?;
     let mut out = patched;
@@ -510,6 +541,18 @@ pub(crate) fn sign_impl(
             "the written /ByteRange does not cover the whole document".to_string(),
         ));
     }
+    // SL-5.SIGN.07 read-back: the widget's /AP /N must be the exact appearance
+    // stream that was built, including the image XObject when a logo was given.
+    #[cfg(not(target_arch = "wasm32"))]
+    verify_appearance(
+        &out,
+        field_num,
+        appearance_num,
+        &appearance,
+        appearance_assets.has_logo,
+        budget,
+        g,
+    )?;
 
     Ok((
         out,
@@ -521,6 +564,8 @@ pub(crate) fn sign_impl(
             signer_certificate: leaf_cert.subject_common_name(),
             byte_range,
             cms_bytes: cms_len,
+            appearance_bytes: appearance.len(),
+            has_logo: appearance_assets.has_logo,
             verified: true,
         },
     ))
@@ -614,21 +659,6 @@ fn append_field(
     fields.push(field.clone());
     dict_set(form, b"Fields", Obj::Array(fields));
     Ok(())
-}
-
-fn appearance_lines(options: &DigitalOptions) -> Vec<VisualLine> {
-    let mut lines = vec![
-        VisualLine::new("Digitally signed"),
-        VisualLine::new(options.signer_name.clone()),
-        VisualLine::new(format!("Date: {}", human_time(&options.signing_time))),
-    ];
-    if let Some(reason) = options.reason.as_deref().filter(|text| !text.is_empty()) {
-        lines.push(VisualLine::new(format!("Reason: {reason}")));
-    }
-    if let Some(location) = options.location.as_deref().filter(|text| !text.is_empty()) {
-        lines.push(VisualLine::new(format!("Location: {location}")));
-    }
-    lines
 }
 
 /// `YYYYMMDDHHMMSSZ` → `YYYY-MM-DD HH:MM:SS UTC`, for the visible block only.

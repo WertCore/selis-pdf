@@ -2489,6 +2489,7 @@ dependencies = [
  "selis-crypto",
  "selis-error",
  "selis-pdf-cos",
+ "selis-pdf-engine",
  "selis-sandbox",
  "serde",
  "serde_json",

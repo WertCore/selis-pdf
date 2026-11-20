@@ -31,3 +31,7 @@ p12-keystore = { workspace = true }
 # This only enables a feature on the already-pinned `rsa`/`rand_core` packages.
 rsa = { workspace = true, features = ["getrandom"] }
 sha2 = { workspace = true }
+# SL-5.SIGN.07 render-parity evidence: the engine opens the signed bytes and
+# compares RGBA before/after with the widget rectangle masked out. Dev-only —
+# no WASM chunk grows, and the engine already depends on this crate transitively.
+selis-pdf-engine = { workspace = true, default-features = false }
