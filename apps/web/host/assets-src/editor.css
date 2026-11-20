@@ -1054,6 +1054,30 @@
 	stroke-linejoin: round;
 }
 
+/*
+ * The click-to-select outlines for image and vector objects (TEXTEDIT.05/06).
+ * They are the engine's reported bounding boxes, drawn over the page in the
+ * workspace's accent colour. They are never part of the document.
+ */
+.selis-editor-objects {
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+	overflow: visible;
+}
+
+.selis-editor-object {
+	fill: none;
+	stroke: var(--selis-color-accent);
+	stroke-width: 1;
+	stroke-dasharray: 3 2;
+}
+
+.selis-editor-object--selected {
+	stroke-width: 2;
+	stroke-dasharray: none;
+}
+
 /* A comment in the comments panel: what kind, what it says, who said it. */
 .selis-editor-comment {
 	color: var(--selis-color-fg);
