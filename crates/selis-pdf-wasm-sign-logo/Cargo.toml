@@ -1,0 +1,30 @@
+[package]
+name = "selis-pdf-wasm-sign-logo"
+description = "Lazy WASM chunk: PNG/JPEG logo decode into a signature /AP and the /AP /N byte read-back, run in the browser without host imports."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# No `native-fs`: the document and the logo are caller bytes in the in-memory
+# session, and the private key arrives in the options JSON. The engine crates
+# never see a filesystem or a network. This chunk exists only so the decoder
+# and the /AP read-back do NOT grow `selis-pdf-wasm-sign` past its 2% gate
+# (ADR-P0011).
+selis-pdf-tools = { workspace = true, features = ["sign", "sign-logo"] }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+# Test-only: build a tiny PNG logo and guard the encoder exactly as a native
+# caller would. Neither is linked into the browser artifact.
+selis-image = { workspace = true }
+selis-sandbox = { workspace = true }

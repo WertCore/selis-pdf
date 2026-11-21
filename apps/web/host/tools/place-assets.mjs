@@ -168,6 +168,15 @@ const SECURITY_WASM_RAW = "wasm32-unknown-unknown/release/selis_pdf_wasm_securit
 const SIGN_WASM_OPT = "wasm32-unknown-unknown/release/selis_pdf_wasm_sign.opt.wasm";
 /** The unoptimised signing chunk, for developers who only ran `cargo build`. */
 const SIGN_WASM_RAW = "wasm32-unknown-unknown/release/selis_pdf_wasm_sign.wasm";
+/**
+ * The signature-logo chunk (PNG/JPEG decode + /AP read-back). It is fetched
+ * only when the signer picks a local logo file, and carries the same
+ * import-free contract as every other tools-protocol module.
+ */
+/** The optimised signature-logo chunk. */
+const SIGN_LOGO_WASM_OPT = "wasm32-unknown-unknown/release/selis_pdf_wasm_sign_logo.opt.wasm";
+/** The unoptimised signature-logo chunk. */
+const SIGN_LOGO_WASM_RAW = "wasm32-unknown-unknown/release/selis_pdf_wasm_sign_logo.wasm";
 
 /**
  * Where the engine is looked for. `CARGO_TARGET_DIR` wins because that is what
@@ -296,6 +305,17 @@ function findSecurityEngine() {
 function findSignEngine() {
 	for (const dir of targetDirs()) {
 		for (const name of [SIGN_WASM_OPT, SIGN_WASM_RAW]) {
+			const candidate = join(dir, name);
+			if (existsSync(candidate)) return candidate;
+		}
+	}
+	return null;
+}
+
+/** The first signature-logo chunk that exists, optimised preferred over raw. */
+function findSignLogoEngine() {
+	for (const dir of targetDirs()) {
+		for (const name of [SIGN_LOGO_WASM_OPT, SIGN_LOGO_WASM_RAW]) {
 			const candidate = join(dir, name);
 			if (existsSync(candidate)) return candidate;
 		}
@@ -1091,6 +1111,57 @@ if (signImports.length > 0) {
 	process.exit(1);
 }
 
+// The signature-logo chunk is the eighth engine: PNG/JPEG logo decode into the
+// widget's /AP and the /AP /N byte-for-byte read-back. SIGN.07 measured both
+// features past the plain signing chunk's 2% gate, so they moved here. Like the
+// signing chunk it is lazy and import-free. The logo is local caller bytes the
+// page reads itself — not a network fetch — and the key still arrives in the
+// options JSON, so no host import (clock, entropy, filesystem, network) is
+// needed or allowed.
+const signLogo = findSignLogoEngine();
+if (signLogo === null) {
+	console.error(
+		[
+			"place-assets: no signature-logo WASM chunk found - signing with a logo cannot",
+			"run without one, so this is a build failure rather than a skip. Build it first:",
+			"",
+			"  cargo build -p selis-pdf-wasm-sign-logo --target wasm32-unknown-unknown --release",
+			"",
+			"(`cargo xtask size-check` builds it with fat LTO. Set CARGO_TARGET_DIR if the",
+			"build is redirected; this script reads it.)",
+		].join("\n"),
+	);
+	process.exit(1);
+}
+
+const signLogoOut = join(publicRoot, "wasm/selis_pdf_wasm_sign_logo.wasm");
+mkdirSync(dirname(signLogoOut), { recursive: true });
+copyFileSync(signLogo, signLogoOut);
+const signLogoBytes = readFileSync(signLogoOut).length;
+let signLogoImports;
+try {
+	signLogoImports = WebAssembly.Module.imports(new WebAssembly.Module(readFileSync(signLogoOut)));
+} catch (error) {
+	console.error(
+		`place-assets: the signature-logo chunk at ${signLogoOut} is not valid WebAssembly: ${error}`,
+	);
+	process.exit(1);
+}
+if (signLogoImports.length > 0) {
+	console.error(
+		[
+			"place-assets: the signature-logo chunk has host imports; it must run with none.",
+			"An import is a capability leak (clock, entropy, filesystem, network) and breaks the",
+			"no-upload guarantee. This is a hard build failure (ADR-P0011). Found:",
+			...signLogoImports.map((entry) => `  ${entry.module}.${entry.name}`),
+			"",
+			"Rebuild it with:",
+			"  cargo build -p selis-pdf-wasm-sign-logo --target wasm32-unknown-unknown --release",
+		].join("\n"),
+	);
+	process.exit(1);
+}
+
 // A marker so a deployed root can be checked for the app's parts without
 // guessing whether the build ran. Mirrors place-sw.mjs's sw-manifest.json.
 writeFileSync(
@@ -1147,6 +1218,10 @@ writeFileSync(
 				url: "/wasm/selis_pdf_wasm_sign.wasm",
 				bytes: signBytes,
 			},
+			signLogo: {
+				url: "/wasm/selis_pdf_wasm_sign_logo.wasm",
+				bytes: signLogoBytes,
+			},
 		},
 		null,
 		2,
@@ -1166,6 +1241,7 @@ console.log(
 		`and the raster chunk (${rasterBytes} B, 0 imports) and the html chunk (${htmlBytes} B, 0 imports) ` +
 		`and the security chunk (${securityBytes} B, 0 imports) ` +
 		`and the signing chunk (${signBytes} B, 0 imports) ` +
+		`and the signature-logo chunk (${signLogoBytes} B, 0 imports) ` +
 		`into public/, rewriting ${rewrites} bare specifier(s)`,
 );
 

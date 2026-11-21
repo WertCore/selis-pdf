@@ -28,8 +28,6 @@ use selis_pdf_cos::doc_writer::write_incremental_update;
 use selis_pdf_cos::{Doc, Obj, Ref};
 use selis_sandbox::{Budget, BudgetGuard};
 
-#[cfg(not(target_arch = "wasm32"))]
-use crate::appearance::verify_appearance;
 use crate::appearance::{
     build_signature_appearance, AppearanceTemplate, SignatureLogo, LOGO_RESOURCE,
 };
@@ -133,7 +131,171 @@ pub fn sign_digital(
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
 ) -> Result<(Vec<u8>, DigitalReport), SignError> {
-    sign_impl(src, options, None, budget, g)
+    #[cfg(not(feature = "logo"))]
+    {
+        sign_impl(src, options, None, budget, g)
+    }
+    #[cfg(feature = "logo")]
+    {
+        let (out, report, _proof) = sign_impl(src, options, None, budget, g)?;
+        Ok((out, report))
+    }
+}
+
+/// The writer's return shape. Without the `logo` feature it is exactly the
+/// pair the plain sign chunk has always returned — no extra object number or
+/// stream clone reaches that artifact. The lazy chunk enables `logo` and gets
+/// the third value it needs for the byte-for-byte `/AP /N` read-back.
+#[cfg(not(feature = "logo"))]
+type SignArtifact = (Vec<u8>, DigitalReport);
+/// The writer's return shape when the lazy logo feature is enabled.
+#[cfg(feature = "logo")]
+type SignArtifact = (Vec<u8>, DigitalReport, AppearanceProof);
+
+/// The widget data a caller needs to re-open an incremental revision and prove
+/// its `/AP /N` byte-for-byte. Returned by the signing writer so that a caller
+/// which has to perform the read-back itself (the lazy sign-logo WASM chunk)
+/// never has to guess an object number or rebuild the appearance stream.
+#[cfg(feature = "logo")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppearanceProof {
+    /// The signature field's object number.
+    pub field_num: u32,
+    /// The `/AP /N` form XObject's object number.
+    pub appearance_num: u32,
+    /// The exact stream bytes that were written.
+    pub stream: Vec<u8>,
+    /// Whether the appearance carries a logo image XObject.
+    pub has_logo: bool,
+}
+
+/// Sign with a caller-supplied PNG/JPEG logo and verify the widget appearance.
+///
+/// This is the browser counterpart of the native `--logo` path: the encoded
+/// image bytes are decoded here by the workspace's pure-Rust `selis-image`
+/// decoder (ADR-P0017/P0021), attached to [`DigitalOptions`] as raw RGB and
+/// written into the `/AP /N` by the same writer as every other signature. The
+/// produced bytes are then re-opened and compared against the written
+/// appearance stream with [`crate::appearance::verify_appearance`], on every
+/// target — including wasm32, where the plain sign chunk deliberately cannot
+/// afford that check.
+///
+/// The key and certificate chain are still supplied by the caller in
+/// `options`; nothing here reads a file, opens a socket, or echoes key bytes
+/// back. Only the logo bytes are extra, and they are decoded from memory.
+///
+/// # Errors
+///
+/// Every [`SignError`] [`sign_digital`] can return, plus a `SignError::Invalid`
+/// when the logo is not a PNG/JPEG this build can decode and a
+/// `SignError::ReadBack` when the appearance did not survive the write.
+#[cfg(feature = "logo")]
+#[allow(clippy::too_many_arguments)]
+pub fn sign_digital_with_encoded_logo(
+    src: &[u8],
+    options: &DigitalOptions,
+    logo_bytes: &[u8],
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<(Vec<u8>, DigitalReport), SignError> {
+    let logo = SignatureLogo::from_encoded(logo_bytes, g)?;
+    let mut options = options.clone();
+    options.logo = Some(logo);
+    let (out, report, proof) = sign_impl(src, &options, None, budget, g)?;
+    crate::appearance::verify_appearance(
+        &out,
+        proof.field_num,
+        proof.appearance_num,
+        &proof.stream,
+        proof.has_logo,
+        budget,
+        g,
+    )?;
+    Ok((out, report))
+}
+
+/// Re-open a produced document, find the signature field by its name and prove
+/// its `/AP /N` is byte-for-byte the stream the caller says was written.
+///
+/// This is the standalone read-back op the lazy sign-logo chunk exposes: a
+/// caller that already holds a signed document and the expected appearance can
+/// check it without knowing the writer's object numbers. A missing or
+/// wrongly-shaped `/AcroForm /Fields` walk is a typed `SignError::ReadBack`.
+#[cfg(feature = "logo")]
+#[allow(clippy::too_many_arguments)]
+pub fn verify_signature_appearance(
+    out: &[u8],
+    field_name: &str,
+    expected: &[u8],
+    has_logo: bool,
+    budget: &Budget,
+    g: &mut BudgetGuard<'_>,
+) -> Result<(), SignError> {
+    let doc = crate::open_doc(out, budget, g)?;
+    let root = crate::trailer(&doc)?
+        .root
+        .ok_or_else(|| SignError::ReadBack("the document has no /Root".to_string()))?;
+    let catalog = crate::resolve(out, &doc, Obj::Ref(root), budget, g)
+        .map_err(|e| SignError::ReadBack(format!("the catalog did not re-open: {e}")))?;
+    let Obj::Dict(entries) = catalog else {
+        return Err(SignError::ReadBack(
+            "the catalog is not a dictionary".to_string(),
+        ));
+    };
+    let acroform = crate::dict_get(&entries, b"AcroForm")
+        .ok_or_else(|| SignError::ReadBack("the document has no /AcroForm".to_string()))?;
+    let acroform = crate::resolve(out, &doc, acroform.clone(), budget, g)
+        .map_err(|e| SignError::ReadBack(format!("the /AcroForm did not re-open: {e}")))?;
+    let Obj::Dict(acroform) = acroform else {
+        return Err(SignError::ReadBack(
+            "the /AcroForm is not a dictionary".to_string(),
+        ));
+    };
+    let fields = crate::dict_get(&acroform, b"Fields")
+        .ok_or_else(|| SignError::ReadBack("the /AcroForm has no /Fields".to_string()))?;
+    let fields = crate::resolve(out, &doc, fields.clone(), budget, g)
+        .map_err(|e| SignError::ReadBack(format!("the /Fields did not re-open: {e}")))?;
+    let Obj::Array(fields) = fields else {
+        return Err(SignError::ReadBack(
+            "the /Fields is not an array".to_string(),
+        ));
+    };
+    for field in fields {
+        let Obj::Ref(reference) = field else { continue };
+        let resolved = crate::resolve(out, &doc, Obj::Ref(reference), budget, g)
+            .map_err(|e| SignError::ReadBack(format!("a field did not re-open: {e}")))?;
+        let Obj::Dict(pairs) = resolved else { continue };
+        let name = crate::dict_get(&pairs, b"T").and_then(|value| match value {
+            Obj::String(bytes) => std::str::from_utf8(bytes.as_slice()).ok(),
+            _ => None,
+        });
+        if name == Some(field_name) {
+            let appearance_num = crate::dict_get(&pairs, b"AP")
+                .and_then(|value| match value {
+                    Obj::Dict(entries) => crate::dict_get(entries, b"N"),
+                    _ => None,
+                })
+                .and_then(|value| match value {
+                    Obj::Ref(reference) => Some(reference.num),
+                    _ => None,
+                })
+                .ok_or_else(|| {
+                    SignError::ReadBack("the widget has no indirect /AP /N".to_string())
+                })?;
+            return crate::appearance::verify_appearance(
+                out,
+                reference.num,
+                appearance_num,
+                expected,
+                has_logo,
+                budget,
+                g,
+            );
+        }
+    }
+    Err(SignError::ReadBack(format!(
+        "the field {field_name:?} was not found in the produced document"
+    )))
 }
 
 /// The one writer behind [`sign_digital`] and
@@ -148,7 +310,7 @@ pub(crate) fn sign_impl(
     doc_mdp: Option<DocMdpLevel>,
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
-) -> Result<(Vec<u8>, DigitalReport), SignError> {
+) -> Result<SignArtifact, SignError> {
     validate(options)?;
 
     let doc = crate::open_doc(src, budget, g)?;
@@ -544,7 +706,7 @@ pub(crate) fn sign_impl(
     // SL-5.SIGN.07 read-back: the widget's /AP /N must be the exact appearance
     // stream that was built, including the image XObject when a logo was given.
     #[cfg(not(target_arch = "wasm32"))]
-    verify_appearance(
+    crate::appearance::verify_appearance(
         &out,
         field_num,
         appearance_num,
@@ -554,6 +716,23 @@ pub(crate) fn sign_impl(
         g,
     )?;
 
+    #[cfg(not(feature = "logo"))]
+    return Ok((
+        out,
+        DigitalReport {
+            field: options.field_name.clone(),
+            page: options.page,
+            sub_filter: SUB_FILTER.to_string(),
+            digest: digest_alg.name().to_string(),
+            signer_certificate: leaf_cert.subject_common_name(),
+            byte_range,
+            cms_bytes: cms_len,
+            appearance_bytes: appearance.len(),
+            has_logo: appearance_assets.has_logo,
+            verified: true,
+        },
+    ));
+    #[cfg(feature = "logo")]
     Ok((
         out,
         DigitalReport {
@@ -567,6 +746,12 @@ pub(crate) fn sign_impl(
             appearance_bytes: appearance.len(),
             has_logo: appearance_assets.has_logo,
             verified: true,
+        },
+        AppearanceProof {
+            field_num,
+            appearance_num,
+            stream: appearance,
+            has_logo: appearance_assets.has_logo,
         },
     ))
 }

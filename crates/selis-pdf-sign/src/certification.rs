@@ -132,7 +132,11 @@ pub fn sign_certification(
     g: &mut BudgetGuard<'_>,
 ) -> Result<(Vec<u8>, CertificationReport), SignError> {
     let level = options.doc_mdp;
+    #[cfg(not(feature = "logo"))]
     let (out, signature) =
+        crate::digital::sign_impl(src, &options.signature, Some(level), budget, g)?;
+    #[cfg(feature = "logo")]
+    let (out, signature, _proof) =
         crate::digital::sign_impl(src, &options.signature, Some(level), budget, g)?;
     let read = read_back(&out, &options.signature.field_name, budget, g)?;
     if read.p != level.p() {

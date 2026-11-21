@@ -11,12 +11,25 @@ repository.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = []
+# PNG/JPEG logo decode and the /AP read-back. Off by default so a wasm build
+# of the plain signing chunk stays byte-for-byte what its 2% baseline measured;
+# the lazy sign-logo chunk is the only browser caller that enables this.
+logo = ["dep:selis-image"]
+
 [dependencies]
 selis-bytes = { workspace = true }
 selis-crypto = { workspace = true, default-features = false }
 selis-error = { workspace = true }
 selis-pdf-cos = { workspace = true }
 selis-sandbox = { workspace = true }
+# SL-5.SIGN.07: PNG/JPEG logo decoding reuses the workspace's pure-Rust
+# `selis-image` decoder — no new dependency, and optional so the plain sign
+# chunk cannot grow (ADR-P0011). A linked call site there measured +29 877 B
+# brotli, past that chunk's 2% gate (see pdf-plan/15-PHASE-5-edit.md); the
+# dedicated lazy `selis-pdf-wasm-sign-logo` chunk enables `logo` instead.
+selis-image = { workspace = true, optional = true }
 rsa = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -25,11 +38,6 @@ serde_json = { workspace = true }
 # (ADR-P0011); `p12-keystore` 0.4.1 is MIT OR Apache-2.0, pure Rust, MSRV 1.85.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 p12-keystore = { workspace = true }
-# SL-5.SIGN.07: PNG/JPEG logo decoding reuses the workspace's pure-Rust
-# `selis-image` decoder. Native-only, like the PKCS#12 key source: a linked
-# WASM call site measured +29 877 B brotli over the sign chunk's 2% gate
-# (see pdf-plan/15-PHASE-5-edit.md). No new dependency and no WASM growth.
-selis-image = { workspace = true }
 
 [dev-dependencies]
 # The identity/TSA tests generate a real RSA key locally from the OS CSPRNG.

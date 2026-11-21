@@ -24,12 +24,12 @@
 
 use selis_bytes::Bytes;
 use selis_pdf_cos::Obj;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(not(target_arch = "wasm32"), feature = "logo"))]
 use selis_sandbox::{Budget, BudgetGuard};
 
 use crate::visual::{content_stream, VisualLine, VisualOptions, VisualStroke};
 use crate::{bytes, invalid, Page, SignError, MAX_TEXT_BYTES};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(not(target_arch = "wasm32"), feature = "logo"))]
 use crate::{dict_get, resolve};
 
 /// The resource name the logo image is filed under inside the appearance's
@@ -91,11 +91,11 @@ impl SignatureLogo {
     /// pixel count, exactly as it does for every other image decode in the
     /// engine.
     ///
-    /// This constructor is native-only: the sign WASM chunk is <1 KB under its
-    /// 2% regression gate, and linking the decoder there would breach it. The
-    /// raw-RGB constructor works on every target; a WASM caller can still
-    /// decode in the page (the browser's own codec) and hand over pixels.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// Linking the decoder into the plain sign WASM chunk would breach that
+    /// chunk's 2% gate, so the browser reaches this constructor through the
+    /// dedicated lazy `selis-pdf-wasm-sign-logo` chunk, which enables the
+    /// `logo` feature (ADR-P0011). The raw-RGB constructor is always available.
+    #[cfg(feature = "logo")]
     pub fn from_encoded(data: &[u8], g: &mut BudgetGuard<'_>) -> Result<Self, SignError> {
         if data.is_empty() {
             return Err(invalid(
@@ -397,12 +397,17 @@ pub fn build_signature_appearance(
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 /// Re-open an incremental revision and prove the widget carries exactly the
 /// appearance that was written: `/AP /N` resolves to the named stream, its bytes
 /// are unchanged, `/BBox` is present, and (when requested) the `/XObject`
 /// resource resolves to an image XObject.
-pub(crate) fn verify_appearance(
+///
+/// Available natively and in the lazy sign-logo WASM chunk. The plain sign WASM
+/// chunk does not compile it (the +1.8 KB would breach its 2% gate); the lazy
+/// sign-logo chunk enables the `logo` feature and calls it unconditionally, so
+/// browser signing gets the same byte-for-byte check as a native build.
+#[cfg(any(not(target_arch = "wasm32"), feature = "logo"))]
+pub fn verify_appearance(
     out: &[u8],
     field_num: u32,
     appearance_num: u32,
@@ -589,7 +594,7 @@ mod tests {
         );
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "logo"))]
     #[test]
     fn a_png_logo_decodes_to_exact_rgb_pixels() {
         let budget = Budget::unlimited();
@@ -619,7 +624,7 @@ mod tests {
         assert!(assets.has_logo);
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "logo"))]
     #[test]
     fn a_jpeg_logo_decodes_to_opaque_rgb_pixels() {
         let budget = Budget::unlimited();
@@ -649,7 +654,7 @@ mod tests {
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "logo"))]
     #[test]
     fn undecodable_or_oversized_logo_bytes_are_typed_refusals() {
         let budget = Budget::unlimited();

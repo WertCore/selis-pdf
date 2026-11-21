@@ -286,6 +286,7 @@ fn measure_artifacts() -> Result<BTreeMap<String, u64>, String> {
         "selis-pdf-wasm-redact-patterns",
         "selis-pdf-wasm-security",
         "selis-pdf-wasm-sign",
+        "selis-pdf-wasm-sign-logo",
         "selis-pdf-wasm-text",
         "selis-pdf-wasm-compare",
         "xtask",
