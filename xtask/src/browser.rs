@@ -11911,12 +11911,30 @@ mod tests {
 
     /// The same, for `async-wasm`.
     fn real_async_wasm_report() -> Json {
+        // The report Edge actually produced for `async-wasm` on this machine,
+        // including the FONT.10 CJK render leg (the notdef -> cached subset ->
+        // repaint sequence). The ink signatures are the pixels the guest drew;
+        // a fixture that omitted this leg would no longer satisfy
+        // `verdict_async_wasm` once it checks the CJK observation.
         json!({
             "schema": SCHEMA,
             "check": "async-wasm",
             "sum": WASM_PROBE_SUM,
-            "linkError": "LinkError: WebAssembly.Instance(): Import #1 module=\"env\" error: module is not an object or function",
+            "linkError": "LinkError: WebAssembly.instantiate(): Import #0 \"env\" \"twice\": function import requires a callable",
             "fatal": Json::Null,
+            "cjk": {
+                "schema": 1,
+                "pass1Needs": ["ideographs-1"],
+                "pass1Revision": 0,
+                "delivered": ["ideographs-1"],
+                "needsAfter": [],
+                "finalRevision": 1,
+                "inkBefore": "96:537492295",
+                "inkAfter": "380:528092626",
+                "repainted": true,
+                "chunkNetworkFetches": 0,
+                "disclosure": "font STSong-Light substituted with CJK on-demand subset chunk ideographs-1 for U+4E2D",
+            },
         })
     }
 
