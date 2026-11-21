@@ -92,6 +92,7 @@ import {
 import {
 	SIGN_WASM_URL,
 	type SignRequest,
+	type SignResult,
 	type SignWasm,
 	instantiateSign,
 	runSign,
@@ -99,6 +100,14 @@ import {
 	signatureRows,
 	signingStamp,
 } from "./sign-protocol.js";
+import {
+	SIGN_LOGO_WASM_URL,
+	instantiateSignLogo,
+	readLogoBytes,
+	runSignLogo,
+	selectedLogoFile,
+	signLogoRows,
+} from "./sign-logo-protocol.js";
 import {
 	FLATTEN_FORMS_NOTE,
 	flattenFormsReportRows,
@@ -2953,6 +2962,12 @@ function init(): void {
 				"Leaf first, then any intermediates. Select one file per certificate.",
 			);
 			addField(
+				"logo",
+				"Logo (PNG or JPEG, optional)",
+				fileChooser("logo", ".png,.jpg,.jpeg,image/png,image/jpeg", false),
+				"Optional. Read in this tab and decoded inside a separate WASM chunk that is downloaded only when you pick a file. The image is embedded in the signature's visible block; no image bytes are uploaded.",
+			);
+			addField(
 				"reason",
 				"Reason",
 				textInput("reason", "text", "Why this document was signed"),
@@ -2977,7 +2992,7 @@ function init(): void {
 			options.append(note);
 			const syncMode = (): void => {
 				const certificate = mode.value === "certificate";
-				for (const key of ["certKey", "certChain", "reason", "location", "field"]) {
+				for (const key of ["certKey", "certChain", "logo", "reason", "location", "field"]) {
 					const element = optionFields.get(key);
 					if (element !== undefined) {
 						element.hidden = !certificate;
@@ -4889,6 +4904,39 @@ function fileTile(file: File, index: number, tool: ToolDef | null): HTMLLIElemen
 		return signWasmPromise;
 	}
 
+	/**
+	 * The logo chunk is fetched ONLY when the signer actually picks a logo.
+	 * Nothing imports it at page load; a plain signature keeps using the
+	 * already-loaded sign chunk and pays none of the decoder's WASM bytes.
+	 */
+	let signLogoWasmPromise: Promise<import("./sign-logo-protocol.js").SignLogoWasm> | null = null;
+	function getSignLogoWasm(): Promise<import("./sign-logo-protocol.js").SignLogoWasm> {
+		if (signLogoWasmPromise === null) {
+			signLogoWasmPromise = (async () => {
+				const response = await fetch(SIGN_LOGO_WASM_URL, { credentials: "same-origin" });
+				if (!response.ok) {
+					throw new ToolProtocolError("the signature-logo chunk is unavailable");
+				}
+				const bytes = await response.arrayBuffer();
+				// `instantiateSignLogo` refuses a module that declares any import,
+				// so the guest that sees the logo and the key has nowhere to send
+				// them. The fetch is for our own local, same-origin WASM asset.
+				return await instantiateSignLogo(bytes);
+			})().catch((error: unknown) => {
+				signLogoWasmPromise = null;
+				throw error;
+			});
+		}
+		return signLogoWasmPromise;
+	}
+
+	/** The logo file this card selected, read in the tab — never a URL fetch. */
+	async function signLogoInput(): Promise<{ name: string; bytes: Uint8Array } | null> {
+		const control = optionControls.get("logo");
+		const file = selectedLogoFile(control instanceof HTMLInputElement ? control : null);
+		return file === null ? null : { name: file.name, bytes: await readLogoBytes(file) };
+	}
+
 	/** The text of the one file a card's file input holds. */
 	async function readOptionText(key: string): Promise<string> {
 		const control = optionControls.get(key);
@@ -5010,13 +5058,39 @@ function fileTile(file: File, index: number, tool: ToolDef | null): HTMLLIElemen
 		try {
 			const file = await readSinglePdf();
 			const request = await buildSignRequest(file);
+			const logo = await signLogoInput();
+			if (logo !== null && request.op !== "sign") {
+				throw new ToolInputError("A logo needs certificate signature mode. Choose that mode first.");
+			}
 			const secrets = await signSecrets(file);
-			const wasm = await getSignWasm();
+			if (logo !== null) {
+				// The logo is local caller bytes. The no-upload check must cover
+				// it too: a signature that kept the document private but sent the
+				// image away would break the promise just as surely.
+				secrets.push(logo.bytes);
+			}
 			setStatus("Signing on this device…", "info");
 			await nextPaint();
-			const result = runSign(wasm, request);
-			if (result.kind !== "document") {
-				throw new ToolProtocolError("a signing run produced no document");
+			let result: SignResult;
+			if (logo === null) {
+				const plain = runSign(await getSignWasm(), request);
+				if (plain.kind !== "document") {
+					throw new ToolProtocolError("a signing run produced no document");
+				}
+				result = plain;
+			} else {
+				// The only place this chunk is ever fetched: a logo was selected.
+				const wasm = await getSignLogoWasm();
+				const signed = runSignLogo(wasm, {
+					op: "sign-logo",
+					...(request.options === undefined ? {} : { options: request.options }),
+					file: request.file,
+					second: logo,
+				});
+				if (signed.kind !== "document") {
+					throw new ToolProtocolError("a logo signing run produced no document");
+				}
+				result = signed;
 			}
 			try {
 				await requestRecorder.assertNoUpload(secrets);
@@ -5033,7 +5107,7 @@ function fileTile(file: File, index: number, tool: ToolDef | null): HTMLLIElemen
 					reports: [result.report],
 					outputs: [result.output],
 				},
-				signRows(result),
+				logo === null ? signRows(result) : signLogoRows(result),
 			);
 			setStatus(
 				result.outcome.operation === "stamp"

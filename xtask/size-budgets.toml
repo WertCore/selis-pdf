@@ -294,3 +294,19 @@ budget = 900000
 chunk = "annot"
 artifact = "selis_pdf_wasm_annot"
 budget = 500000
+
+# The signature-logo chunk (SIGN.07): PNG/JPEG logo decode in the guest and the
+# `/AP /N` byte-for-byte read-back. Both were measured against the plain sign
+# chunk and both breached its 2% baseline gate: the linked decoder cost +29 877
+# B brotli (255 153 B vs 225 276 B, cap 225 402 B) and the read-back +1 812 B
+# (227 088 B vs 225 276 B, same cap). They therefore cannot live in
+# `selis-pdf-wasm-sign`. This dedicated lazy chunk keeps them behind one
+# explicit action — the signer picking a local logo file — just as `compare`
+# and `content` keep their heavy engine links off the common tools chunk. The
+# ceiling leaves room for the decoder, the CMS path the signer already pays for
+# elsewhere and the report framing; the 2% baseline rule gates the next slice.
+# It stays import-free (ADR-P0011) and is fetched only when a logo is used.
+[[budget]]
+chunk = "sign-logo"
+artifact = "selis_pdf_wasm_sign_logo"
+budget = 600000

@@ -1,0 +1,1 @@
+cargo:rerun-if-changed=F:\selis-worktrees\tools-site\crates\selis-sandbox\profiles.toml

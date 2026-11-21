@@ -1,0 +1,1 @@
+{"rustc":15335473461698482004,"features":"","declared_features":"","target":0,"profile":0,"path":0,"deps":[[14655996101706539687,"build_script_build",false,5923880546857170721]],"local":[{"RerunIfChanged":{"output":"wasm32-unknown-unknown\\release\\build\\selis-sandbox-c6cb48902a9594ea\\output","paths":["profiles.toml"]}}],"rustflags":[],"config":0,"compile_kind":0}

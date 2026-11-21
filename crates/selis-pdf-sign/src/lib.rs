@@ -85,6 +85,8 @@ pub mod p12;
 #[cfg(test)]
 mod tests;
 
+#[cfg(any(not(target_arch = "wasm32"), feature = "logo"))]
+pub use appearance::verify_appearance;
 pub use appearance::{
     build_signature_appearance, AppearanceAssets, AppearanceTemplate, SignatureLogo, LOGO_RESOURCE,
 };
@@ -92,6 +94,8 @@ pub use certification::{
     sign_certification, CertificationOptions, CertificationReport, DocMdpLevel,
 };
 pub use digital::{sign_digital, DigitalOptions, DigitalReport};
+#[cfg(feature = "logo")]
+pub use digital::{sign_digital_with_encoded_logo, verify_signature_appearance, AppearanceProof};
 pub use dss::{embed_dss, signature_contents, DssOptions, DssReport, TimestampToken};
 pub use report::{
     signature_report_json, signatures, SignatureReport, SignaturesReport, TrustReport,

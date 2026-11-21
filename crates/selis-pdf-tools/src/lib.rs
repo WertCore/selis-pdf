@@ -132,6 +132,8 @@ pub use sign::{
     SignatureReport, SignaturesReport, TrustReport, VisualLine, VisualOptions, VisualReport,
     VisualStroke,
 };
+#[cfg(feature = "sign-logo")]
+pub use sign::{sign_pdf_with_encoded_logo, verify_appearance_bytes};
 pub use subset_fonts::subset_fonts;
 #[cfg(feature = "text")]
 pub use text::{

@@ -2703,6 +2703,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "selis-pdf-wasm-sign-logo"
+version = "0.1.0"
+dependencies = [
+ "selis-image",
+ "selis-pdf-tools",
+ "selis-sandbox",
+ "serde_json",
+]
+
+[[package]]
 name = "selis-pdf-wasm-text"
 version = "0.1.0"
 dependencies = [

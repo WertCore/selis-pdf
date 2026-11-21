@@ -18,6 +18,8 @@ use selis_pdf_cos::copy::resolve_ref;
 use selis_pdf_cos::{Obj, Ref};
 use selis_pdf_engine::{RenderedPage, Session};
 use selis_pdf_sign::{sign_digital, signatures, DigitalOptions, SignError, SignatureLogo};
+#[cfg(feature = "logo")]
+use selis_pdf_sign::{sign_digital_with_encoded_logo, verify_signature_appearance};
 use selis_sandbox::{Budget, CancelToken, FixedClock, Surface};
 
 const LEAF: &str = include_str!("fixtures/leaf.crt");
@@ -187,7 +189,7 @@ fn dict_has(dict: &Dict, key: &[u8]) -> bool {
     dict.iter().any(|(name, _)| name.as_slice() == key)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "logo"))]
 #[test]
 fn a_decoded_png_logo_survives_detached_signing_and_ap_read_back() {
     let budget = budget();
@@ -275,4 +277,80 @@ fn render_parity_holds_outside_the_appearance_rect() {
         inside_diffs > 0,
         "the appearance must actually paint inside the widget"
     );
+}
+
+/// The WASM chunk's sign op uses this entry point: encoded logo bytes are
+/// decoded inside the guest and the `/AP /N` is read back byte-for-byte before
+/// the document is returned. Named evidence for the dedicated lazy chunk.
+#[cfg(feature = "logo")]
+#[test]
+fn an_encoded_logo_signs_and_the_ap_reads_back_byte_for_byte() {
+    let b = budget();
+    let mut g = b.guard();
+    let image = selis_image::Image {
+        width: 2,
+        height: 2,
+        rgba: test_logo()
+            .rgb
+            .chunks_exact(3)
+            .flat_map(|pixel| [pixel[0], pixel[1], pixel[2], 255])
+            .collect(),
+    };
+    let png = selis_image::encode_png(&image, 6, &mut g).expect("encode png");
+    let src = synthetic_pdf();
+    let (out, report) =
+        sign_digital_with_encoded_logo(&src, &options(None), &png, &b, &mut b.guard())
+            .expect("sign with a decoded logo and verify the appearance");
+    assert!(out.starts_with(&src));
+    assert!(report.verified && report.has_logo);
+    assert!(streams(&out)
+        .iter()
+        .any(|(dict, data)| subtype(dict) == Some(b"Image") && *data == test_logo().rgb));
+
+    // The standalone read-back op finds the field by name and compares the
+    // /AP /N stream to the bytes the writer reported.
+    let appearance = streams(&out)
+        .into_iter()
+        .find(|(dict, _)| subtype(dict) == Some(b"Form"))
+        .expect("appearance stream")
+        .1;
+    verify_signature_appearance(
+        &out,
+        "Signature1",
+        &appearance,
+        true,
+        &budget(),
+        &mut budget().guard(),
+    )
+    .expect("byte-for-byte /AP /N read-back");
+    let mut changed = appearance.clone();
+    changed[0] ^= 0xff;
+    assert!(matches!(
+        verify_signature_appearance(
+            &out,
+            "Signature1",
+            &changed,
+            true,
+            &budget(),
+            &mut budget().guard(),
+        ),
+        Err(SignError::ReadBack(_))
+    ));
+}
+
+/// A logo that is not a PNG/JPEG this build understands is refused before a
+/// single PDF byte is written — the browser chunk relies on the same guard.
+#[cfg(feature = "logo")]
+#[test]
+fn an_undecodable_encoded_logo_is_refused_before_a_write() {
+    let src = synthetic_pdf();
+    let err = sign_digital_with_encoded_logo(
+        &src,
+        &options(None),
+        b"not a PNG or JPEG",
+        &budget(),
+        &mut budget().guard(),
+    )
+    .expect_err("no logo, no signature");
+    assert!(matches!(err, SignError::Invalid(_)), "{err}");
 }

@@ -1,0 +1,14 @@
+F:\selis-worktrees\tools-site\target-signbase\wasm32-unknown-unknown\release\deps\serde-27bf9704e08a6f7e.d: C:\Users\Admin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\lib.rs C:\Users\Admin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\integer128.rs C:\Users\Admin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\mod.rs C:\Users\Admin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\de.rs C:\Users\Admin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\ser.rs F:\selis-worktrees\tools-site\target-signbase\wasm32-unknown-unknown\release\build\serde-0f67ae42b5861158\out/private.rs
+
+F:\selis-worktrees\tools-site\target-signbase\wasm32-unknown-unknown\release\deps\libserde-27bf9704e08a6f7e.rlib: C:\Users\Admin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\lib.rs C:\Users\Admin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\integer128.rs C:\Users\Admin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\mod.rs C:\Users\Admin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\de.rs C:\Users\Admin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\ser.rs F:\selis-worktrees\tools-site\target-signbase\wasm32-unknown-unknown\release\build\serde-0f67ae42b5861158\out/private.rs
+
+F:\selis-worktrees\tools-site\target-signbase\wasm32-unknown-unknown\release\deps\libserde-27bf9704e08a6f7e.rmeta: C:\Users\Admin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\lib.rs C:\Users\Admin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\integer128.rs C:\Users\Admin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\mod.rs C:\Users\Admin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\de.rs C:\Users\Admin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\ser.rs F:\selis-worktrees\tools-site\target-signbase\wasm32-unknown-unknown\release\build\serde-0f67ae42b5861158\out/private.rs
+
+C:\Users\Admin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\lib.rs:
+C:\Users\Admin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\integer128.rs:
+C:\Users\Admin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\mod.rs:
+C:\Users\Admin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\de.rs:
+C:\Users\Admin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\ser.rs:
+F:\selis-worktrees\tools-site\target-signbase\wasm32-unknown-unknown\release\build\serde-0f67ae42b5861158\out/private.rs:
+
+# env-dep:OUT_DIR=F:\\selis-worktrees\\tools-site\\target-signbase\\wasm32-unknown-unknown\\release\\build\\serde-0f67ae42b5861158\\out

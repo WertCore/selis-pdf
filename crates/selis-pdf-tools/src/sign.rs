@@ -27,6 +27,52 @@ pub use selis_pdf_sign::{
     VisualStroke,
 };
 
+/// Sign with a caller-supplied PNG/JPEG logo decoded in the engine.
+///
+/// The encoded bytes are handed over by the caller (a file input in the CLI, a
+/// local file in the browser chunk); nothing here reads a file or opens a
+/// socket. The engine decodes them, writes the `/AP /N` and re-opens the
+/// produced revision to check the appearance byte-for-byte on **every** target,
+/// including wasm32 — the lazy sign-logo chunk owns that check so the plain
+/// sign chunk stays inside its 2% size gate.
+///
+/// # Errors
+///
+/// The same refusals as [`sign_pdf`], plus a typed error when the logo is not a
+/// PNG/JPEG this build can decode. No output is committed on any failure.
+#[cfg(feature = "sign-logo")]
+pub fn sign_pdf_with_encoded_logo(
+    path: &str,
+    options: &DigitalOptions,
+    logo_bytes: &[u8],
+    output: &str,
+) -> ToolResult<Verification> {
+    let src = read_file(path)?;
+    let budget = Budget::unlimited();
+    let clock = crate::shell_clock();
+    let mut g = crate::runtime::cli_guard(&budget, &clock);
+    let (bytes, report) =
+        selis_pdf_sign::sign_digital_with_encoded_logo(&src, options, logo_bytes, &budget, &mut g)
+            .map_err(|e| CliError(format!("{path}: {e}")))?;
+    let observed = selis_pdf_cos::verify::survey(&src, &budget, &mut g)
+        .map_err(|e| CliError(format!("{path}: input survey failed: {e}")))?;
+    let expected = write_gate::expectations_from(&observed, &PRESERVE_ON_APPEND);
+    let verdict = write_gate::write_verified(&bytes, output, &expected, &budget, &mut g)?;
+    let verification = Verification::from_gate(
+        Some(&observed),
+        &verdict,
+        &expected,
+        u64::try_from(src.len()).unwrap_or(u64::MAX),
+        u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+    );
+    eprintln!(
+        "signed field {:?} on page {} ({} digest, CMS {} bytes, logo {}, verified) -> {output}",
+        report.field, report.page, report.digest, report.cms_bytes, report.has_logo
+    );
+    verification.emit_line();
+    Ok(verification)
+}
+
 impl From<SignError> for crate::ToolError {
     fn from(error: SignError) -> Self {
         crate::ToolError(error.to_string())
@@ -110,6 +156,30 @@ pub fn sign_pdf(path: &str, options: &DigitalOptions, output: &str) -> ToolResul
     );
     verification.emit_line();
     Ok(verification)
+}
+
+/// Re-open a produced document and prove a widget's `/AP /N` is byte-for-byte
+/// the appearance the caller says was written.
+///
+/// The read-only op the lazy sign-logo chunk exposes on the web: the caller
+/// supplies the document bytes, the field name, the expected stream and
+/// whether a logo was requested; the engine reports a typed refusal rather
+/// than a boolean, so a missing field and a changed stream say different
+/// things. No file is touched and no output is produced.
+#[cfg(feature = "sign-logo")]
+pub fn verify_appearance_bytes(
+    out: &[u8],
+    field_name: &str,
+    expected: &[u8],
+    has_logo: bool,
+) -> ToolResult<()> {
+    let budget = Budget::unlimited();
+    let clock = crate::shell_clock();
+    let mut g = crate::runtime::cli_guard(&budget, &clock);
+    selis_pdf_sign::verify_signature_appearance(
+        out, field_name, expected, has_logo, &budget, &mut g,
+    )
+    .map_err(crate::ToolError::from)
 }
 
 /// Read every signature in the document and check it against the bytes it
