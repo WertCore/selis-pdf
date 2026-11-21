@@ -136,6 +136,15 @@ const TOOLS_WASM_RAW = "wasm32-unknown-unknown/release/selis_pdf_wasm_tools.wasm
 const CONTENT_WASM_OPT = "wasm32-unknown-unknown/release/selis_pdf_wasm_content.opt.wasm";
 /** The unoptimised content chunk. */
 const CONTENT_WASM_RAW = "wasm32-unknown-unknown/release/selis_pdf_wasm_content.wasm";
+
+// The annotation chunk (appearance regeneration / multi-stroke ink). These ops
+// were deferred as typed gaps rather than growing the tools chunk past its
+// ceiling; it is fetched only when an annotation action is used, and carries
+// the same import-free contract as every tools-protocol module.
+/** The optimised annotation chunk. */
+const ANNOT_WASM_OPT = "wasm32-unknown-unknown/release/selis_pdf_wasm_annot.opt.wasm";
+/** The unoptimised annotation chunk. */
+const ANNOT_WASM_RAW = "wasm32-unknown-unknown/release/selis_pdf_wasm_annot.wasm";
 /** The optimise chunk (font subset op 41, linearize op 43), optimised first. */
 const OPTIMIZE_WASM_OPT = "wasm32-unknown-unknown/release/selis_pdf_wasm_optimize.opt.wasm";
 /** The unoptimised optimise chunk, for developers who only ran `cargo build`. */
@@ -208,6 +217,17 @@ function findToolsEngine() {
 function findContentEngine() {
 	for (const dir of targetDirs()) {
 		for (const name of [CONTENT_WASM_OPT, CONTENT_WASM_RAW]) {
+			const candidate = join(dir, name);
+			if (existsSync(candidate)) return candidate;
+		}
+	}
+	return null;
+}
+
+/** The first annotation chunk that exists, optimised preferred over raw. */
+function findAnnotEngine() {
+	for (const dir of targetDirs()) {
+		for (const name of [ANNOT_WASM_OPT, ANNOT_WASM_RAW]) {
 			const candidate = join(dir, name);
 			if (existsSync(candidate)) return candidate;
 		}
@@ -711,6 +731,47 @@ if (contentImports.length > 0) {
 	process.exit(1);
 }
 
+// The annotation chunk carries appearance regeneration and multi-stroke ink.
+// The editor fetches it only when the reader uses one of those actions; a
+// missing or import-bearing artifact is a build failure, as with the tools and
+// content chunks, so an annotation action can never silently do nothing.
+const annot = findAnnotEngine();
+if (annot === null) {
+	console.error(
+		[
+			"place-assets: no annotation WASM chunk found - the editor's appearance-regeneration",
+			"and multi-stroke ink actions cannot run without one, so this is a build failure rather",
+			"than a skip. Build it first:",
+			"",
+			"  cargo build -p selis-pdf-wasm-annot --target wasm32-unknown-unknown --release",
+			"",
+			"(`cargo xtask size-check` builds it with fat LTO. Set CARGO_TARGET_DIR if the",
+			"build is redirected; this script reads it.)",
+		].join("\n"),
+	);
+	process.exit(1);
+}
+const annotOut = join(publicRoot, "wasm/selis_pdf_wasm_annot.wasm");
+mkdirSync(dirname(annotOut), { recursive: true });
+copyFileSync(annot, annotOut);
+const annotBytes = readFileSync(annotOut).length;
+let annotImports;
+try {
+	annotImports = WebAssembly.Module.imports(new WebAssembly.Module(readFileSync(annotOut)));
+} catch (error) {
+	console.error(`place-assets: the annotation chunk at ${annotOut} is not valid WebAssembly: ${error}`);
+	process.exit(1);
+}
+if (annotImports.length > 0) {
+	console.error(
+		[
+			"place-assets: the annotation chunk has host imports; its ops must run with none.",
+			...annotImports.map((entry) => `  ${entry.module}.${entry.name}`),
+		].join("\n"),
+	);
+	process.exit(1);
+}
+
 // The optimise chunk is a second tools-family engine: font subset (op 41) and
 // linearize (op 43) moved here from the tools chunk. Only the two cards that
 // invoke those ops fetch it. It carries the same import-free contract as the
@@ -1115,6 +1176,10 @@ writeFileSync(
 				url: "/wasm/selis_pdf_wasm_content.wasm",
 				bytes: contentBytes,
 			},
+			annot: {
+				url: "/wasm/selis_pdf_wasm_annot.wasm",
+				bytes: annotBytes,
+			},
 			optimize: {
 				url: "/wasm/selis_pdf_wasm_optimize.wasm",
 				bytes: optimizeBytes,
@@ -1159,6 +1224,7 @@ console.log(
 		`the engine (${engineBytes} B, from ${relative(workspaceRoot, engine)}) and the ` +
 		`tools chunk (${toolsBytes} B, 0 imports) ` +
 		`and the content chunk (${contentBytes} B, 0 imports) ` +
+		`and the annotation chunk (${annotBytes} B, 0 imports) ` +
 		`and the optimise chunk (${optimizeBytes} B, 0 imports) ` +
 		`and the compare chunk (${compareBytes} B, 0 imports) ` +
 		`and the pattern-redaction chunk (${redactPatternsBytes} B, 0 imports) ` +

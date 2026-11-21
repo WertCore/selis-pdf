@@ -97,6 +97,7 @@ import { PLAIN_STYLE, type TextStyle, withStyle } from "./text-style.js";
 import {
 	type AddObjectId,
 	type EditorOperation,
+	ANNOT_OPS,
 	CONTENT_OPS,
 	PAGE_SIZES,
 	addBackgroundOp,
@@ -109,6 +110,7 @@ import {
 	addWatermarkOp,
 	deleteObjectOp,
 	extractImageOp,
+	inkStrokesOp,
 	listObjectsOp,
 	listVectorsOp,
 	moveObjectOp,
@@ -132,6 +134,7 @@ import {
 	pageLabelsOptions,
 	pageNumbersOptions,
 	redactOptions,
+	regenerateAppearancesOp,
 	resizeOptions,
 	rotatePage,
 	searchCandidates,
@@ -149,6 +152,11 @@ import {
 	loadContent,
 	runContent,
 } from "./content-protocol.js";
+import {
+	type AnnotWasm,
+	loadAnnot,
+	runAnnot,
+} from "./annot-protocol.js";
 import { objectAt, overlayRects, type PlacedObject } from "./object-hit-test.js";
 import { canvasRect } from "./placement.js";
 import {
@@ -264,6 +272,9 @@ interface EditorState {
 	/** The lazy content chunk: font/image-heavy add-content and object ops. */
 	content: ContentWasm | null;
 	contentPromise: Promise<ContentWasm> | null;
+	/** The lazy annotation chunk: appearance regen and multi-stroke ink. */
+	annot: AnnotWasm | null;
+	annotPromise: Promise<AnnotWasm> | null;
 	/** The signing chunk, which draws the text boxes. */
 	sign: SignWasm | null;
 	signPromise: Promise<SignWasm> | null;
@@ -314,6 +325,8 @@ interface EditorState {
 	boxStyle: TextStyle;
 	/** The annotations on the page the editor is showing. */
 	annotations: readonly EditorAnnotation[];
+	/** Strokes buffered by the Draw tool for one multi-stroke /InkList mark. */
+	inkStrokes: [number, number][][];
 	/** Whether the document is kept between visits to this page. */
 	kept: boolean;
 	/** Each page's geometry, for the placements. */
@@ -347,6 +360,8 @@ const state: EditorState = {
 	toolsPromise: null,
 	content: null,
 	contentPromise: null,
+	annot: null,
+	annotPromise: null,
 	sign: null,
 	signPromise: null,
 	doc: 0,
@@ -373,6 +388,7 @@ const state: EditorState = {
 	pickerTarget: "box",
 	boxStyle: PLAIN_STYLE,
 	annotations: [],
+	inkStrokes: [],
 	kept: false,
 	geometry: new Map(),
 	busy: false,
@@ -482,6 +498,9 @@ const dom = {
 	commentsRead: el<HTMLButtonElement>("selis-editor-comments-read"),
 	commentsXfdf: el<HTMLButtonElement>("selis-editor-comments-xfdf"),
 	commentsFlatten: el<HTMLButtonElement>("selis-editor-comments-flatten"),
+	commentsRebuild: el<HTMLButtonElement>("selis-editor-comments-rebuild"),
+	commentsInk: el<HTMLButtonElement>("selis-editor-comments-ink"),
+	commentsBuffer: el<HTMLInputElement>("selis-editor-comments-buffer"),
 	accessibilityCheck: el<HTMLButtonElement>("selis-editor-accessibility-check"),
 	attachments: el<HTMLDivElement>("selis-editor-attachments"),
 	attachmentsRead: el<HTMLButtonElement>("selis-editor-attachments-read"),
@@ -608,6 +627,18 @@ async function content(): Promise<ContentWasm> {
 		return instance;
 	});
 	return state.contentPromise;
+}
+
+/** The annotation chunk, loaded on the first annotation action, never otherwise. */
+async function annot(): Promise<AnnotWasm> {
+	if (state.annot !== null) {
+		return state.annot;
+	}
+	state.annotPromise ??= loadAnnot().then((instance) => {
+		state.annot = instance;
+		return instance;
+	});
+	return state.annotPromise;
 }
 
 /**
@@ -1170,6 +1201,31 @@ async function runAction(action: string): Promise<void> {
 			setTool("redact");
 			selectTab("selis-editor-tab-edit");
 			return;
+		// SL-5.ANNOT.02/03 — the two deferred capabilities, served by the lazy
+		// annotation chunk rather than widening the tools chunk.
+		case "annot:appearances":
+			await runOperation(regenerateAppearancesOp());
+			return;
+		case "annot:ink": {
+			const strokes = state.inkStrokes;
+			if (strokes.length === 0) {
+				setStatus("Draw some strokes first, then add them as one ink mark.", "error");
+				return;
+			}
+			const applied = await runOperation(
+				inkStrokesOp(
+					state.page,
+					strokes,
+					state.drawWidth,
+					[state.drawColour.red, state.drawColour.green, state.drawColour.blue],
+				),
+			);
+			if (applied) {
+				state.inkStrokes = [];
+				setStatus(`Added ${strokes.length} stroke(s) as one ink mark.`);
+			}
+			return;
+		}
 		// SL-5.TEXTEDIT.07/08 — first-class add-content ops with sensible
 		// page-sized defaults. The drag-based tools (text box, image) have
 		// their own placement flows; these are the whole-page furniture ops.
@@ -2301,6 +2357,7 @@ async function closeDocument(): Promise<void> {
 		state.matchIndex = 0;
 		state.history.reset("Closed the document", new Uint8Array(0));
 		state.annotations = [];
+		state.inkStrokes = [];
 		state.geometry.clear();
 		releaseThumbnails();
 		await forgetDocument();
@@ -2360,17 +2417,20 @@ async function runOperation(operation: EditorOperation): Promise<boolean> {
 	dom.download.disabled = true;
 	setStatus(`${operation.label}…`);
 	try {
-		// First-class content ops live in their own lazy chunk — the font and
-		// image code they link would otherwise inflate the all-purpose tools
-		// chunk past its published size budget. Everything else uses tools.
+		// Appearance regeneration and multi-stroke ink live in their own lazy
+		// chunk: they were deferred as typed gaps rather than widening the
+		// tools chunk past its published size budget. Add-content/object ops
+		// have their own chunk for the same reason. Everything else uses tools.
 		const request = {
 			op: operation.op,
 			options: operation.options,
 			files: [{ name: state.name, bytes }, ...(operation.extraFiles ?? [])],
 		};
-		const result = CONTENT_OPS.has(operation.op)
-			? runContent(await content(), request)
-			: runTool(await tools(), request);
+		const result = ANNOT_OPS.has(operation.op)
+			? runAnnot(await annot(), request)
+			: CONTENT_OPS.has(operation.op)
+				? runContent(await content(), request)
+				: runTool(await tools(), request);
 		const produced = result.outputs[0];
 		if (produced === undefined) {
 			throw new Error("the engine produced no document");
@@ -5104,8 +5164,18 @@ async function stampDrawing(
 	// with a drawing they cannot undo but with the undo button.
 	const inkPoints = path.map((point) => {
 		const user = userRect(geometry, { x: point.x, y: point.y, width: 0, height: 0 });
-		return [user.x, user.y];
+		return [user.x, user.y] as [number, number];
 	});
+	// The Comments panel can buffer several drags into ONE /InkList mark
+	// instead of stamping each one separately. The multi-stroke writer lives in
+	// the lazy annotation chunk; nothing is downloaded until the mark is added.
+	if (dom.commentsBuffer.checked) {
+		state.inkStrokes.push(inkPoints);
+		setStatus(
+			`Buffered stroke ${state.inkStrokes.length}. Add them as one ink mark when done.`,
+		);
+		return;
+	}
 	const user = userRect(geometry, { x: left, y: top, width, height });
 	state.busy = true;
 	dom.download.disabled = true;
@@ -6565,6 +6635,12 @@ function wire(): void {
 	});
 	dom.commentsFlatten.addEventListener("click", () => {
 		void flattenMarks();
+	});
+	dom.commentsRebuild.addEventListener("click", () => {
+		void runAction("annot:appearances");
+	});
+	dom.commentsInk.addEventListener("click", () => {
+		void runAction("annot:ink");
 	});
 	dom.attachmentsRead.addEventListener("click", () => {
 		void readAttachments();

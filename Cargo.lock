@@ -2565,6 +2565,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "selis-pdf-wasm-annot"
+version = "0.1.0"
+dependencies = [
+ "selis-pdf-annot",
+ "selis-pdf-cos",
+ "selis-pdf-tools",
+ "selis-sandbox",
+ "serde_json",
+]
+
+[[package]]
 name = "selis-pdf-wasm-cjk"
 version = "0.1.0"
 dependencies = [

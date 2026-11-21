@@ -1,0 +1,24 @@
+[package]
+name = "selis-pdf-wasm-annot"
+description = "Lazy WASM chunk: appearance regeneration and multi-stroke ink annotations for the browser editor (SL-5.ANNOT.02/03). A dedicated module because these ops were deferred from the tools chunk as typed gaps rather than growing a 2%-gated chunk under budget pressure."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# No `native-fs`: every path is a key in the in-memory tool session. The
+# engine crates never see a filesystem or a network.
+selis-pdf-tools = { workspace = true }
+selis-pdf-annot = { workspace = true }
+selis-pdf-cos = { workspace = true }
+selis-sandbox = { workspace = true }
+serde_json = { workspace = true }

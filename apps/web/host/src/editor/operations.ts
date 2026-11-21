@@ -933,3 +933,78 @@ export function extractImageOp(page: number, id: AddObjectId): EditorOperation {
 		label: `Extracted an image from page ${page + 1}`,
 	};
 }
+
+// ── annotations: appearance regeneration and multi-stroke ink ────────────────
+
+/**
+ * The ops served by the dedicated annotation chunk, not by the tools chunk.
+ *
+ * They were deferred as typed gaps rather than widening the tools chunk past
+ * its size budget. Routing is a pure lookup, so a builder that grows a new op
+ * cannot silently send it to the wrong module.
+ */
+export const ANNOT_OPS: ReadonlySet<string> = new Set([
+	"annotate_appearances",
+	"annot_ink",
+]);
+
+/** Rebuild stale or missing markup `/AP` streams across the whole document. */
+export function regenerateAppearancesOp(): EditorOperation {
+	return {
+		op: "annotate_appearances",
+		options: {},
+		label: "Rebuilt the annotation appearances",
+	};
+}
+
+/**
+ * Write caller-supplied strokes as ONE ink annotation (one `/InkList` array
+ * per stroke). The page is zero-based, the colour is 0..1 floats — the engine
+ * derives the rectangle from the points, so a stale rectangle cannot clip the
+ * mark.
+ */
+export function inkStrokesOp(
+	page: number,
+	strokes: readonly (readonly (readonly [number, number])[])[],
+	width: number,
+	colour: readonly [number, number, number],
+	contents = "",
+	author = "",
+): EditorOperation {
+	if (strokes.length === 0) {
+		throw new RangeError("an ink annotation needs at least one stroke");
+	}
+	if (!Number.isFinite(width) || width < 0) {
+		throw new RangeError("a stroke width must be a finite, non-negative number");
+	}
+	const clean = strokes.map((stroke) => {
+		if (stroke.length < 2) {
+			throw new RangeError("each stroke needs two or more points");
+		}
+		return stroke.map((point) => {
+			const x = point[0];
+			const y = point[1];
+			if (!Number.isFinite(x) || !Number.isFinite(y)) {
+				throw new RangeError("an ink point must be finite");
+			}
+			return [x, y] as const;
+		});
+	});
+	for (const channel of colour) {
+		if (!Number.isFinite(channel) || channel < 0 || channel > 1) {
+			throw new RangeError("a colour component must be between 0 and 1");
+		}
+	}
+	return {
+		op: "annot_ink",
+		options: {
+			page: pageIndex(page),
+			strokes: clean,
+			width,
+			colour: [colour[0], colour[1], colour[2]],
+			contents,
+			author,
+		},
+		label: `Added ${clean.length} stroke${clean.length === 1 ? "" : "s"} on page ${page + 1}`,
+	};
+}

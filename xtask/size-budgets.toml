@@ -279,3 +279,18 @@ budget = 700000
 chunk = "content"
 artifact = "selis_pdf_wasm_content"
 budget = 900000
+
+# The annotation chunk (ops 63/64: appearance regeneration and multi-stroke
+# ink). These were deferred as typed gaps rather than widening the tools chunk
+# under budget pressure: that chunk already sits at ~424 KB of its 440 000 B
+# ceiling, and its 2% baseline gate leaves no room for the annotation writer's
+# font-free but non-trivial appearance/verification code. The tools chunk's
+# op 35 still binds only the legacy single-stroke `points` form; these two
+# capabilities get their own module so the editor fetches them only when the
+# reader actually rebuilds appearances or draws a multi-stroke mark. No baseline
+# is recorded yet, so this ceiling gates the first measurement and the 2% rule
+# gates every later slice. It stays import-free like every other tools chunk.
+[[budget]]
+chunk = "annot"
+artifact = "selis_pdf_wasm_annot"
+budget = 500000

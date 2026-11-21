@@ -92,7 +92,13 @@ export type ToolOp =
 	| "resize_object"
 	| "delete_object"
 	| "replace_image"
-	| "extract_image";
+	| "extract_image"
+	// SL-5.ANNOT.02/03 — served by the dedicated `selis-pdf-wasm-annot`
+	// chunk (see crates/selis-pdf-wasm-annot). The numbers are shared here so
+	// the typed `ToolOp` and its codec stay in one place; the tools chunk does
+	// NOT dispatch these.
+	| "annotate_appearances"
+	| "annot_ink";
 
 /** The wire operation number for each operation. */
 const OP_CODE: Record<ToolOp, number> = {
@@ -168,6 +174,11 @@ const OP_CODE: Record<ToolOp, number> = {
 	delete_object: 60,
 	replace_image: 61,
 	extract_image: 62,
+	// 63/64: appearance regeneration and multi-stroke ink, served by the
+	// dedicated annotation chunk. They continue the table after the content ops
+	// so a persisted wire reference can never name two different operations.
+	annotate_appearances: 63,
+	annot_ink: 64,
 };
 
 /** One input file on the wire. */
