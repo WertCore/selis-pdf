@@ -339,6 +339,23 @@ fn bool_field(report: &Json, key: &str) -> Result<bool, String> {
         .ok_or_else(|| format!("the page reported no boolean `{key}` (report: {report})"))
 }
 
+/// Read a string field from an already-selected JSON object.
+fn object_string(object: &serde_json::Map<String, Json>, key: &str) -> Result<String, String> {
+    object
+        .get(key)
+        .and_then(Json::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| format!("the object reported no `{key}` (object: {object:?})"))
+}
+
+/// Read a boolean field from an already-selected JSON object.
+fn object_bool(object: &serde_json::Map<String, Json>, key: &str) -> Result<bool, String> {
+    object
+        .get(key)
+        .and_then(Json::as_bool)
+        .ok_or_else(|| format!("the object reported no boolean `{key}` (object: {object:?})"))
+}
+
 /// Read a boolean inside a named object.
 fn nested_bool(report: &Json, object: &str, key: &str) -> Result<bool, String> {
     let value = report
@@ -8866,6 +8883,12 @@ fn verdict_service_worker(report: &Json) -> Result<(), String> {
 /// a browser can have done here, and the `linkError` is the WebAssembly
 /// *link* check firing — an unsatisfied import must fail before the module
 /// ever runs, which is a property of the engine rather than of the page.
+///
+/// FONT.10 adds a third claim: the real core guest rendered a synthetic CJK
+/// PDF, reported a notdef chunk on pass 1, adopted it from Cache Storage with
+/// no network fetch, repainted with real glyphs and disclosed the substitution
+/// in the DOM. The verdict refuses a leg that merely rendered: every one of
+/// those observations must be present, and the pixels must actually change.
 fn verdict_async_wasm(report: &Json) -> Result<(), String> {
     well_formed(report)?;
     let sum = report
@@ -8883,6 +8906,95 @@ fn verdict_async_wasm(report: &Json) -> Result<(), String> {
             "instantiating without the module's import gave {link:?}, not a LinkError -- \
              the engine is not enforcing the import list"
         ));
+    }
+    verdict_cjk_leg(report)?;
+    Ok(())
+}
+
+/// Check the FONT.10 real-browser CJK render leg of `async-wasm`.
+///
+/// This is a browser measurement of the guest's render loop (open → cjkOpen →
+/// render/tofu → cached cjkChunk → render/glyph), not a vitest fixture. The
+/// document and font are synthetic — no CJK corpus document exists here — so
+/// the claim is the notdef→repaint sequence and the typed disclosure, not a
+/// measured glyph oracle cohort.
+fn verdict_cjk_leg(report: &Json) -> Result<(), String> {
+    let cjk = report
+        .get("cjk")
+        .and_then(Json::as_object)
+        .ok_or_else(|| format!("the page reported no `cjk` render leg (report: {report})"))?;
+    if let Some(error) = cjk.get("error").and_then(Json::as_str) {
+        return Err(format!("the CJK render leg failed: {error}"));
+    }
+    let needs = cjk
+        .get("pass1Needs")
+        .and_then(Json::as_array)
+        .ok_or_else(|| "the CJK leg reported no pass-1 needs list".to_string())?;
+    if !needs.iter().any(|v| v.as_str() == Some("ideographs-1")) {
+        return Err(format!(
+            "pass 1 did not report `ideographs-1` as a notdef chunk (needs: {needs:?}) -- \
+             the guest never queued a lazy CJK subset"
+        ));
+    }
+    let pass1 = cjk
+        .get("pass1Revision")
+        .and_then(Json::as_i64)
+        .ok_or_else(|| "the CJK leg reported no pass-1 revision".to_string())?;
+    let final_rev = cjk
+        .get("finalRevision")
+        .and_then(Json::as_i64)
+        .ok_or_else(|| "the CJK leg reported no final revision".to_string())?;
+    if final_rev <= pass1 {
+        return Err(format!(
+            "the guest's revision did not move ({pass1} -> {final_rev}); no chunk was adopted, \
+             so no repaint was owed"
+        ));
+    }
+    let delivered = cjk
+        .get("delivered")
+        .and_then(Json::as_array)
+        .ok_or_else(|| "the CJK leg reported no delivered list".to_string())?;
+    if !delivered.iter().any(|v| v.as_str() == Some("ideographs-1")) {
+        return Err("the CJK leg did not record the chunk as adopted".into());
+    }
+    let after = cjk
+        .get("needsAfter")
+        .and_then(Json::as_array)
+        .ok_or_else(|| "the CJK leg reported no post-repaint needs list".to_string())?;
+    if after.iter().any(|v| v.as_str() == Some("ideographs-1")) {
+        return Err(
+            "the chunk was still needed after the drain; the repaint cannot have used it".into(),
+        );
+    }
+    let ink_before = object_string(cjk, "inkBefore")?;
+    let ink_after = object_string(cjk, "inkAfter")?;
+    if ink_before == ink_after {
+        return Err(format!(
+            "the two renders produced identical ink ({ink_before}); the notdef was never \
+             replaced by real glyphs"
+        ));
+    }
+    if !object_bool(cjk, "repainted")? {
+        return Err("the CJK leg did not report a repaint".into());
+    }
+    let network = cjk
+        .get("chunkNetworkFetches")
+        .and_then(Json::as_i64)
+        .unwrap_or(-1);
+    if network != 0 {
+        return Err(format!(
+            "the CJK chunk URL was fetched over the network {network} time(s); subset bytes must \
+             come only from the local cache adapter"
+        ));
+    }
+    let disclosure = object_string(cjk, "disclosure")?;
+    for needle in ["STSong-Light", "ideographs-1", "subset", "U+4E2D"] {
+        if !disclosure.contains(needle) {
+            return Err(format!(
+                "the typed disclosure {disclosure:?} does not name {needle:?} -- a substitution \
+                 must be shown, never silent"
+            ));
+        }
     }
     Ok(())
 }
@@ -9008,10 +9120,15 @@ fn run_check(cfg: &Config, browser: &Path, scratch: &Path, check: &Check) -> Row
     // React entries. Both need the built app on the same origin as the page.
     // `tools-page` and `editor` drive the two product surfaces of the same
     // built app.
+    // `async-wasm`'s FONT.10 leg drives the REAL core guest, so it needs the
+    // same `/wasm/selis_pdf_wasm.wasm` the app ships on this origin. The check
+    // page is re-staged last below, so the app's own index.html cannot shadow
+    // the verdict page.
     if check.id == "app-shell"
         || check.id == "chrome"
         || check.id == "tools-page"
         || check.id == "editor"
+        || check.id == "async-wasm"
     {
         if let Err(e) = stage_app(&app_public_dir(), &served) {
             return failed(check.id, format!("cannot stage the built web app: {e}"));

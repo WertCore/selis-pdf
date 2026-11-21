@@ -64,6 +64,7 @@ import {
 	type PageTextLayer as EnginePageTextLayer,
 	type RenderedPage,
 } from "./engine.js";
+import { forgetViewerCjk, renderWithCjk } from "./cjk-viewer.js";
 import { type LinePlacement, placeLine } from "./geometry.js";
 import { DocumentHistory, type OperationRecord } from "./history.js";
 import { type IconName, icon } from "./icons.js";
@@ -646,6 +647,33 @@ function devicePixelRatio(): number {
 }
 
 /**
+ * Paint one render's pixels into the page's canvas.
+ *
+ * Shared by the first paint and the CJK repaint: when a lazy subset arrives the
+ * hook re-renders the page and calls this with the fresh raster, so the tofu
+ * frame is replaced by the real glyphs through the exact same blit.
+ */
+function paintCanvas(canvas: HTMLCanvasElement, raster: RenderedPage): void {
+	canvas.width = raster.width;
+	canvas.height = raster.height;
+	const context = canvas.getContext("2d");
+	if (context === null) return;
+	context.putImageData(
+		new ImageData(
+			new Uint8ClampedArray(
+				raster.pixels.buffer as ArrayBuffer,
+				raster.pixels.byteOffset,
+				raster.pixels.byteLength,
+			),
+			raster.width,
+			raster.height,
+		),
+		0,
+		0,
+	);
+}
+
+/**
  * Build one page: its raster, and the text layer the user clicks.
  *
  * The text layer's lines are positioned through the transform the render
@@ -666,7 +694,10 @@ function buildPage(client: EngineClient, page: number): HTMLElement {
 
 	let raster: RenderedPage;
 	try {
-		raster = client.render(state.doc, page, dpi);
+		// FONT.10: the render path goes through the CJK hook. A page with no
+		// loader is byte-for-byte the old render; a page whose guest reported a
+		// notdef schedules the lazy drain + repaint after the first paint.
+		raster = renderWithCjk(client, state.doc, page, dpi, wrap, (fresh) => paintCanvas(canvas, fresh));
 	} catch (error) {
 		// One page the engine cannot draw must not blank the workspace: the
 		// other pages are still readable and still editable, and the page says
@@ -683,22 +714,7 @@ function buildPage(client: EngineClient, page: number): HTMLElement {
 	canvas.className = "selis-editor-page__canvas";
 	canvas.setAttribute("role", "img");
 	canvas.setAttribute("aria-label", `Page ${page + 1}`);
-	const context = canvas.getContext("2d");
-	if (context !== null) {
-		context.putImageData(
-			new ImageData(
-				new Uint8ClampedArray(
-					raster.pixels.buffer as ArrayBuffer,
-					raster.pixels.byteOffset,
-					raster.pixels.byteLength,
-				),
-				raster.width,
-				raster.height,
-			),
-			0,
-			0,
-		);
-	}
+	paintCanvas(canvas, raster);
 	// The raster is denser than the CSS box, so the text stays crisp on a
 	// high-DPI display instead of being upscaled from a 96-DPI bitmap.
 	const cssWidth = raster.width / dpr;
@@ -2088,6 +2104,7 @@ async function openInEngine(bytes: Uint8Array): Promise<void> {
 	state.page = Math.min(state.page, Math.max(0, opened.pages - 1));
 	if (previous !== null) {
 		client.close(previous);
+		forgetViewerCjk(previous);
 	}
 	releaseThumbnails();
 	renderDocument(client);
@@ -2287,6 +2304,7 @@ async function closeDocument(): Promise<void> {
 		const client = await engine();
 		if (state.doc !== 0) {
 			client.close(state.doc);
+			forgetViewerCjk(state.doc);
 			state.doc = 0;
 		}
 		state.bytes = null;
