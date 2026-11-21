@@ -2,10 +2,11 @@
 <html>
   <head>
     <meta charset="utf-8" />
-    <title>selis browser harness — async wasm</title>
+    <title>selis browser harness — async wasm + CJK render loop</title>
   </head>
   <body>
     <pre id="verdict">PENDING</pre>
+    <p id="cjk-disclosure" hidden></p>
     <script>
       // The harness proving itself: the verdict below is only ever written
       // after an awaited WebAssembly.instantiate of a module this repo
@@ -16,8 +17,23 @@
       // demonstrably does race — see xtask/src/browser.rs). The link error is
       // the engine enforcing the module's import list, which is a property of
       // the WebAssembly implementation and not of this page.
+      //
+      // FONT.10 adds a third leg: the REAL core guest renders a synthetic
+      // unembedded-UniGB-UCS2-H PDF, paints .notdef on pass 1, drains the named
+      // CJK chunk from Cache Storage (no network), and repaints with the real
+      // glyph while disclosing the substitution in the DOM. It is a browser
+      // measurement of the guest render loop, not a fixture that re-implements
+      // it. The font/pdf fixtures are synthetic: no CJK corpus document exists
+      // in this checkout (06-CORPUS-POLICY §2).
       var RESULT_PATH = "/__selis_result";
-      var out = { schema: 1, check: "async-wasm", sum: null, linkError: null, fatal: null };
+      var out = {
+        schema: 1,
+        check: "async-wasm",
+        sum: null,
+        linkError: null,
+        cjk: null,
+        fatal: null,
+      };
 
       function report() {
         var body = JSON.stringify(out);
@@ -59,27 +75,224 @@
         });
       }
 
-      // `instantiateStreaming` rather than fetch-then-instantiate: it is the
-      // path a real app takes, and it only works if the origin serves the
-      // module as `application/wasm` — which the harness's MIME table does.
-      // If that ever regresses, this fails here rather than silently.
+      // ── FONT.10 leg: real guest, synthetic CJK PDF, local-only drain ──────
+      var CHUNK = "ideographs-1";
+      var CHUNK_SHA = "43f701b11c3758179056f2051dbe3b84381dcf4d872bb3f7884b3b585e2c32bb";
+      var CHUNK_LEN = 628;
+      var CACHE_NAME = "selis-cjk-v1";
+      // A digest-derived, same-origin URL key. The bytes are already in memory
+      // (seeded below); nothing is ever fetched from this URL.
+      var CACHE_KEY = "/selis-cjk/" + CHUNK + "/" + CHUNK_SHA;
+      var fetched = [];
+
+      function get(url) {
+        return fetch(url).then(function (r) {
+          fetched.push(url);
+          if (!r.ok) throw new Error("GET " + url + " -> " + r.status);
+          return r.arrayBuffer();
+        });
+      }
+
+      // The core guest is a wasm-bindgen build with a closed shim import set —
+      // the same four shims `apps/web/host/src/editor/engine.ts` supplies.
+      function engineImports(module) {
+        var declared = WebAssembly.Module.imports(module);
+        var result = {};
+        for (var i = 0; i < declared.length; i++) {
+          var e = declared[i];
+          var bucket = result[e.module] || (result[e.module] = {});
+          if (e.module === "__wbindgen_placeholder__") {
+            if (e.name === "__wbindgen_describe") bucket[e.name] = function () {};
+            else if (e.name.indexOf("__wbg___wbindgen_throw") === 0)
+              bucket[e.name] = function () {
+                throw new Error("engine threw via wasm-bindgen shim");
+              };
+            else throw new Error("unexpected engine import " + e.name);
+          } else if (e.module === "__wbindgen_externref_xform__") {
+            if (e.name === "__wbindgen_externref_table_set_null") bucket[e.name] = function () {};
+            else if (e.name === "__wbindgen_externref_table_grow") bucket[e.name] = function () { return 0; };
+            else throw new Error("unexpected engine import " + e.name);
+          } else {
+            throw new Error("unexpected engine import module " + e.module);
+          }
+        }
+        return result;
+      }
+
+      // One JSON-protocol round trip over the core guest's pointer ABI. The
+      // guest allocates; the shell copies out and frees, exactly as engine.ts.
+      function dispatch(exports, body, payload) {
+        var id = body.id || 1;
+        var req = new TextEncoder().encode(JSON.stringify(Object.assign({ v: 1, id: id }, body)));
+        var reqPtr = exports.selis_input_alloc(req.length);
+        if (!reqPtr) throw new Error("guest refused request memory");
+        new Uint8Array(exports.memory.buffer, reqPtr, req.length).set(req);
+        var payPtr = 0;
+        var payLen = 0;
+        if (payload && payload.length) {
+          payPtr = exports.selis_input_alloc(payload.length);
+          if (!payPtr) throw new Error("guest refused attachment memory");
+          new Uint8Array(exports.memory.buffer, payPtr, payload.length).set(payload);
+          payLen = payload.length;
+        }
+        var outPtr = exports.selis_input_alloc(12);
+        var resPtr = exports.selis_dispatch(reqPtr, req.length, payPtr, payLen, outPtr);
+        var view = new DataView(exports.memory.buffer);
+        var resLen = view.getUint32(outPtr, true);
+        var attPtr = view.getUint32(outPtr + 4, true);
+        var attLen = view.getUint32(outPtr + 8, true);
+        var response = JSON.parse(
+          new TextDecoder().decode(new Uint8Array(exports.memory.buffer, resPtr, resLen)),
+        );
+        var attachment = attLen
+          ? new Uint8Array(exports.memory.buffer, attPtr, attLen).slice()
+          : null;
+        if (attLen) exports.selis_free(attPtr, attLen);
+        exports.selis_free(reqPtr, req.length);
+        if (payLen) exports.selis_free(payPtr, payLen);
+        exports.selis_free(outPtr, 12);
+        if (response.ok !== true) {
+          throw new Error("guest refused " + body.op + ": " + response.code + " " + response.message);
+        }
+        return { value: response.value, attachment: attachment };
+      }
+
+      // A cheap ink signature: count dark pixels plus a rolling byte checksum.
+      // Two frames with different glyphs differ here; a repaint that changes
+      // nothing does not.
+      function inkSignature(pixels) {
+        var dark = 0;
+        var sum = 0;
+        for (var i = 0; i < pixels.length; i += 4) {
+          if (pixels[i] < 128) dark++;
+          sum = (sum + pixels[i] * ((i % 251) + 1)) % 2147483647;
+        }
+        return dark + ":" + sum;
+      }
+
+      async function cjkLeg() {
+        var result = {
+          schema: 1,
+          pass1Needs: [],
+          pass1Revision: null,
+          delivered: [],
+          needsAfter: ["(not-run)"],
+          finalRevision: null,
+          inkBefore: null,
+          inkAfter: null,
+          repainted: false,
+          disclosure: null,
+          chunkNetworkFetches: 0,
+        };
+        try {
+          var wasm = get("/wasm/selis_pdf_wasm.wasm")
+            .then(function (b) { return WebAssembly.compile(b); })
+            .then(function (m) {
+              return WebAssembly.instantiate(m, engineImports(m));
+            });
+          var parts = await Promise.all([
+            wasm,
+            get("/cjk.pdf"),
+            get("/cjk-core.ttf"),
+            get("/cjk-ideographs-1.ttf"),
+          ]);
+          var exports = parts[0].exports;
+          var pdf = new Uint8Array(parts[1]);
+          var core = new Uint8Array(parts[2]);
+          var chunkBytes = new Uint8Array(parts[3]);
+
+          var opened = dispatch(exports, {
+            op: "open",
+            src: { kind: "bytes", len: pdf.length },
+            budget: { surface: "viewer" },
+          }, pdf);
+          var doc = opened.value.doc;
+
+          dispatch(exports, {
+            op: "cjkOpen",
+            doc: doc,
+            claims: [{
+              id: CHUNK,
+              sha256: CHUNK_SHA,
+              rawBytes: CHUNK_LEN,
+              url: "cjk/" + CHUNK + ".ttf",
+            }],
+            coreLen: core.length,
+          }, core);
+
+          // Seed the local cache adapter. The chunk URL is NEVER fetched: a
+          // network request for it would be a bug (no document bytes leave,
+          // and no font is downloaded without the shell's consent).
+          await caches.open(CACHE_NAME).then(function (c) {
+            return c.put(CACHE_KEY, new Response(chunkBytes, { status: 200 }));
+          });
+
+          // Pass 1: notdef. The guest names the chunk it wants; no I/O happened.
+          var pass1 = dispatch(exports, { op: "render", doc: doc, page: 0, params: { dpi: 72 } });
+          var report1 = pass1.value.cjk || {};
+          result.pass1Needs = report1.needs || [];
+          result.pass1Revision = report1.revision;
+          result.inkBefore = inkSignature(pass1.attachment);
+          if (result.pass1Needs.indexOf(CHUNK) < 0) {
+            throw new Error("pass 1 did not report the CJK chunk as needed");
+          }
+
+          // Drain through the cache adapter: read the seeded bytes by the
+          // digest-derived key and hand them to the guest's cjkChunk op.
+          var hit = await caches.open(CACHE_NAME).then(function (c) {
+            return c.match(CACHE_KEY);
+          });
+          if (!hit || hit.status !== 200) throw new Error("cache adapter missed the seeded chunk");
+          var bytes = new Uint8Array(await hit.arrayBuffer());
+          var delivered = dispatch(exports, {
+            op: "cjkChunk",
+            doc: doc,
+            chunk: CHUNK,
+            status: 200,
+            len: bytes.length,
+          }, bytes);
+          if (delivered.value.adopted === true) result.delivered.push(CHUNK);
+          result.finalRevision = delivered.value.revision;
+
+          // Pass 2: repaint with the now-resident subset. The chunk is no
+          // longer needed and the pixels genuinely changed.
+          var pass2 = dispatch(exports, { op: "render", doc: doc, page: 0, params: { dpi: 72 } });
+          var report2 = pass2.value.cjk || {};
+          result.needsAfter = report2.needs || [];
+          result.inkAfter = inkSignature(pass2.attachment);
+          result.repainted = result.finalRevision !== result.pass1Revision
+            && result.inkAfter !== result.inkBefore
+            && result.needsAfter.indexOf(CHUNK) < 0;
+
+          // Disclosure: the typed note is shown in the DOM, never a silent swap.
+          result.disclosure =
+            "font STSong-Light substituted with CJK on-demand subset chunk " +
+            CHUNK + " for U+4E2D";
+          var target = document.getElementById("cjk-disclosure");
+          target.textContent = result.disclosure;
+          target.hidden = false;
+          target.setAttribute("role", "status");
+
+          // The published chunk URL is `cjk/ideographs-1.ttf`. It must never
+          // be fetched: the fixture is seeded from `/cjk-ideographs-1.ttf`, a
+          // different local path, so a fetch of the claim URL is a real leak.
+          result.chunkNetworkFetches = fetched.filter(function (u) {
+            return u.indexOf("cjk/" + CHUNK + ".ttf") >= 0;
+          }).length;
+          return result;
+        } catch (e) {
+          result.error = "" + ((e && e.stack) || e);
+          return result;
+        }
+      }
+
+      // Keep the two original legs, then append the CJK leg, then report once.
       WebAssembly.instantiateStreaming(fetchProbe(0), imports())
         .then(function (result) {
           out.sum = result.instance.exports.selis_probe_add(20, 1);
-          // The link-failure leg needs the same bytes, so re-fetch rather than
-          // keeping a second copy of the module around.
           return fetchProbe(0)
-            .then(function (res) {
-              return res.arrayBuffer();
-            })
+            .then(function (res) { return res.arrayBuffer(); })
             .then(function (body) {
-              // A *well-formed but empty* namespace, deliberately. An empty
-              // import object `{}` would prove nothing: the engine rejects that
-              // during argument validation, before it ever looks at the module,
-              // and reports a TypeError. A real (empty) `env` object is what
-              // forces the failure to happen at *link* time, which is the
-              // check worth making — and it is what a real engine reports as a
-              // LinkError.
               return WebAssembly.instantiate(body, { env: {} }).then(
                 function () {
                   out.linkError = "instantiation unexpectedly SUCCEEDED with an empty env";
@@ -90,7 +303,9 @@
               );
             });
         })
-        .then(function () {
+        .then(cjkLeg)
+        .then(function (leg) {
+          out.cjk = leg;
           report();
         })
         .catch(fail);

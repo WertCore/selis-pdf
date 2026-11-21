@@ -92,6 +92,23 @@ export interface OpenedDocument {
 	readonly pageSizes: readonly { readonly width: number; readonly height: number }[];
 }
 
+/**
+ * The typed CJK block a render response carries (SL-4.WASM.07 / FONT.10).
+ *
+ * The guest inserts this only when a CJK loader is installed on the document.
+ * `needs` is the notdef report — chunk ids the walk wanted but could not
+ * resolve on this pass — and a change in `revision` is the repaint signal once
+ * the shell has delivered them.
+ */
+export interface CjkRenderReport {
+	/** Chunk ids the walk wanted but could not resolve on this pass. */
+	readonly needs: readonly string[];
+	/** The set's counter; a change across a drain means a repaint is owed. */
+	readonly revision: number;
+	/** Raw resident bytes after the walk. */
+	readonly residentBytes: number;
+}
+
 /** One rendered page: its pixels and the transform they were drawn with. */
 export interface RenderedPage {
 	/** The raster's width, in device pixels. */
@@ -102,6 +119,8 @@ export interface RenderedPage {
 	readonly pixels: Uint8Array;
 	/** The user-space → device transform the render used. */
 	readonly ctm: Matrix;
+	/** The guest's CJK notdef report, present only with a CJK loader installed. */
+	readonly cjk?: CjkRenderReport;
 }
 
 /** One character of a line, in PDF user space. */
@@ -251,6 +270,33 @@ function numberField(value: Record<string, unknown>, key: string): number {
 		throw new EngineError(`the engine's reply has no usable ${key}`);
 	}
 	return field;
+}
+
+/**
+ * Read the guest's optional `cjk` render block, or `undefined`.
+ *
+ * Structural and total: a malformed block is refused with a typed engine
+ * error rather than coerced to "nothing missing", because a shell that
+ * defaulted `needs` to `[]` would paint a page that is wrong.
+ */
+function readCjkReport(value: unknown): CjkRenderReport | undefined {
+	if (value === undefined) return undefined;
+	if (!isRecord(value)) {
+		throw new EngineError("the engine's CJK render report is malformed");
+	}
+	const revision = numberField(value, "revision");
+	const residentBytes = numberField(value, "residentBytes");
+	const rawNeeds = value.needs;
+	if (!Array.isArray(rawNeeds)) {
+		throw new EngineError("the engine's CJK render report has no needs list");
+	}
+	const needs = rawNeeds.map((id) => {
+		if (typeof id !== "string") {
+			throw new EngineError("the engine's CJK render report has a malformed chunk id");
+		}
+		return id;
+	});
+	return { needs, revision, residentBytes };
 }
 
 /**
@@ -470,11 +516,17 @@ export class EngineClient {
 			return part;
 		});
 		const [a, b, c, d, e, f] = ctm as [number, number, number, number, number, number];
+		// FONT.10: the guest's typed CJK report rides along with the pixels when
+		// a loader is installed. Reading it here is the hook the render loop
+		// uses to notice a notdef pass and schedule the lazy drain + repaint.
+		// A document with no loader keeps the exact shape it always had.
+		const cjk = readCjkReport(value.cjk);
 		return {
 			width,
 			height,
 			pixels: attachment,
 			ctm: { a, b, c, d, e, f },
+			...(cjk === undefined ? {} : { cjk }),
 		};
 	}
 

@@ -229,6 +229,52 @@ It is also the prerequisite for the entire edit product (ADR-P0024).
     browser-driven measurement of the real guest render loop. Do NOT close this
     box on the strength of the text-path wiring.
 
+    **Bucket 3 (2026-11-21) — the production-caller half is now CLOSED; the
+    corpus/cohort half stays open.** The two web gaps Bucket 2 named are closed:
+
+    - **(a) production caller of `drainCjk` in a shipped render loop — CLOSED.**
+      The typed hook `createCjkRenderLoop`
+      (`packages/wasm-loader/src/cjk-render-loop.ts`) is a real caller of
+      `LazyPayloadClient.drainCjk` over a `CjkCacheSource` bound to an *injected*
+      Cache Storage adapter whose miss path is status `0` — there is no fetch
+      port, so subset bytes come only from the local cache (ADR-P0016, no
+      upload, no download without separate consent). The shipped web viewer
+      binds the same contract over the engine's own dispatch in
+      `apps/web/host/src/editor/cjk-render-loop.ts` and
+      `apps/web/host/src/editor/cjk-viewer.ts`: `buildPage`
+      (`editor-page.ts`) now renders through `renderWithCjk`, so a guest
+      `cjk.needs` report paints the notdef frame first, drains only the named
+      chunk, and re-renders the affected page when the revision moves; the typed
+      `CjkSubstitutionNote` is shown in a `role=status` DOM node, never a silent
+      swap. `RenderedPage.cjk` (`engine.ts`) is the typed guest seam. Host
+      vitest (`editor/cjk-render-loop.test.ts`, 5 tests) and wasm-loader vitest
+      (`cjk-render-loop.test.ts`, 3 tests) pin the render → drain → repaint →
+      disclose sequence and the local-only cache drain.
+    - **(b) a real-browser CJK leg — CLOSED.** The committed `async-wasm` check
+      (`xtask/browser/async-wasm/index.html`) now drives the REAL core guest:
+      it opens a synthetic unembedded `/UniGB-UCS2-H` PDF built for U+4E2D,
+      installs `cjkOpen` with the `ideographs-1` claim and a synthetic subset
+      core, renders pass 1 (guest reports `cjk.needs = ["ideographs-1"]`,
+      `.notdef` ink), reads the chunk from Cache Storage under a digest-derived
+      key with **zero** network fetches of the published chunk URL, delivers it
+      via `cjkChunk` (revision advances), renders pass 2 (no longer needed, ink
+      signature changed — the tofu is replaced by the real glyph outline), and
+      shows the typed disclosure in the DOM. The verdict
+      (`xtask/src/browser.rs::verdict_cjk_leg`) refuses a leg missing any of
+      those observations. `cargo test -p xtask a_real_engine_runs_the_committed_checks`
+      passes **7/7** checks (msedge.exe); the CJK leg adds no eighth row and
+      weakens none. The fixtures (`cjk.pdf`, `cjk-core.ttf`,
+      `cjk-ideographs-1.ttf`) are synthetic; the fast harness leg they serve is
+      a real-browser guest measurement, not a `pnpm`/vitest fixture.
+
+    Still honest and unchanged: **there is no CJK corpus document and no
+    measured oracle cohort.** The fixtures above are synthetic (a `mini.ttf`
+    rectangle glyph merged at one code), and the browser leg asserts the
+    notdef→repaint sequence and disclosure, not a measured glyph-fidelity
+    oracle. The cjk size-check chunk stays **0 B delta** (no CJK payload is
+    embedded; the subset is lazy-loaded through the cache adapter). The
+    box stays unchecked on corpus/cohort grounds alone, not on the web wiring.
+
 - [x] **SL-3.FONT.11 — Font subsetting and re-embedding** · deps: FONT.03, FONT.04 · owner: AI+
   - **Do:** Subset TrueType and CFF to a glyph set, rebuild `loca`/`hmtx`/`cmap`/charstrings, and
     **merge new glyphs into an existing subset** — required by ADR-P0024, because editing text adds
