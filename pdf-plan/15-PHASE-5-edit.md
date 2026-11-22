@@ -407,8 +407,18 @@ Normative spec: `23-EDIT-MODEL-SPEC.md`. Read it before any task here.
     are explicitly skipped with typed `SkippedField`/`SkipReason` notes, never silently dropped.
     CLI: `selis form-export <pdf> [--format json|csv]` and
     `selis form-import <pdf> <data> --output <pdf> [--format json|csv|auto]`.
-  - **Not claimed:** the CSV single-value/`;` collision is refused with a typed note rather than
-    escaped; there is no XFDF/FDF *export* (only import) in this slice.
+  - **XFDF/FDF export + CSV `;` codec (closed this slice):** `export_xfdf` writes
+    `<field name="N" value="V"/>` for single values and one `<value>` per option for multi-select
+    (XML-escaped); `export_fdf` writes `<< /T (name) /V (value) >>` and `<< /T (name) /V [(a) (b)] >>`
+    (PDF-string-escaped). `import_xfdf` now reads `<value>` children and `import_fdf` reads the
+    `/V [ … ]` array form, so each format round-trips single and multi values. The CSV separator
+    collision is gone: a literal `;` or `\` inside a value is backslash-escaped (`\;`, `\\`) on
+    export and decoded on import (`csv_escape`/`csv_split_multi`), so a single value containing `;`
+    round-trips instead of being refused. Only a NUL byte is still skipped (typed
+    `SkipReason::BinaryValue`). CLI `selis form-export --format json|csv|xfdf|fdf` and
+    `selis form-import --format json|csv|xfdf|fdf|auto` (auto sniffs `{`, `<xfdf`, `%FDF`). Tests:
+    `xfdf_export_round_trips_single_and_multi`, `fdf_export_round_trips_single_and_multi`,
+    `csv_escapes_a_single_value_with_a_semicolon_and_backslash`.
 - [x] **SL-5.FORM.06 — Form creation and field authoring** · deps: FORM.02 · owner: AI+
   - **Done:** `selis-pdf-form::create_form_fields` builds `/AcroForm`, merged field/widget
     dictionaries (`/FT /T /Rect /DA /AP`) and page `/Annots` for caller-specified text, checkbox,

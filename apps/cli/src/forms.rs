@@ -237,7 +237,18 @@ fn evaluate_scripts(
         .collect())
 }
 
-/// `selis form-export <path> [--format json|csv] [--output file]`
+/// Import XFDF from raw bytes: XML must be UTF-8 (as the XFDF spec requires).
+fn import_xfdf_bytes(
+    data: &[u8],
+) -> Result<Vec<selis_pdf_form::FieldEdit>, selis_pdf_form::formdata::ImportError> {
+    use selis_pdf_form::formdata::ImportError;
+    match std::str::from_utf8(data) {
+        Ok(text) => selis_pdf_form::formdata::import_xfdf(text),
+        Err(_) => Err(ImportError::NotXml),
+    }
+}
+
+/// `selis form-export <path> [--format json|csv|xfdf|fdf] [--output file]`
 ///
 /// Export a PDF's current field values as versioned JSON or CSV. Binary and
 /// attachment-like fields (signatures, push buttons, NUL-bearing values) are
@@ -247,15 +258,17 @@ fn evaluate_scripts(
 ///
 /// [`CliError`] when the file cannot be read or an unknown format is requested.
 pub(crate) fn export(path: &str, format: &str, output: Option<&str>) -> CliResult<()> {
-    use selis_pdf_form::formdata::{export_csv, export_json};
+    use selis_pdf_form::formdata::{export_csv, export_fdf, export_json, export_xfdf};
 
     let report = selis_pdf_tools::form_fields(path).map_err(CliError::from)?;
     let data = match format {
         "json" => export_json(&report),
         "csv" => export_csv(&report),
+        "xfdf" => export_xfdf(&report),
+        "fdf" => export_fdf(&report),
         other => {
             return Err(CliError(format!(
-                "unknown form-data format {other:?}; use `json` or `csv`"
+                "unknown form-data format {other:?}; use `json`, `csv`, `xfdf` or `fdf`"
             )))
         }
     };
@@ -292,23 +305,30 @@ pub(crate) fn import(
     format: &str,
     output: &str,
 ) -> CliResult<crate::verify_report::Verification> {
-    use selis_pdf_form::formdata::{import_csv, import_json};
+    use selis_pdf_form::formdata::{import_csv, import_fdf, import_json};
 
     let data = crate::read_file(data_path)?;
     let fields = match format {
         "json" => import_json(&data),
         "csv" => import_csv(&data),
+        "xfdf" => import_xfdf_bytes(&data),
+        "fdf" => import_fdf(&data),
         "auto" => {
-            let trimmed = String::from_utf8_lossy(&data);
-            if trimmed.trim_start().starts_with('{') {
+            let text = String::from_utf8_lossy(&data);
+            let trimmed = text.trim_start();
+            if trimmed.starts_with('{') {
                 import_json(&data)
+            } else if trimmed.contains("<xfdf") {
+                import_xfdf_bytes(&data)
+            } else if data.starts_with(b"%FDF") {
+                import_fdf(&data)
             } else {
                 import_csv(&data)
             }
         }
         other => {
             return Err(CliError(format!(
-                "unknown form-data format {other:?}; use `json`, `csv` or `auto`"
+                "unknown form-data format {other:?}; use `json`, `csv`, `xfdf`, `fdf` or `auto`"
             )))
         }
     }

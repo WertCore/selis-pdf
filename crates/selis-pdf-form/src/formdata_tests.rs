@@ -9,8 +9,8 @@
 //! Form-data import tests (SL-5.FORM.05).
 
 use super::formdata::{
-    export_csv, export_json, import_csv, import_fdf, import_json, import_xfdf, ImportError,
-    SkipReason,
+    export_csv, export_fdf, export_json, export_xfdf, import_csv, import_fdf, import_json,
+    import_xfdf, ImportError, SkipReason,
 };
 use super::{
     fill_form, read_form_fields, FieldKind, FillFormsOptions, FormField, FormFieldsReport,
@@ -182,20 +182,78 @@ fn csv_export_round_trips_including_quoted_cells() {
 }
 
 #[test]
-fn csv_skips_a_single_value_with_a_reserved_semicolon() {
+fn csv_escapes_a_single_value_with_a_semicolon_and_backslash() {
+    // A single value containing the multi-value separator (and a literal
+    // backslash) is backslash-escaped, not refused, and round-trips exactly.
     let report = FormFieldsReport {
-        fields: vec![field("odd", FieldKind::Text, Some("a;b"), &[])],
+        fields: vec![
+            field("odd", FieldKind::Text, Some("a;b"), &[]),
+            field("slash", FieldKind::Text, Some("x\\y;z"), &[]),
+            field("multi", FieldKind::Choice, None, &["p;q", "r"]),
+        ],
         ..sample_report()
     };
     let exported = export_csv(&report);
-    assert_eq!(exported.bytes, b"\n\n");
-    assert_eq!(
-        exported.skipped,
-        vec![super::formdata::SkippedField {
-            name: "odd".to_string(),
-            reason: SkipReason::BinaryValue,
-        }]
+    assert!(
+        exported.skipped.is_empty(),
+        "nothing is refused: {:?}",
+        exported.skipped
     );
+    let csv = String::from_utf8(exported.bytes.clone()).expect("UTF-8 CSV");
+    assert!(csv.contains("a\\;b"), "the separator is escaped: {csv}");
+    let edits = import_csv(exported.bytes.as_slice()).expect("re-import");
+    let get = |name: &str| edits.iter().find(|edit| edit.name == name).expect(name);
+    assert_eq!(get("odd").value, "a;b");
+    assert_eq!(get("slash").value, "x\\y;z");
+    // A multi-select keeps its two options even though one contains the separator.
+    assert_eq!(get("multi").value, "p;q");
+    assert_eq!(get("multi").values, ["r"]);
+}
+
+#[test]
+fn xfdf_export_round_trips_single_and_multi() {
+    let report = FormFieldsReport {
+        fields: vec![
+            field("firstName", FieldKind::Text, Some("A<da & \"L\""), &[]),
+            field("colors", FieldKind::Choice, None, &["Red", "Green & Blue"]),
+        ],
+        ..sample_report()
+    };
+    let exported = export_xfdf(&report);
+    let xml = String::from_utf8(exported.bytes.clone()).expect("UTF-8 XFDF");
+    assert!(xml.contains("<xfdf"), "{xml}");
+    assert!(
+        xml.contains("A&lt;da &amp; &quot;L&quot;"),
+        "escaped: {xml}"
+    );
+    let edits = import_xfdf(&xml).expect("re-import XFDF");
+    let get = |name: &str| edits.iter().find(|edit| edit.name == name).expect(name);
+    assert_eq!(get("firstName").value, "A<da & \"L\"");
+    assert_eq!(get("colors").value, "Red");
+    assert_eq!(get("colors").values, ["Green & Blue"]);
+}
+
+#[test]
+fn fdf_export_round_trips_single_and_multi() {
+    let report = FormFieldsReport {
+        fields: vec![
+            field(
+                "fullName",
+                FieldKind::Text,
+                Some("Ada (Lovelace) \\ 1"),
+                &[],
+            ),
+            field("colors", FieldKind::Choice, None, &["Red", "Blue"]),
+        ],
+        ..sample_report()
+    };
+    let exported = export_fdf(&report);
+    assert!(exported.bytes.starts_with(b"%FDF"));
+    let edits = import_fdf(exported.bytes.as_slice()).expect("re-import FDF");
+    let get = |name: &str| edits.iter().find(|edit| edit.name == name).expect(name);
+    assert_eq!(get("fullName").value, "Ada (Lovelace) \\ 1");
+    assert_eq!(get("colors").value, "Red");
+    assert_eq!(get("colors").values, ["Blue"]);
 }
 
 #[test]

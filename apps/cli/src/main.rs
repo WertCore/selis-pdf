@@ -649,11 +649,11 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Export a PDF's current form field values as JSON or CSV.
+    /// Export a PDF's current form field values as JSON, CSV, XFDF or FDF.
     FormExport {
         /// The input PDF.
         path: String,
-        /// `json` (default) or `csv`.
+        /// `json` (default), `csv`, `xfdf` or `fdf`.
         #[arg(long, default_value = "json")]
         format: String,
         /// Where to write the data. Prints it on stdout when omitted.
@@ -668,16 +668,16 @@ enum Command {
         #[arg(short, long)]
         output: String,
     },
-    /// Import JSON or CSV form data and fill a PDF with it.
+    /// Import JSON, CSV, XFDF or FDF form data and fill a PDF with it.
     FormImport {
         /// The input PDF.
         path: String,
-        /// The JSON or CSV form-data file.
+        /// The form-data file (JSON, CSV, XFDF or FDF).
         data: String,
         /// The output PDF.
         #[arg(short, long)]
         output: String,
-        /// `json`, `csv` or `auto` (default), which sniffs the leading byte.
+        /// `json`, `csv`, `xfdf`, `fdf` or `auto` (default), which sniffs the content.
         #[arg(long, default_value = "auto")]
         format: String,
     },
