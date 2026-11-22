@@ -172,12 +172,13 @@ pub fn verify_appearance_bytes(
     field_name: &str,
     expected: &[u8],
     has_logo: bool,
+    has_smask: bool,
 ) -> ToolResult<()> {
     let budget = Budget::unlimited();
     let clock = crate::shell_clock();
     let mut g = crate::runtime::cli_guard(&budget, &clock);
     selis_pdf_sign::verify_signature_appearance(
-        out, field_name, expected, has_logo, &budget, &mut g,
+        out, field_name, expected, has_logo, has_smask, &budget, &mut g,
     )
     .map_err(crate::ToolError::from)
 }

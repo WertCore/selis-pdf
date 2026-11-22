@@ -319,6 +319,7 @@ fn an_encoded_logo_signs_and_the_ap_reads_back_byte_for_byte() {
         "Signature1",
         &appearance,
         true,
+        false,
         &budget(),
         &mut budget().guard(),
     )
@@ -331,11 +332,64 @@ fn an_encoded_logo_signs_and_the_ap_reads_back_byte_for_byte() {
             "Signature1",
             &changed,
             true,
+            false,
             &budget(),
             &mut budget().guard(),
         ),
         Err(SignError::ReadBack(_))
     ));
+}
+
+#[cfg(feature = "logo")]
+#[test]
+fn an_alpha_logo_writes_a_soft_mask_and_reads_back() {
+    let b = budget();
+    let mut g = b.guard();
+    // 2x2 with one transparent and one half-transparent pixel.
+    let image = selis_image::Image {
+        width: 2,
+        height: 2,
+        rgba: vec![
+            255, 0, 0, 0, // transparent
+            0, 255, 0, 128, // half
+            0, 0, 255, 255, 255, 255, 0, 255,
+        ],
+    };
+    let png = selis_image::encode_png(&image, 6, &mut g).expect("encode png");
+    let src = synthetic_pdf();
+    let (out, report) =
+        sign_digital_with_encoded_logo(&src, &options(None), &png, &b, &mut b.guard())
+            .expect("sign with an alpha logo");
+    assert!(out.starts_with(&src));
+    assert!(report.verified && report.has_logo);
+
+    // A grayscale DeviceGray image XObject holds the alpha samples.
+    let mask = streams(&out).into_iter().find(|(dict, data)| {
+        subtype(dict) == Some(b"Image")
+            && dict.iter().any(|(k, v)| {
+                k.as_slice() == b"ColorSpace"
+                    && matches!(v, Obj::Name(n) if n.as_slice() == b"DeviceGray")
+            })
+            && data.as_slice() == [0u8, 128, 255, 255]
+    });
+    assert!(mask.is_some(), "the soft-mask image must be embedded");
+
+    // The standalone read-back verifies /AP /N plus the /SMask structure.
+    let appearance = streams(&out)
+        .into_iter()
+        .find(|(dict, _)| subtype(dict) == Some(b"Form"))
+        .expect("appearance stream")
+        .1;
+    verify_signature_appearance(
+        &out,
+        "Signature1",
+        &appearance,
+        true,
+        true, // has_smask
+        &budget(),
+        &mut budget().guard(),
+    )
+    .expect("byte-for-byte /AP /N + /SMask read-back");
 }
 
 /// A logo that is not a PNG/JPEG this build understands is refused before a

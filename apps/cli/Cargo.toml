@@ -27,7 +27,7 @@ selis-log = { workspace = true }
 selis-crypto = { workspace = true, features = ["rng"] }
 selis-pdf-cos = { workspace = true, features = ["rng"] }
 selis-pdf-doc = { workspace = true }
-selis-pdf-tools = { workspace = true, features = ["native-fs", "security", "sign", "text"] }
+selis-pdf-tools = { workspace = true, features = ["native-fs", "security", "sign", "sign-logo", "text"] }
 selis-pdf-edit = { workspace = true }
 # SL-5.SIGN.04: the pure DSS embedder lives in the engine; the consent-gated
 # network fetch lives ONLY here in the native binding layer. The engine never

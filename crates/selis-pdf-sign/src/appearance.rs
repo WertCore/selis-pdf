@@ -57,14 +57,56 @@ pub struct SignatureLogo {
     pub height: u32,
     /// Row-major, 8-bit-per-channel RGB samples: `width * height * 3` bytes.
     pub rgb: Vec<u8>,
+    /// Row-major 8-bit-per-pixel alpha samples: `width * height` bytes. `None`
+    /// means the image is fully opaque and no `/SMask` is written. This field
+    /// is absent from the plain sign WASM build (which has no logo path) so
+    /// that chunk keeps its exact byte baseline (ADR-P0011 / the 2% gate);
+    /// native builds and the lazy sign-logo chunk carry it.
+    #[cfg(any(not(target_arch = "wasm32"), feature = "logo"))]
+    #[serde(default)]
+    pub alpha: Option<Vec<u8>>,
 }
 
 impl SignatureLogo {
-    /// A logo from raw RGB pixels. The caller owns the pixels; they are copied
-    /// into the returned PDF, never fetched from anywhere.
+    /// A fully opaque logo from raw RGB pixels. The caller owns the pixels;
+    /// they are copied into the returned PDF, never fetched from anywhere.
     #[must_use]
     pub fn new(width: u32, height: u32, rgb: Vec<u8>) -> Self {
-        Self { width, height, rgb }
+        Self {
+            width,
+            height,
+            rgb,
+            #[cfg(any(not(target_arch = "wasm32"), feature = "logo"))]
+            alpha: None,
+        }
+    }
+
+    /// A logo from raw RGBA pixels. The alpha channel is preserved as a PDF
+    /// soft mask (`/SMask`) so transparent and semi-transparent pixels really
+    /// composite over the signature block. A fully opaque image stores no
+    /// alpha, producing byte-for-byte the same output as [`Self::new`].
+    ///
+    /// The caller owns the pixels; nothing is fetched. `# Errors` validation
+    /// happens in [`Self::validate`] at the appearance writer.
+    #[cfg(any(not(target_arch = "wasm32"), feature = "logo"))]
+    #[must_use]
+    pub fn new_rgba(width: u32, height: u32, rgba: Vec<u8>) -> Self {
+        let pixels = (u64::from(width).saturating_mul(u64::from(height))) as usize;
+        let mut rgb = Vec::with_capacity(pixels.saturating_mul(3));
+        let mut alpha = Vec::with_capacity(pixels);
+        let mut any_transparent = false;
+        for sample in rgba.chunks_exact(4) {
+            rgb.extend_from_slice(&sample[..3]);
+            let a = sample[3];
+            any_transparent |= a != 0xFF;
+            alpha.push(a);
+        }
+        Self {
+            width,
+            height,
+            rgb,
+            alpha: any_transparent.then_some(alpha),
+        }
     }
 
     /// Decode a standalone PNG or JPEG file into an 8-bit RGB logo.
@@ -73,9 +115,9 @@ impl SignatureLogo {
     /// socket. Decoding goes through the workspace's pure-Rust
     /// [`selis_image`] decoder (PNG: bit depth 8, grey/RGB/palette/grey+alpha/
     /// RGBA, non-interlaced; JPEG: baseline/progressive grey/RGB/CMYK). The
-    /// decoded RGBA samples are flattened to RGB by **dropping alpha** — there
-    /// is no soft mask in this build, so a transparent pixel keeps its colour
-    /// but not its opacity.
+    /// decoded RGBA samples keep their alpha as a PDF soft mask (`/SMask`), so
+    /// transparent and semi-transparent pixels composite correctly. A fully
+    /// opaque image stores no alpha and produces the same output as before.
     ///
     /// # Errors
     ///
@@ -123,11 +165,7 @@ impl SignatureLogo {
                 "the decoded logo does not carry four samples per pixel",
             ));
         }
-        let mut rgb = Vec::with_capacity((pixels as usize).saturating_mul(3));
-        for sample in image.rgba.chunks_exact(4) {
-            rgb.extend_from_slice(&sample[..3]);
-        }
-        let logo = Self::new(image.width, image.height, rgb);
+        let logo = Self::new_rgba(image.width, image.height, image.rgba.to_vec());
         logo.validate()?;
         Ok(logo)
     }
@@ -164,6 +202,19 @@ impl SignatureLogo {
             return Err(invalid(
                 "the logo's RGB byte count does not match its dimensions",
             ));
+        }
+        #[cfg(any(not(target_arch = "wasm32"), feature = "logo"))]
+        if let Some(alpha) = &self.alpha {
+            if u64::try_from(alpha.len()).unwrap_or(u64::MAX) != pixels {
+                return Err(invalid(
+                    "the logo's alpha byte count does not match its dimensions",
+                ));
+            }
+            if alpha.len() > MAX_LOGO_BYTES {
+                return Err(SignError::Limit(format!(
+                    "the logo's alpha channel exceeds {MAX_LOGO_BYTES} bytes"
+                )));
+            }
         }
         Ok(pixels as usize)
     }
@@ -255,11 +306,16 @@ pub struct AppearanceAssets {
     pub stream: Vec<u8>,
     /// The form's `/BBox`: `[0, 0, width, height]` in user space.
     pub bbox: [f64; 4],
-    /// Extra indirect stream objects (the logo image) the caller must write
-    /// into the same incremental revision.
+    /// Extra indirect stream objects the caller must write into the same
+    /// incremental revision: the logo image first, and (only when the logo has
+    /// alpha) its DeviceGray soft mask second.
     pub extra_objects: Vec<Obj>,
     /// Whether a logo was laid into the block (used by the read-back check).
     pub has_logo: bool,
+    /// Whether a soft-mask image accompanies the logo. The caller uses this to
+    /// wire `/SMask` to the second extra object and to verify it on read-back.
+    /// Always `false` in the plain sign WASM build (no alpha there).
+    pub has_smask: bool,
 }
 
 /// Build the signature widget's appearance from a typed template.
@@ -347,6 +403,7 @@ pub fn build_signature_appearance(
 
     let mut extra_objects = Vec::new();
     let mut has_logo = false;
+    let mut has_smask = false;
     if let Some(logo) = &template.logo {
         has_logo = true;
         // Lay the image into the top-right corner of the widget, in display
@@ -387,6 +444,27 @@ pub fn build_signature_appearance(
             ],
             data: Bytes::copy_from_slice(&logo.rgb),
         });
+
+        #[cfg(any(not(target_arch = "wasm32"), feature = "logo"))]
+        if let Some(alpha) = &logo.alpha {
+            // The soft mask is a grayscale image with the SAME dimensions as
+            // the colour image, one 8-bit sample per pixel. The writer assigns
+            // its object number (logo_base + 1) and adds `/SMask <that ref>` to
+            // the colour image dictionary above — object numbering belongs to
+            // the writer, not the appearance builder.
+            extra_objects.push(Obj::Stream {
+                dict: vec![
+                    (bytes(b"Type"), Obj::Name(bytes(b"XObject"))),
+                    (bytes(b"Subtype"), Obj::Name(bytes(b"Image"))),
+                    (bytes(b"Width"), Obj::Int(i64::from(logo.width))),
+                    (bytes(b"Height"), Obj::Int(i64::from(logo.height))),
+                    (bytes(b"ColorSpace"), Obj::Name(bytes(b"DeviceGray"))),
+                    (bytes(b"BitsPerComponent"), Obj::Int(8)),
+                ],
+                data: Bytes::copy_from_slice(alpha),
+            });
+            has_smask = true;
+        }
     }
 
     Ok(AppearanceAssets {
@@ -394,6 +472,7 @@ pub fn build_signature_appearance(
         bbox: [0.0, 0.0, user_width, user_height],
         extra_objects,
         has_logo,
+        has_smask,
     })
 }
 
@@ -413,6 +492,7 @@ pub fn verify_appearance(
     appearance_num: u32,
     expected: &[u8],
     has_logo: bool,
+    has_smask: bool,
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
 ) -> Result<(), SignError> {
@@ -495,6 +575,59 @@ pub fn verify_appearance(
                 "the logo is not an image XObject".to_string(),
             ));
         }
+        if has_smask {
+            let mask_ref = dict_get(&dict, b"SMask")
+                .and_then(|value| match value {
+                    Obj::Ref(reference) => Some(*reference),
+                    _ => None,
+                })
+                .ok_or_else(|| {
+                    SignError::ReadBack("the logo has alpha but no /SMask XObject".to_string())
+                })?;
+            let mask = resolve(out, &doc, Obj::Ref(mask_ref), budget, g)
+                .map_err(|e| SignError::ReadBack(format!("the /SMask did not re-open: {e}")))?;
+            let Obj::Stream {
+                dict: mask_dict,
+                data: mask_data,
+            } = mask
+            else {
+                return Err(SignError::ReadBack(
+                    "the /SMask is not a stream".to_string(),
+                ));
+            };
+            if dict_get(&mask_dict, b"Subtype") != Some(&Obj::Name(bytes(b"Image")))
+                || dict_get(&mask_dict, b"ColorSpace") != Some(&Obj::Name(bytes(b"DeviceGray")))
+                || dict_get(&mask_dict, b"BitsPerComponent") != Some(&Obj::Int(8))
+            {
+                return Err(SignError::ReadBack(
+                    "the /SMask is not an 8-bit grayscale image XObject".to_string(),
+                ));
+            }
+            // The mask must match the colour image's dimensions and carry one
+            // 8-bit sample per pixel, or viewers would mis-scale the alpha.
+            let dim = |key: &[u8]| -> Option<i64> {
+                match dict_get(&mask_dict, key) {
+                    Some(Obj::Int(n)) => Some(*n),
+                    _ => None,
+                }
+            };
+            let (Some(mw), Some(mh)) = (dim(b"Width"), dim(b"Height")) else {
+                return Err(SignError::ReadBack(
+                    "the /SMask has no integer dimensions".to_string(),
+                ));
+            };
+            if mw <= 0 || mh <= 0 {
+                return Err(SignError::ReadBack(
+                    "the /SMask has non-positive dimensions".to_string(),
+                ));
+            }
+            let expected_len = (mw as u64).saturating_mul(mh as u64);
+            if u64::try_from(mask_data.len()).unwrap_or(u64::MAX) != expected_len {
+                return Err(SignError::ReadBack(
+                    "the /SMask sample count does not match its dimensions".to_string(),
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -568,6 +701,78 @@ mod tests {
             Some(&Obj::Name(bytes(b"Image")))
         );
         assert_eq!(data.len(), 12);
+    }
+
+    #[cfg(any(not(target_arch = "wasm32"), feature = "logo"))]
+    #[test]
+    fn an_rgba_logo_writes_a_soft_mask_image() {
+        // 2x2: one fully transparent, one half-transparent, two opaque.
+        let rgba = vec![
+            255, 0, 0, 0, // transparent red
+            0, 255, 0, 128, // half-transparent green
+            0, 0, 255, 255, // opaque blue
+            255, 255, 0, 255, // opaque yellow
+        ];
+        let logo = SignatureLogo::new_rgba(2, 2, rgba);
+        assert!(logo.alpha.is_some());
+        let assets = build_signature_appearance(
+            page(),
+            [0.0, 0.0, 248.0, 90.0],
+            &template().with_logo(logo),
+            &[],
+        )
+        .expect("appearance");
+        assert!(assets.has_logo);
+        assert!(assets.has_smask);
+        assert_eq!(assets.extra_objects.len(), 2, "colour image + soft mask");
+        let Obj::Stream { dict, data } = &assets.extra_objects[1] else {
+            panic!("soft mask is a stream");
+        };
+        assert_eq!(
+            dict_get(dict, b"Subtype"),
+            Some(&Obj::Name(bytes(b"Image")))
+        );
+        assert_eq!(
+            dict_get(dict, b"ColorSpace"),
+            Some(&Obj::Name(bytes(b"DeviceGray")))
+        );
+        assert_eq!(dict_get(dict, b"BitsPerComponent"), Some(&Obj::Int(8)));
+        assert_eq!(data.as_slice(), &[0u8, 128, 255, 255]);
+    }
+
+    #[cfg(any(not(target_arch = "wasm32"), feature = "logo"))]
+    #[test]
+    fn a_fully_opaque_rgba_logo_needs_no_soft_mask() {
+        let rgba = vec![255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 1, 2, 3, 255];
+        let logo = SignatureLogo::new_rgba(2, 2, rgba);
+        assert!(logo.alpha.is_none());
+        let assets = build_signature_appearance(
+            page(),
+            [0.0, 0.0, 248.0, 90.0],
+            &template().with_logo(logo),
+            &[],
+        )
+        .expect("appearance");
+        assert!(assets.has_logo);
+        assert!(!assets.has_smask);
+        assert_eq!(assets.extra_objects.len(), 1);
+    }
+
+    #[cfg(any(not(target_arch = "wasm32"), feature = "logo"))]
+    #[test]
+    fn a_wrong_alpha_length_is_a_typed_refusal() {
+        let mut logo = test_logo();
+        logo.alpha = Some(vec![255u8; 3]); // 2x2 needs 4 samples
+        assert!(
+            build_signature_appearance(
+                page(),
+                [0.0, 0.0, 248.0, 90.0],
+                &template().with_logo(logo),
+                &[],
+            )
+            .is_err(),
+            "a malformed alpha channel must be refused"
+        );
     }
 
     #[test]

@@ -63,6 +63,8 @@ export interface AppearanceVerificationResult {
 	readonly kind: "appearance-verification";
 	readonly field: string;
 	readonly hasLogo: boolean;
+	/** Whether the logo carried a soft mask that the read-back verified. */
+	readonly hasSMask: boolean;
 	readonly appearanceBytes: number;
 }
 
@@ -224,6 +226,7 @@ export function decodeSignLogoResponse(response: Uint8Array): SignLogoResponse {
 			kind: "appearance-verification",
 			field,
 			hasLogo: parsed.hasLogo === true,
+			hasSMask: parsed.hasSMask === true,
 			appearanceBytes:
 				typeof parsed.appearanceBytes === "number" ? parsed.appearanceBytes : 0,
 		};

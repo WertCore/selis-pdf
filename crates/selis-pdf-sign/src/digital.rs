@@ -167,6 +167,8 @@ pub struct AppearanceProof {
     pub stream: Vec<u8>,
     /// Whether the appearance carries a logo image XObject.
     pub has_logo: bool,
+    /// Whether the logo carries a soft-mask image XObject.
+    pub has_smask: bool,
 }
 
 /// Sign with a caller-supplied PNG/JPEG logo and verify the widget appearance.
@@ -208,6 +210,7 @@ pub fn sign_digital_with_encoded_logo(
         proof.appearance_num,
         &proof.stream,
         proof.has_logo,
+        proof.has_smask,
         budget,
         g,
     )?;
@@ -228,6 +231,7 @@ pub fn verify_signature_appearance(
     field_name: &str,
     expected: &[u8],
     has_logo: bool,
+    has_smask: bool,
     budget: &Budget,
     g: &mut BudgetGuard<'_>,
 ) -> Result<(), SignError> {
@@ -288,6 +292,7 @@ pub fn verify_signature_appearance(
                 appearance_num,
                 expected,
                 has_logo,
+                has_smask,
                 budget,
                 g,
             );
@@ -414,7 +419,8 @@ pub(crate) fn sign_impl(
         Some(logo) => template.with_logo(logo),
         None => template,
     };
-    let appearance_assets = build_signature_appearance(target, rect, &template, &options.strokes)?;
+    let mut appearance_assets =
+        build_signature_appearance(target, rect, &template, &options.strokes)?;
     let appearance = appearance_assets.stream;
     let bbox = appearance_assets.bbox;
 
@@ -586,6 +592,19 @@ pub(crate) fn sign_impl(
     ];
     // SL-5.SIGN.07: the caller-supplied logo and optional soft mask ride in
     // the same incremental revision as the widget and its appearance.
+    let has_smask = appearance_assets.has_smask;
+    if has_smask {
+        // The soft mask is the second extra object at logo_base + 1. Wire it
+        // into the colour image's dictionary now that its number is known.
+        // No other object is allocated at that slot (the certification extras
+        // all sit below logo_base), so the reference cannot collide.
+        if let Some(Obj::Stream { dict, .. }) = appearance_assets.extra_objects.first_mut() {
+            dict.push((
+                bytes(b"SMask"),
+                Obj::Ref(Ref::new(logo_base.saturating_add(1), 0)),
+            ));
+        }
+    }
     for (index, obj) in appearance_assets.extra_objects.into_iter().enumerate() {
         objects.push((logo_base.saturating_add(index as u32), obj));
     }
@@ -712,6 +731,7 @@ pub(crate) fn sign_impl(
         appearance_num,
         &appearance,
         appearance_assets.has_logo,
+        has_smask,
         budget,
         g,
     )?;
@@ -752,6 +772,7 @@ pub(crate) fn sign_impl(
             appearance_num,
             stream: appearance,
             has_logo: appearance_assets.has_logo,
+            has_smask,
         },
     ))
 }

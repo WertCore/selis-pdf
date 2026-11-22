@@ -130,13 +130,14 @@ describe("decodeSignLogoResponse", () => {
 		const response = new Uint8Array([
 			...u32(SIGN_LOGO_RESPONSE_MAGIC),
 			...u32(0),
-			...block(text(JSON.stringify({ operation: "verify-appearance", field: "Signature1", verified: true, hasLogo: true, appearanceBytes: 412 }))),
+			...block(text(JSON.stringify({ operation: "verify-appearance", field: "Signature1", verified: true, hasLogo: true, hasSMask: true, appearanceBytes: 412 }))),
 			...u32(0),
 		]);
 		expect(decodeSignLogoResponse(response)).toEqual({
 			kind: "appearance-verification",
 			field: "Signature1",
 			hasLogo: true,
+			hasSMask: true,
 			appearanceBytes: 412,
 		});
 	});

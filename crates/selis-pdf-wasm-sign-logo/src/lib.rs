@@ -373,16 +373,21 @@ mod protocol {
             .get("hasLogo")
             .and_then(Value::as_bool)
             .unwrap_or(true);
+        let has_smask = options
+            .get("hasSMask")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         if expected.is_empty() {
             return Err("the read-back needs an expected /AP /N stream".to_string());
         }
-        selis_pdf_tools::verify_appearance_bytes(pdf, &field, expected, has_logo)
+        selis_pdf_tools::verify_appearance_bytes(pdf, &field, expected, has_logo, has_smask)
             .map_err(|e| e.0)?;
         let message = serde_json::json!({
             "operation": "verify-appearance",
             "field": field,
             "verified": true,
             "hasLogo": has_logo,
+            "hasSMask": has_smask,
             "appearanceBytes": expected.len(),
         });
         Ok((message, None))
