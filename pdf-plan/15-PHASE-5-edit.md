@@ -669,6 +669,14 @@ Normative spec: `23-EDIT-MODEL-SPEC.md`. Read it before any task here.
     publicly trusted / AATL identity". Tests: a generated identity is trusted only when its own
     cert is supplied as an anchor; with no anchors or a wrong CA it is not; a bundle's later
     blocks are loaded; no private key bytes appear in the PDF.
+  - **Deliberately deferred — own trust store / CA issuance (later addition):** Selis will NOT run
+    its own root CA or bundled public trust store. Competitors and Acrobat mutually rely on the
+    Adobe AATL/EUTL trust lists; a Selis-owned root would not be in them, so a private store buys
+    nothing that bring-your-own certificates + caller-supplied anchors do not already give. This is
+    recorded as a *later addition* only if a real distribution reason appears (e.g. an enterprise
+    that pushes our root via MDM) — never a prerequisite. The model stays exactly Foxit's:
+    bring-your-own cert (PKCS#12/PEM), local self-signed identity, and verifier trust in the caller's
+    anchors.
   - **Remaining (external/business):** a publicly trusted (AATL/EUTL) signing certificate and CA
     membership — procurement, not code. System/OS trust-store auto-loading is deliberately NOT
     done (the browser has none; we keep trust explicit and local-only).
